@@ -118,6 +118,21 @@ impl CacheKey {
         }
     }
 
+    /// Parses a key as stored, `<namespace>/<name>` (the inverse of [`CacheKey::as_str`]), with
+    /// the same validation as the constructors. For tiers that rebuild their index from what
+    /// they hold.
+    #[must_use]
+    pub fn from_stored(stored: &str) -> Option<Self> {
+        let (namespace, name) = stored.split_once('/')?;
+        match namespace {
+            "gradle" => Self::gradle(name).ok(),
+            "maven" => Self::maven(name).ok(),
+            "bazel-ac" => Self::bazel(Namespace::BazelAc, name).ok(),
+            "bazel-cas" => Self::bazel(Namespace::BazelCas, name).ok(),
+            _ => None,
+        }
+    }
+
     fn new(namespace: Namespace, name: &str) -> Self {
         Self {
             namespace,
@@ -269,6 +284,37 @@ mod tests {
             CacheKey::bazel(Namespace::Gradle, digest),
             Err(InvalidKey::Bazel)
         );
+    }
+
+    #[test]
+    fn every_namespace_round_trips_through_its_stored_form() {
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let keys = [
+            Namespace::Gradle,
+            Namespace::Maven,
+            Namespace::BazelAc,
+            Namespace::BazelCas,
+        ]
+        .map(|namespace| {
+            // Exhaustive, so a new namespace fails to compile until it is added here.
+            match namespace {
+                Namespace::Gradle => CacheKey::gradle("abc123").unwrap(),
+                Namespace::Maven => CacheKey::maven("v1.1/g/a/cs/buildinfo.xml").unwrap(),
+                Namespace::BazelAc | Namespace::BazelCas => {
+                    CacheKey::bazel(namespace, digest).unwrap()
+                }
+            }
+        });
+        for key in keys {
+            assert_eq!(
+                CacheKey::from_stored(key.as_str()),
+                Some(key.clone()),
+                "{key}"
+            );
+        }
+        for bad in ["", "gradle", "gradle/XYZ", "nope/abc", "bazel-cas/abc"] {
+            assert_eq!(CacheKey::from_stored(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
