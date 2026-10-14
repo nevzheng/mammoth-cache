@@ -84,5 +84,10 @@ pub(super) async fn metrics(State(state): State<AppState>) -> Result<Response, A
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4"),
     )];
-    Ok((headers, crate::telemetry::render(handle)).into_response())
+    let status = state.cache.status();
+    Ok((
+        headers,
+        crate::telemetry::render_with(handle, Some(&status)),
+    )
+        .into_response())
 }
