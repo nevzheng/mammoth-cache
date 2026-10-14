@@ -28,7 +28,7 @@ self-hosted node without Develocity.
 | Replication between nodes, by Develocity | A shared bucket; nodes are stateless                                               |
 | One disk per node                        | Memory, then disk, then an optional bucket                                         |
 | JVM                                      | A single static binary or a distroless image                                       |
-| Bazel gRPC on port 6011                  | HTTP cache on `/bazel/` today; gRPC cache (REAPI) in progress; no remote execution |
+| Bazel gRPC on port 6011                  | The [REAPI gRPC cache](reapi.md) on port 6011, off by default; no remote execution |
 | Develocity plugin and Maven extension    | Not supported; use Gradle's `HttpBuildCache` or the Apache Maven extension         |
 | No Prometheus metrics                    | `/metrics` with a documented catalog                                               |
 

@@ -66,11 +66,21 @@ Which clients the node serves. A protocol that is off has no routes: its request
 any unknown path. Health checks, metrics and the admin API are always served. At least one
 protocol must be on.
 
-| Key      | Type    | Default | Example | Status    | Meaning                                                |
-| -------- | ------- | ------- | ------- | --------- | ------------------------------------------------------ |
-| `gradle` | boolean | `true`  | `false` | Available | Gradle's build cache at `/cache/`                      |
-| `maven`  | boolean | `true`  | `false` | Available | The Maven Build Cache Extension at `/maven/`           |
-| `bazel`  | boolean | `false` | `true`  | Available | Bazel's HTTP cache at `/bazel/`; see [Bazel](bazel.md) |
+| Key      | Type    | Default | Example | Status    | Meaning                                                         |
+| -------- | ------- | ------- | ------- | --------- | --------------------------------------------------------------- |
+| `gradle` | boolean | `true`  | `false` | Available | Gradle's build cache at `/cache/`                               |
+| `maven`  | boolean | `true`  | `false` | Available | The Maven Build Cache Extension at `/maven/`                    |
+| `bazel`  | boolean | `false` | `true`  | Available | Bazel's HTTP cache at `/bazel/`; see [Bazel](bazel.md)          |
+| `reapi`  | boolean | `false` | `true`  | Available | The REAPI gRPC cache on `[reapi] listen`; see [REAPI](reapi.md) |
+
+### `[reapi]`
+
+The gRPC listener for the REAPI cache, used only when `protocols.reapi` is on. It serves HTTP/2
+(gRPC) on its own port, with the same `[tls]` certificate, users and scopes as the HTTP port.
+
+| Key      | Type   | Default        | Example         | Status    | Meaning                                                          |
+| -------- | ------ | -------------- | --------------- | --------- | ---------------------------------------------------------------- |
+| `listen` | string | `0.0.0.0:6011` | `"[::]:6011"`   | Available | Address and port; 6011 is the Build Cache Node's Bazel gRPC port |
 
 ### `[server]`
 

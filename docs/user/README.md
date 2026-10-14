@@ -37,10 +37,10 @@ refills from the bucket as it serves. Without one, a single node works like the 
 | Gradle's built-in [HTTP build cache](https://docs.gradle.org/current/userguide/build_cache.html)       | 7.6 to 9.x                      | Available |
 | [Apache Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/) | 1.2.0 and later, on Maven 3.9.x | Available |
 | Bazel's [HTTP remote cache](https://bazel.build/remote/caching#http-caching), off by default           | SHA-256 digests                 | Available |
+| The [REAPI gRPC cache](reapi.md) for Bazel, Buck2, Pants, sbt 2 and Please, off by default             | REAPI v2, SHA-256 digests       | Available |
 
-Develocity's own Gradle plugin connector and Maven extension are not supported. The cache side of
-Bazel's gRPC Remote Execution API (Capabilities, ActionCache, CAS and ByteStream) is in progress;
-remote execution itself is out of scope: mammoth-cache is a cache, not a remote build system.
+Develocity's own Gradle plugin connector and Maven extension are not supported. Remote execution
+is out of scope: mammoth-cache is a cache, not a remote build system.
 
 ## Feature status
 
@@ -53,6 +53,7 @@ remote execution itself is out of scope: mammoth-cache is a cache, not a remote 
 | Admin status, `/v1/serverStatus`                                                     | Available | [Health checks](health.md)                |
 | Maven routes, `/maven/{path}`                                                        | Available | [Maven](maven.md)                         |
 | Bazel HTTP cache, `/bazel/ac/` and `/bazel/cas/`, off by default                     | Available | [Bazel](bazel.md)                         |
+| REAPI gRPC cache (Capabilities, ActionCache, CAS, ByteStream), off by default        | Available | [REAPI](reapi.md)                         |
 | Turning each protocol on or off                                                      | Available | [Configuration](configuration.md)         |
 | `mammoth.toml` config file                                                           | Available | [Configuration](configuration.md)         |
 | Disk and bucket tiers, in the `mammoth` binary and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |

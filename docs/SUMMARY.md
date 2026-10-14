@@ -11,6 +11,7 @@
 - [Gradle](user/gradle.md)
 - [Maven](user/maven.md)
 - [Bazel](user/bazel.md)
+- [REAPI gRPC cache](user/reapi.md)
 - [Migrating from the Build Cache Node](user/migrating.md)
 - [Configuration reference](user/configuration.md)
 - [Authentication](user/authentication.md)

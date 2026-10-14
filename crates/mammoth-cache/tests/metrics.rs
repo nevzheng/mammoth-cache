@@ -283,6 +283,12 @@ const CATALOG: &[Metric] = &[
         live: true,
     },
     Metric {
+        name: "mammoth_grpc_requests_total",
+        kind: Kind::Counter,
+        labels: &[Label("method", None), Label("code", None)],
+        live: false,
+    },
+    Metric {
         name: "mammoth_http_request_duration_seconds",
         kind: Kind::Histogram,
         labels: &[Label("route", None), Label("method", Some(METHODS))],

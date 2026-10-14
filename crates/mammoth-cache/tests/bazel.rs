@@ -33,6 +33,7 @@ const BAZEL_ONLY: Protocols = Protocols {
     gradle: false,
     maven: false,
     bazel: true,
+    reapi: false,
 };
 
 fn app_over(cache: Cache, protocols: Protocols) -> Router {
