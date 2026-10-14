@@ -75,12 +75,13 @@ protocol must be on.
 How connections time out and how the node shuts down. Design doc
 [0013](../design/0013-deployment.md) explains the choices.
 
-| Key                 | Type     | Default | Example  | Status    | Meaning                                                                          |
-| ------------------- | -------- | ------- | -------- | --------- | -------------------------------------------------------------------------------- |
-| `shutdown_delay`    | duration | `5s`    | `"10s"`  | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail            |
-| `shutdown_timeout`  | duration | `25s`   | `"55s"`  | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads       |
-| `idle_timeout`      | duration | `75s`   | `"620s"` | Available | How long a connection may wait for, and take to send, its next request's headers |
-| `body_read_timeout` | duration | `60s`   | `"2m"`   | Available | How long an upload may send nothing before it fails; per read, not in total      |
+| Key                 | Type     | Default | Example  | Status    | Meaning                                                                                |
+| ------------------- | -------- | ------- | -------- | --------- | -------------------------------------------------------------------------------------- |
+| `shutdown_delay`    | duration | `5s`    | `"10s"`  | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail                  |
+| `shutdown_timeout`  | duration | `25s`   | `"55s"`  | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads             |
+| `idle_timeout`      | duration | `75s`   | `"620s"` | Available | How long a connection may wait for, and take to send, its next request's headers       |
+| `body_read_timeout` | duration | `60s`   | `"2m"`   | Available | How long an upload may send nothing before it fails; per read, not in total            |
+| `send_timeout`      | duration | `60s`   | `"2m"`   | Available | How long a response may make no progress because the client stopped reading; per write |
 
 On `SIGTERM` or Ctrl-C the node fails `/readyz`, keeps serving for `shutdown_delay`, stops
 accepting connections, finishes requests in flight, then finishes queued bucket uploads, all

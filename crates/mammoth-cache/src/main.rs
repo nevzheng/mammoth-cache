@@ -208,6 +208,7 @@ async fn serve(config: Config) -> io::Result<()> {
         shutdown_timeout: config.server.shutdown_timeout.0,
         idle_timeout: config.server.idle_timeout.0,
         body_read_timeout: config.server.body_read_timeout.0,
+        send_timeout: config.server.send_timeout.0,
     };
     let signal = async {
         shutdown_signal().await;

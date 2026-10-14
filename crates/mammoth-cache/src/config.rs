@@ -81,6 +81,9 @@ pub struct Server {
     pub idle_timeout: HumanDuration,
     /// How long an upload may send nothing before it is abandoned. Per read, not in total.
     pub body_read_timeout: HumanDuration,
+    /// How long a response may make no progress, because the client stopped reading, before the
+    /// connection is closed. Per write, not in total.
+    pub send_timeout: HumanDuration,
 }
 
 impl Default for Server {
@@ -90,6 +93,7 @@ impl Default for Server {
             shutdown_timeout: HumanDuration(Duration::from_secs(25)),
             idle_timeout: HumanDuration(Duration::from_secs(75)),
             body_read_timeout: HumanDuration(Duration::from_secs(60)),
+            send_timeout: HumanDuration(Duration::from_secs(60)),
         }
     }
 }
@@ -531,6 +535,7 @@ impl Config {
             ("shutdown_timeout", server.shutdown_timeout),
             ("idle_timeout", server.idle_timeout),
             ("body_read_timeout", server.body_read_timeout),
+            ("send_timeout", server.send_timeout),
         ] {
             if value.0.is_zero() {
                 return Err(format!("server.{name} must be above zero"));

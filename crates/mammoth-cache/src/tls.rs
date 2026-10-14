@@ -35,8 +35,9 @@ pub struct Certificates {
     cert_path: PathBuf,
     key_path: PathBuf,
     current: RwLock<Arc<CertifiedKey>>,
-    /// The file contents behind `current`, to skip parsing when nothing changed.
-    loaded: Mutex<(Vec<u8>, Vec<u8>)>,
+    /// A hash of the file contents behind `current`, to skip parsing when nothing changed. Only
+    /// the hash, so the key's PEM is not kept in memory.
+    loaded: Mutex<blake3::Hash>,
 }
 
 impl fmt::Debug for Certificates {
@@ -58,11 +59,12 @@ impl Certificates {
         let (cert_pem, key_pem) = read_pair(&cert_path, &key_path)?;
         let key = parse(&cert_pem, &key_pem, &cert_path, &key_path)?;
         log_loaded(&key, "TLS certificate loaded");
+        warn_if_world_readable(&key_path);
         Ok(Self {
             cert_path,
             key_path,
             current: RwLock::new(Arc::new(key)),
-            loaded: Mutex::new((cert_pem, key_pem)),
+            loaded: Mutex::new(pair_hash(&cert_pem, &key_pem)),
         })
     }
 
@@ -70,13 +72,15 @@ impl Certificates {
     /// Returns whether it swapped. On an error the current certificate stays.
     pub fn reload(&self) -> io::Result<bool> {
         let (cert_pem, key_pem) = read_pair(&self.cert_path, &self.key_path)?;
+        let hash = pair_hash(&cert_pem, &key_pem);
         let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
-        if loaded.0 == cert_pem && loaded.1 == key_pem {
+        if *loaded == hash {
             return Ok(false);
         }
         let key = Arc::new(parse(&cert_pem, &key_pem, &self.cert_path, &self.key_path)?);
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = key;
-        *loaded = (cert_pem, key_pem);
+        *loaded = hash;
+        warn_if_world_readable(&self.key_path);
         Ok(true)
     }
 
@@ -109,7 +113,13 @@ impl Certificates {
         ticks.tick().await; // The first tick is immediate; the files were just loaded.
         loop {
             ticks.tick().await;
-            match self.reload() {
+            // File reads block, and a stalled mount (a Secret volume, NFS) must not stall a
+            // runtime worker.
+            let certs = self.clone();
+            let Ok(reloaded) = tokio::task::spawn_blocking(move || certs.reload()).await else {
+                continue;
+            };
+            match reloaded {
                 Ok(false) => {}
                 Ok(true) => {
                     metrics::counter!("mammoth_tls_reloads_total", "result" => "ok").increment(1);
@@ -135,6 +145,34 @@ impl ResolvesServerCert for Certificates {
 
 fn provider() -> Arc<CryptoProvider> {
     Arc::new(aws_lc_rs::default_provider())
+}
+
+/// Hashes a certificate and key pair; the length prefix keeps the boundary between them.
+fn pair_hash(cert_pem: &[u8], key_pem: &[u8]) -> blake3::Hash {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&(cert_pem.len() as u64).to_le_bytes());
+    hasher.update(cert_pem);
+    hasher.update(key_pem);
+    hasher.finalize()
+}
+
+/// Warns when any user on the machine may read the private key.
+fn warn_if_world_readable(key_path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(key_path)
+            && metadata.permissions().mode() & 0o004 != 0
+        {
+            tracing::warn!(
+                path = %key_path.display(),
+                "the TLS private key is readable by every user; make it readable by the node only \
+                 (in Kubernetes, defaultMode 0440 on the Secret volume, with fsGroup)"
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = key_path;
 }
 
 fn read_pair(cert_path: &Path, key_path: &Path) -> io::Result<(Vec<u8>, Vec<u8>)> {

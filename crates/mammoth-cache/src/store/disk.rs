@@ -455,14 +455,28 @@ impl Inner {
             }
             index.evict_to(self.effective_capacity())
         };
-        if !evicted.is_empty() {
-            tracing::warn!(
-                entries = evicted.len(),
-                buffer = self.free_space_buffer,
-                "evicting disk entries to keep the free space buffer"
-            );
+        if evicted.is_empty() {
+            return;
         }
+        tracing::warn!(
+            entries = evicted.len(),
+            buffer = self.free_space_buffer,
+            "evicting disk entries to keep the free space buffer"
+        );
         self.delete_files(&evicted).await;
+        // Read the free space again, so readiness and the gauge reflect what eviction freed now
+        // rather than at the next probe.
+        let entries_dir = self.entries_dir.clone();
+        if let Ok(Ok(available)) =
+            tokio::task::spawn_blocking(move || available_bytes(&entries_dir)).await
+        {
+            self.probe
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .available = Some(available);
+            #[allow(clippy::cast_precision_loss)] // A gauge; exact below 2^53 bytes.
+            metrics::gauge!("mammoth_disk_free_bytes").set(available as f64);
+        }
     }
 
     fn is_expired(&self, meta: &EntryMeta) -> bool {
