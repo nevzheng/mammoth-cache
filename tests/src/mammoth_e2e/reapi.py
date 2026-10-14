@@ -95,10 +95,12 @@ def sha256(data: bytes) -> str:
 
 @dataclass(slots=True)
 class Reapi:
-    """The cache services on one node. `authorization` is sent as metadata on every call."""
+    """The cache services on one node. `authorization` is sent as metadata on every call, and
+    `instance` is the instance name of every request (the node accepts and ignores it)."""
 
     address: str
     authorization: str | None = None
+    instance: str = ""
     s: Stubs = field(default_factory=stubs)
     _channel: grpc.Channel = field(init=False)
     _cas: Any = field(init=False)
@@ -127,26 +129,32 @@ class Reapi:
     def digest(self, data: bytes) -> Message:
         return self.s.re.Digest(hash=sha256(data), size_bytes=len(data))
 
+    def _resource(self, rest: str) -> str:
+        return f"{self.instance}/{rest}" if self.instance else rest
+
     # ContentAddressableStorage
 
     def find_missing(self, digests: list[Message]) -> set[tuple[str, int]]:
-        request = self.s.re.FindMissingBlobsRequest(blob_digests=digests)
+        request = self.s.re.FindMissingBlobsRequest(
+            instance_name=self.instance, blob_digests=digests
+        )
         response = self._cas.FindMissingBlobs(request, metadata=self.metadata, timeout=30)
         return {(d.hash, d.size_bytes) for d in response.missing_blob_digests}
 
     def batch_update(self, items: list[tuple[Message, bytes]]) -> list[int]:
         """Uploads blobs in one call; the `grpc.StatusCode` value of each, in order."""
         request = self.s.re.BatchUpdateBlobsRequest(
+            instance_name=self.instance,
             requests=[
                 self.s.re.BatchUpdateBlobsRequest.Request(digest=d, data=data) for d, data in items
-            ]
+            ],
         )
         response = self._cas.BatchUpdateBlobs(request, metadata=self.metadata, timeout=30)
         return [r.status.code for r in response.responses]
 
     def batch_read(self, digests: list[Message]) -> list[tuple[int, bytes]]:
         """Reads blobs in one call: each one's status code and data, in order."""
-        request = self.s.re.BatchReadBlobsRequest(digests=digests)
+        request = self.s.re.BatchReadBlobsRequest(instance_name=self.instance, digests=digests)
         response = self._cas.BatchReadBlobs(request, metadata=self.metadata, timeout=30)
         return [(r.status.code, bytes(r.data)) for r in response.responses]
 
@@ -155,7 +163,7 @@ class Reapi:
     def read(self, digest: Message, offset: int = 0, limit: int = 0) -> bytes:
         """Reads a blob, or part of one; raises `grpc.RpcError` on a miss."""
         request = self.s.bs.ReadRequest(
-            resource_name=f"blobs/{digest.hash}/{digest.size_bytes}",
+            resource_name=self._resource(f"blobs/{digest.hash}/{digest.size_bytes}"),
             read_offset=offset,
             read_limit=limit,
         )
@@ -164,7 +172,7 @@ class Reapi:
 
     def write(self, digest: Message, data: bytes, chunk: int) -> int:
         """Uploads `data` under `digest` in chunks; the committed size. Raises on refusal."""
-        name = f"uploads/{uuid.uuid4()}/blobs/{digest.hash}/{digest.size_bytes}"
+        name = self._resource(f"uploads/{uuid.uuid4()}/blobs/{digest.hash}/{digest.size_bytes}")
 
         def requests() -> Iterator[Message]:
             if not data:
@@ -181,13 +189,24 @@ class Reapi:
         response = self._bytestream.Write(requests(), metadata=self.metadata, timeout=30)
         return int(response.committed_size)
 
+    def query_write_status(self, digest: Message) -> tuple[int, bool]:
+        """`committed_size` and `complete` for an upload of `digest` that never started."""
+        name = self._resource(f"uploads/{uuid.uuid4()}/blobs/{digest.hash}/{digest.size_bytes}")
+        request = self.s.bs.QueryWriteStatusRequest(resource_name=name)
+        response = self._bytestream.QueryWriteStatus(request, metadata=self.metadata, timeout=30)
+        return int(response.committed_size), bool(response.complete)
+
     # ActionCache
 
     def get_action_result(self, action: Message) -> Message:
         """The stored result for `action`; raises `grpc.RpcError` (NOT_FOUND) on a miss."""
-        request = self.s.re.GetActionResultRequest(action_digest=action)
+        request = self.s.re.GetActionResultRequest(
+            instance_name=self.instance, action_digest=action
+        )
         return self._ac.GetActionResult(request, metadata=self.metadata, timeout=30)
 
     def update_action_result(self, action: Message, result: Message) -> Message:
-        request = self.s.re.UpdateActionResultRequest(action_digest=action, action_result=result)
+        request = self.s.re.UpdateActionResultRequest(
+            instance_name=self.instance, action_digest=action, action_result=result
+        )
         return self._ac.UpdateActionResult(request, metadata=self.metadata, timeout=30)
