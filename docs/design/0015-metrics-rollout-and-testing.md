@@ -291,7 +291,8 @@ not the user name.
 
 ## Open questions
 
-- Should `mammoth_tier_oldest_entry_age_seconds` wait for a `MemoryBackend` trait change, or be
-  reported for disk only first?
 - `mammoth_build_info{revision}`: `build.rs` with `git rev-parse`, or stamp it in the release
   workflow and leave `unknown` in local builds?
+
+Decided 2026-10-14: `mammoth_tier_oldest_entry_age_seconds` ships for `disk` first, from the disk
+index, and `memory` follows behind a `MemoryBackend` trait method with a default of "not reported".
