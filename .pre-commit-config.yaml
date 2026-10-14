@@ -13,27 +13,15 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - id: bazel-lint
+        name: clippy and rustfmt (bazel --config=lint)
+        entry: bazel build --config=ci --config=lint //...
         language: system
         types: [rust]
         pass_filenames: false
-      - id: ruff-format
-        name: ruff format (tests/)
-        entry: uv run --project tests ruff format --check tests
-        language: system
-        files: ^tests/.*\.py$
-        pass_filenames: false
-      - id: ruff-check
-        name: ruff check (tests/)
-        entry: uv run --project tests ruff check tests
-        language: system
-        files: ^tests/.*\.py$
-        pass_filenames: false
-      - id: pyrefly
-        name: pyrefly check (tests/)
-        entry: uv run --project tests pyrefly check --config tests/pyproject.toml
+      - id: python-checks
+        name: ruff and pyrefly (bazel test //tests:all)
+        entry: bazel test //tests:ruff_format //tests:ruff_check //tests:pyrefly
         language: system
         files: ^tests/.*\.py$
         pass_filenames: false

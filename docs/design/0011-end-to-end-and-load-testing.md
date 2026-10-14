@@ -49,7 +49,9 @@ framework, targets and CI. A Helm chart stays out of scope, as 0009 decided.
 - Replacing the hermetic Rust tests. Logic is tested there; this stage tests wiring and behaviour.
 - Benchmark numbers now. The framework lands now; baselines come once the tiers are built.
 - A Helm chart or Kubernetes manifests (see [Alternatives considered](#alternatives-considered)).
-- Running these suites under Bazel. They need Docker and the network, so they are not hermetic.
+- Hermetic, cached runs of these suites. They need Docker and the network. Since 2026-10-14 they
+  are Bazel targets (`tests/BUILD.bazel`), tagged so Bazel runs them on the host and never caches
+  them; ruff and pyrefly are ordinary cached Bazel tests.
 - Chaos testing beyond what the scenarios below name.
 
 ## Design objectives and constraints
@@ -180,6 +182,7 @@ prek hooks.
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Python           | 3.14, pinned in `.python-version`; `requires-python = ">=3.14"`                                                        |
 | Project and lock | uv: `pyproject.toml` (PEP 621), `uv.lock`, dependency groups (PEP 735), `uv run`                                       |
+| Build            | Bazel: rules_python reads `uv.lock`; `bazel test //tests:e2e`, `bazel run //tests:locust`; `uv run` still works        |
 | Lint and format  | ruff, with a broad rule set (`select = ["ALL"]` minus a short, commented ignore list)                                  |
 | Type checking    | pyrefly in strict mode, configured in `[tool.pyrefly]`; no untyped defs, no `Any` leaks                                |
 | Tests            | pytest with `--strict-markers`, `--strict-config` and pytest-timeout; one stack per run, parallel across the CI matrix |

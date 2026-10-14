@@ -79,8 +79,10 @@ for a branch, then force-push.
 ## Building and testing
 
 mammoth-cache is pre-alpha. It builds with [Bazel](https://bazel.build/) (bzlmod and
-[`rules_rust`](https://bazelbuild.github.io/rules_rust/)) and with Cargo. Bazel is the primary
-build; Cargo stays fully supported for rust-analyzer, quick iteration and custom feature builds.
+[`rules_rust`](https://bazelbuild.github.io/rules_rust/)) and with Cargo. Bazel is the build of
+record: CI builds, lints and tests with it. Cargo stays supported for rust-analyzer, quick
+iteration and feature builds; CI uses it only for what Bazel doesn't cover (other allocators, the
+MSRV check, cargo-deny and the REAPI code generator).
 
 Install [Bazelisk](https://github.com/bazelbuild/bazelisk) as `bazel`; it reads `.bazelversion` and
 fetches the pinned Bazel. Bazel downloads the Rust toolchain itself, so no `rustup` is needed for a
@@ -150,14 +152,13 @@ prek install
 CI runs these checks on every pull request, with warnings treated as errors:
 
 ```sh
-bazel test --config=ci --config=lint //...   # build, test, clippy, rustfmt (Linux and macOS)
+bazel test --config=ci --config=lint //...   # build, test, clippy, rustfmt, ruff, pyrefly
 bazel run @buildifier_prebuilt//:buildifier -- -mode=check -lint=warn -r "$PWD"
 scripts/check-toolchain-sync.sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo nextest run --workspace --locked
-cargo test --doc --workspace --locked
-cargo +1.85 check --workspace --locked   # MSRV
+uv lock --check --directory tests           # tests/uv.lock matches tests/pyproject.toml
+cargo clippy --workspace --all-targets --locked --no-default-features --features jemalloc
+cargo nextest run --workspace --locked --no-default-features --features jemalloc
+cargo +1.91 check --workspace --locked   # MSRV
 cargo deny check                         # licenses, advisories, sources
 rumdl check .
 ```
