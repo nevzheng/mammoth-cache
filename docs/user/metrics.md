@@ -7,10 +7,9 @@
 > `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
 > `mammoth_bucket_uploads_total`, `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`,
 > `mammoth_disk_free_bytes`, `mammoth_build_info`, the `mammoth_tls_*` metrics, `mammoth_tier_up`,
-> `mammoth_tier_reads_total` and `mammoth_tier_writes_total` for the bucket tier only, and the
-> standard `process_*` metrics. The rest of the catalog below is the contract from design doc
-> [0004](../design/0004-metrics.md) and arrives with the features it measures. Names and labels
-> won't change without a breaking release.
+> the per-tier reads, writes, durations and bytes, and the standard `process_*` metrics. The rest of
+> the catalog below is the contract from design doc [0004](../design/0004-metrics.md) and arrives
+> with the features it measures. Names and labels won't change without a breaking release.
 
 mammoth-cache exports Prometheus metrics at `/metrics` on the main port. The node exports raw
 counters, gauges and histograms only. Hit rates, request rates and dashboards are computed by
@@ -54,7 +53,7 @@ cache key, a token or a user name.
 | Metric                                 | Type      | Labels                                             | Meaning                                          |
 | -------------------------------------- | --------- | -------------------------------------------------- | ------------------------------------------------ |
 | `mammoth_tier_reads_total`             | counter   | `tier`, `result` (`hit`, `miss`, `error`)          | Reads against a tier                             |
-| `mammoth_tier_read_duration_seconds`   | histogram | `tier`                                             | Time to first byte from a tier                   |
+| `mammoth_tier_read_duration_seconds`   | histogram | `tier`                                             | Time for a tier to answer a read                 |
 | `mammoth_tier_writes_total`            | counter   | `tier`, `result` (`ok`, `error`)                   | Writes to a tier                                 |
 | `mammoth_tier_write_duration_seconds`  | histogram | `tier`                                             | Time to write an entry to a tier                 |
 | `mammoth_tier_read_bytes_total`        | counter   | `tier`                                             | Bytes read from a tier                           |
@@ -66,6 +65,10 @@ cache key, a token or a user name.
 | `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`, `bucket-down`) | Uploads skipped; the entry stays local           |
 | `mammoth_tier_up`                      | gauge     | `tier` (`bucket`)                                  | `0` from a bucket failure until it answers again |
 | `mammoth_shutting_down`                | gauge     |                                                    | `0`, then `1` while the node drains              |
+
+A read is a lookup or a size check. A hit's read duration is the time to its first byte; its bytes
+are counted as they stream. Writes include promotions and bucket uploads. A write that fails because
+of its body, such as a client that disconnects mid-upload, is not a tier error and is not counted.
 
 ### Current population
 
