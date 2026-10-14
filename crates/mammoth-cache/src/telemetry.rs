@@ -23,7 +23,7 @@ const KIB: f64 = 1024.0;
 const MIB: f64 = 1024.0 * KIB;
 
 /// Bucket boundaries from 0015, per histogram.
-fn buckets() -> [(&'static str, Vec<f64>); 4] {
+fn buckets() -> [(&'static str, Vec<f64>); 5] {
     let tier_reads = vec![
         0.1 * MS,
         0.25 * MS,
@@ -41,25 +41,27 @@ fn buckets() -> [(&'static str, Vec<f64>); 4] {
     ];
     let mut tier_writes = tier_reads.clone();
     tier_writes.extend([2.5, 5.0]);
+    let requests = vec![
+        MS,
+        2.5 * MS,
+        5.0 * MS,
+        10.0 * MS,
+        25.0 * MS,
+        50.0 * MS,
+        100.0 * MS,
+        250.0 * MS,
+        500.0 * MS,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+    ];
+    // A gRPC call can stream a large blob, so its buckets go further.
+    let mut calls = requests.clone();
+    calls.extend([30.0, 60.0]);
     [
-        (
-            "mammoth_http_request_duration_seconds",
-            vec![
-                MS,
-                2.5 * MS,
-                5.0 * MS,
-                10.0 * MS,
-                25.0 * MS,
-                50.0 * MS,
-                100.0 * MS,
-                250.0 * MS,
-                500.0 * MS,
-                1.0,
-                2.5,
-                5.0,
-                10.0,
-            ],
-        ),
+        ("mammoth_http_request_duration_seconds", requests),
+        ("mammoth_grpc_request_duration_seconds", calls),
         ("mammoth_tier_read_duration_seconds", tier_reads),
         ("mammoth_tier_write_duration_seconds", tier_writes),
         (
@@ -298,6 +300,21 @@ const HELP: &[(Kind, &str, &str)] = {
             Gauge,
             "mammoth_http_requests_in_flight",
             "Requests being served.",
+        ),
+        (
+            Counter,
+            "mammoth_grpc_requests_total",
+            "REAPI gRPC calls by method and status code, refused ones included.",
+        ),
+        (
+            Histogram,
+            "mammoth_grpc_request_duration_seconds",
+            "Time from a gRPC call's start to its status.",
+        ),
+        (
+            Gauge,
+            "mammoth_grpc_requests_in_flight",
+            "gRPC calls being served.",
         ),
         (
             Counter,

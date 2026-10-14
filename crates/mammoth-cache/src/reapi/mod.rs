@@ -8,17 +8,22 @@
 
 mod auth;
 mod digest;
+mod observe;
 pub mod proto;
 mod services;
 mod status;
 
-use std::{future::Future, io, sync::Arc, time::Duration};
+use std::{future::Future, io, sync::Arc};
 
-use axum::middleware;
-use tokio::net::TcpListener;
+use axum::{
+    extract::{Request, State},
+    middleware::{self, Next},
+    response::Response,
+};
+use tokio::{net::TcpListener, sync::Semaphore};
 use tonic::service::Routes;
 
-pub use services::{MAX_MESSAGE_BYTES, Services};
+pub use services::{MAX_MESSAGE_BYTES, MAX_REQUEST_BYTES, Services};
 
 use crate::{
     auth::Authenticator,
@@ -33,18 +38,25 @@ use proto::{
     google::bytestream::byte_stream_server::ByteStreamServer,
 };
 
-/// The services over `cache`, each call checked against `auth`.
-pub fn routes(cache: Arc<Cache>, auth: Arc<Authenticator>, idle_timeout: Duration) -> Routes {
-    let services = Services::new(cache, idle_timeout);
+/// Calls that buffer whole messages (every method but `ByteStream`'s) running at once on the node.
+/// Each can hold a request of up to [`MAX_REQUEST_BYTES`], a response it assembles, and that
+/// response encoded, so this bounds the node's gRPC buffers at about 512 MiB. More calls wait.
+const MAX_BUFFERED_CALLS: usize = 32;
+
+/// The services over `cache`, each call checked against `auth`. Uploads fail after
+/// `body_read_timeout` without data, and `ByteStream.Read` after `send_timeout` without the client
+/// taking any.
+pub fn routes(cache: Arc<Cache>, auth: Arc<Authenticator>, settings: ServerSettings) -> Routes {
+    let services = Services::new(cache, settings.body_read_timeout, settings.send_timeout);
     let routes = Routes::new(CapabilitiesServer::new(services.clone()))
         .add_service(
             ActionCacheServer::new(services.clone())
-                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_decoding_message_size(MAX_REQUEST_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES),
         )
         .add_service(
             ContentAddressableStorageServer::new(services.clone())
-                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_decoding_message_size(MAX_REQUEST_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES),
         )
         .add_service(
@@ -52,11 +64,31 @@ pub fn routes(cache: Arc<Cache>, auth: Arc<Authenticator>, idle_timeout: Duratio
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES),
         );
+    let buffered = Arc::new(Semaphore::new(MAX_BUFFERED_CALLS));
+    // The last layer runs first: count every call, then authenticate it, then wait for room.
     Routes::from(
         routes
             .into_axum_router()
-            .layer(middleware::from_fn_with_state(auth, auth::require)),
+            .layer(middleware::from_fn_with_state(buffered, limit))
+            .layer(middleware::from_fn_with_state(auth, auth::require))
+            .layer(middleware::from_fn(observe::observe)),
     )
+}
+
+/// Middleware that holds one of the node's buffered-call permits while a call other than a
+/// `ByteStream` one decodes its request and builds its response. `ByteStream` calls stream in
+/// chunks, so they buffer little and may run long.
+async fn limit(State(permits): State<Arc<Semaphore>>, request: Request, next: Next) -> Response {
+    if request
+        .uri()
+        .path()
+        .starts_with("/google.bytestream.ByteStream/")
+    {
+        return next.run(request).await;
+    }
+    // The semaphore is never closed, so this always holds a permit.
+    let _permit = permits.acquire().await;
+    next.run(request).await
 }
 
 /// Serves `routes` over HTTP/2 on `listener`, over TLS when `tls` is set, until `signal`

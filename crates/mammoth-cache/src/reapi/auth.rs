@@ -59,35 +59,41 @@ pub(crate) async fn require(
         None => None,
         Some(Ok(value)) => match parse(&value) {
             Some(parsed) => Some(parsed),
-            None => return refuse(&invalid()),
+            None => return refuse(CREDENTIALS_INVALID, &invalid()),
         },
-        Some(Err(_)) => return refuse(&invalid()),
+        Some(Err(_)) => return refuse(CREDENTIALS_INVALID, &invalid()),
     };
     let credentials = presented.as_ref().map(|(user, token)| match user {
         Some(user) => Credentials::Basic { user, token },
         None => Credentials::Bearer { token },
     });
     let Ok(principal) = auth.authenticate(credentials) else {
-        return refuse(&invalid());
+        return refuse(CREDENTIALS_INVALID, &invalid());
     };
     if principal.scopes.contains(scope) {
         return next.run(request).await;
     }
-    let status = match &principal.user {
-        None => status::error(
-            Code::Unauthenticated,
-            "CREDENTIALS_MISSING",
-            "Authentication is required.",
-            &[],
+    let (reason, status) = match &principal.user {
+        None => (
+            CREDENTIALS_MISSING,
+            status::error(
+                Code::Unauthenticated,
+                CREDENTIALS_MISSING,
+                "Authentication is required.",
+                &[],
+            ),
         ),
-        Some(user) => status::error(
-            Code::PermissionDenied,
-            "SCOPE_MISSING",
-            format!("User {user:?} lacks the {scope} scope."),
-            &[("user", user), ("requiredScope", scope.as_str())],
+        Some(user) => (
+            SCOPE_MISSING,
+            status::error(
+                Code::PermissionDenied,
+                SCOPE_MISSING,
+                format!("User {user:?} lacks the {scope} scope."),
+                &[("user", user), ("requiredScope", scope.as_str())],
+            ),
         ),
     };
-    refuse(&status)
+    refuse(reason, &status)
 }
 
 /// Parses `Bearer <token>` or `Basic <base64 user:token>`: the user, if any, and the token.
@@ -104,17 +110,23 @@ fn parse(value: &str) -> Option<(Option<String>, String)> {
     }
 }
 
+const CREDENTIALS_MISSING: &str = "CREDENTIALS_MISSING";
+const CREDENTIALS_INVALID: &str = "CREDENTIALS_INVALID";
+const SCOPE_MISSING: &str = "SCOPE_MISSING";
+
 fn invalid() -> Status {
     status::error(
         Code::Unauthenticated,
-        "CREDENTIALS_INVALID",
+        CREDENTIALS_INVALID,
         "The credentials are not valid.",
         &[],
     )
 }
 
-/// A trailers-only gRPC response carrying `status`.
-fn refuse(status: &Status) -> Response {
+/// A trailers-only gRPC response carrying `status`, counted in `mammoth_auth_failures_total` by
+/// its `reason`, as the HTTP adapters count theirs.
+fn refuse(reason: &'static str, status: &Status) -> Response {
+    metrics::counter!("mammoth_auth_failures_total", "reason" => reason).increment(1);
     status
         .clone()
         .into_http::<axum::body::Body>()

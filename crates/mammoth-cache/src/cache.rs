@@ -615,6 +615,15 @@ impl Cache {
     /// that fails is skipped and the next one tried: for a cache, a failed read is a miss. So is
     /// a bucket read past [`BucketLimits::timeout`], or one during a cooldown.
     pub async fn get(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
+        let hit = self.get_uncounted(key).await?;
+        self.count_lookup(hit.as_ref().map(|hit| hit.tier));
+        Ok(hit)
+    }
+
+    /// Like [`get`](Self::get), but leaves the lookup uncounted, for a caller that may still find
+    /// the entry unusable (a REAPI action result whose outputs are gone) to count with
+    /// [`count_lookup`](Self::count_lookup) once it knows. A hit is promoted all the same.
+    pub async fn get_uncounted(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
         for (depth, handle) in self.tiers.iter().enumerate() {
             let tier = handle.store.tier();
             let started = Instant::now();
@@ -632,13 +641,12 @@ impl Cache {
             let blob = metered(Tier::Bucket, blob);
             return Ok(Some(self.hit(key, Tier::Bucket, blob, self.tiers.len())));
         }
-        self.count_lookup(None);
         Ok(None)
     }
 
     /// Counts a load in the `serverStatus` totals and in `mammoth_cache_lookups_total` at once,
     /// so the two cannot disagree. `tier` served the hit; `None` is a miss.
-    fn count_lookup(&self, tier: Option<Tier>) {
+    pub fn count_lookup(&self, tier: Option<Tier>) {
         let (total, result, tier) = match tier {
             Some(tier) => (&self.hits, "hit", tier.as_str()),
             None => (&self.misses, "miss", ""),
@@ -654,9 +662,8 @@ impl Cache {
         metrics::counter!("mammoth_cache_stores_total", "result" => "too_large").increment(1);
     }
 
-    /// Counts a hit at `depth` in the lookup order and promotes it into the local tiers above.
+    /// A hit at `depth` in the lookup order, promoted into the local tiers above.
     fn hit(&self, key: &CacheKey, tier: Tier, blob: Blob, depth: usize) -> Hit {
-        self.count_lookup(Some(tier));
         let above = &self.tiers[..depth];
         let blob = if above.is_empty() {
             blob

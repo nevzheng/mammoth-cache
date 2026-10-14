@@ -1,12 +1,22 @@
 //! The REAPI cache services over the cache core: `Capabilities`, `ActionCache`,
 //! `ContentAddressableStorage` and `ByteStream` (design doc 0016). `Execution` is not served.
 
-use std::{collections::HashSet, future::Future, io, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    io,
+    pin::{Pin, pin},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::{Stream, StreamExt, TryStreamExt, stream};
 use prost::Message;
 use sha2::{Digest as _, Sha256};
+use tokio::sync::mpsc::{self, error::SendTimeoutError};
 use tonic::{Code, Request, Response, Status, Streaming};
 
 use super::{
@@ -19,9 +29,10 @@ use super::{
                 CacheCapabilities, Digest, ExecutionCapabilities, FindMissingBlobsRequest,
                 FindMissingBlobsResponse, GetActionResultRequest, GetCapabilitiesRequest,
                 GetTreeRequest, GetTreeResponse, ServerCapabilities, SpliceBlobRequest,
-                SpliceBlobResponse, SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest,
-                action_cache_server::ActionCache, batch_read_blobs_response,
-                batch_update_blobs_response, capabilities_server::Capabilities,
+                SpliceBlobResponse, SplitBlobRequest, SplitBlobResponse, Tree,
+                UpdateActionResultRequest, action_cache_server::ActionCache,
+                batch_read_blobs_response, batch_update_blobs_response,
+                capabilities_server::Capabilities,
                 content_addressable_storage_server::ContentAddressableStorage, digest_function,
                 symlink_absolute_path_strategy,
             },
@@ -36,15 +47,34 @@ use super::{
 };
 use crate::{
     cache::{Admission, Cache, CacheError, upload_error},
-    store,
+    store::{self, Tier},
 };
 
-/// The largest batch request or response, and the largest message, apart from framing. The
-/// gRPC default, so clients send anything bigger over `ByteStream`.
-pub(crate) const MAX_BATCH_BYTES: u64 = 4 * 1024 * 1024;
+/// gRPC's default message limit, which most clients keep for what they receive.
+const CLIENT_MESSAGE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The largest message decoded or encoded: a full batch plus room for its digests and framing.
+/// The blob data a batch may carry, advertised as `max_batch_total_size_bytes`. Below the
+/// client's message limit, to leave room for each blob's digest and status.
+pub(crate) const MAX_BATCH_BYTES: u64 = CLIENT_MESSAGE_BYTES - 256 * 1024;
+
+/// What one blob adds to an encoded batch response besides its data, at most: its digest, its
+/// status with a short message, and the field tags.
+const BLOB_OVERHEAD: u64 = 256;
+
+/// The largest message encoded, and the largest `ByteStream` message decoded.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024 + 256 * 1024;
+
+/// The largest unary request decoded: a full batch of many small blobs is mostly framing, so this
+/// leaves room well past [`MAX_BATCH_BYTES`].
+pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+
+/// Digests one `FindMissingBlobs` call may ask about. Each local miss costs a bucket `HEAD`.
+const MAX_FIND_MISSING: usize = 10_000;
+
+/// The largest `Tree` read to check an action result's directory outputs, which keeps the call
+/// within its usual buffers. A larger one, which few directories need, is trusted without its
+/// files being checked.
+const MAX_TREE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The largest chunk sent by `ByteStream.Read`.
 const READ_CHUNK: usize = 1024 * 1024;
@@ -58,26 +88,31 @@ pub struct Services {
     cache: Arc<Cache>,
     /// How long an upload may send nothing before it fails.
     idle_timeout: Duration,
+    /// How long a download may wait for the client to take its next chunk.
+    send_timeout: Duration,
 }
 
 impl Services {
-    /// Services over `cache`. An upload that sends nothing for `idle_timeout` fails.
+    /// Services over `cache`. An upload that sends nothing for `idle_timeout` fails, and so does a
+    /// download whose client takes nothing for `send_timeout`.
     #[must_use]
-    pub fn new(cache: Arc<Cache>, idle_timeout: Duration) -> Self {
+    pub fn new(cache: Arc<Cache>, idle_timeout: Duration, send_timeout: Duration) -> Self {
         Self {
             cache,
             idle_timeout,
+            send_timeout,
         }
     }
 
-    /// Reads a whole entry, or `None` on a miss or when its stored size is not `expected`.
-    async fn read_all(&self, blob: &Blob) -> Result<Option<Bytes>, Status> {
-        let Some(hit) = self
-            .cache
-            .get(&blob.key)
-            .await
-            .map_err(|e| status::storage(&e))?
-        else {
+    /// Reads a whole entry, or `None` on a miss or when its stored size is not the digest's.
+    /// `counted` says whether the lookup is a client's, counted in the hit rate.
+    async fn read_all(&self, blob: &Blob, counted: bool) -> Result<Option<Bytes>, Status> {
+        let hit = if counted {
+            self.cache.get(&blob.key).await
+        } else {
+            self.cache.get_uncounted(&blob.key).await
+        };
+        let Some(hit) = hit.map_err(|e| status::storage(&e))? else {
             return Ok(None);
         };
         if hit.blob.size != blob.size {
@@ -168,47 +203,6 @@ impl Services {
     }
 }
 
-/// Runs a call and counts it by method and status code.
-async fn observe<T>(
-    method: &'static str,
-    call: impl Future<Output = Result<T, Status>>,
-) -> Result<T, Status> {
-    let result = call.await;
-    let code = match &result {
-        Ok(_) => Code::Ok,
-        Err(status) => status.code(),
-    };
-    metrics::counter!(
-        "mammoth_grpc_requests_total",
-        "method" => method,
-        "code" => code_label(code),
-    )
-    .increment(1);
-    result
-}
-
-fn code_label(code: Code) -> &'static str {
-    match code {
-        Code::Ok => "OK",
-        Code::Cancelled => "CANCELLED",
-        Code::Unknown => "UNKNOWN",
-        Code::InvalidArgument => "INVALID_ARGUMENT",
-        Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
-        Code::NotFound => "NOT_FOUND",
-        Code::AlreadyExists => "ALREADY_EXISTS",
-        Code::PermissionDenied => "PERMISSION_DENIED",
-        Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
-        Code::FailedPrecondition => "FAILED_PRECONDITION",
-        Code::Aborted => "ABORTED",
-        Code::OutOfRange => "OUT_OF_RANGE",
-        Code::Unimplemented => "UNIMPLEMENTED",
-        Code::Internal => "INTERNAL",
-        Code::Unavailable => "UNAVAILABLE",
-        Code::DataLoss => "DATA_LOSS",
-        Code::Unauthenticated => "UNAUTHENTICATED",
-    }
-}
-
 fn to_i64(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
@@ -228,7 +222,7 @@ impl Capabilities for Services {
         &self,
         _request: Request<GetCapabilitiesRequest>,
     ) -> Result<Response<ServerCapabilities>, Status> {
-        observe("GetCapabilities", async {
+        async {
             let sha256 = digest_function::Value::Sha256 as i32;
             Ok(Response::new(ServerCapabilities {
                 cache_capabilities: Some(CacheCapabilities {
@@ -252,13 +246,13 @@ impl Capabilities for Services {
                 low_api_version: Some(api_version(0)),
                 high_api_version: Some(api_version(3)),
             }))
-        })
+        }
         .await
     }
 }
 
-/// The CAS blobs an action result points at: its output files, output directory trees and
-/// captured output streams. Only the direct references; trees are not walked.
+/// The CAS blobs an action result points at directly: its output files, output directory trees
+/// and captured output streams.
 fn referenced_blobs(result: &ActionResult) -> Result<Vec<Blob>, Status> {
     let digests = result
         .output_files
@@ -276,55 +270,119 @@ fn referenced_blobs(result: &ActionResult) -> Result<Vec<Blob>, Status> {
     digests.map(|d| Blob::cas(Some(d))).collect()
 }
 
+/// The files in a `Tree`, from its root and every child directory.
+fn tree_files(tree: &Tree) -> Result<Vec<Blob>, Status> {
+    tree.root
+        .iter()
+        .chain(&tree.children)
+        .flat_map(|directory| &directory.files)
+        .filter_map(|file| file.digest.as_ref())
+        .map(|d| Blob::cas(Some(d)))
+        .collect()
+}
+
+/// Why a stored action result is answered as a miss.
+enum Unusable {
+    /// It cannot be read back as an action result.
+    Corrupt(&'static str),
+    /// Some blob it points at is gone.
+    Incomplete,
+}
+
+impl Services {
+    /// The stored action result for `action` if a client can use it: it decodes, and every blob
+    /// it points at is present, including the files inside its output directories. Bazel with
+    /// `--remote_download_minimal` trusts a hit and fetches the outputs only later, so a result
+    /// with any of them evicted must be a miss, for the action to run again. With the result, the
+    /// tier it came from.
+    async fn action_result(
+        &self,
+        action: &Blob,
+    ) -> Result<Result<(ActionResult, Tier), Unusable>, Status> {
+        let Some(hit) = self
+            .cache
+            .get_uncounted(&action.key)
+            .await
+            .map_err(|e| status::storage(&e))?
+        else {
+            return Ok(Err(Unusable::Incomplete));
+        };
+        // Refused before reading: it could not be sent anyway.
+        let tier = hit.tier;
+        if hit.blob.size > MAX_MESSAGE_BYTES as u64 {
+            return Ok(Err(Unusable::Corrupt("is larger than a message")));
+        }
+        let data: Vec<Bytes> = hit
+            .blob
+            .body
+            .try_collect()
+            .await
+            .map_err(|e| status::storage(&CacheError::from(e)))?;
+        let Ok(result) = ActionResult::decode(data.concat().as_slice()) else {
+            return Ok(Err(Unusable::Corrupt("does not decode")));
+        };
+        let Ok(outputs) = referenced_blobs(&result) else {
+            return Ok(Err(Unusable::Corrupt("has bad digests")));
+        };
+        if !self.missing(outputs).await?.is_empty() {
+            return Ok(Err(Unusable::Incomplete));
+        }
+        let mut files = Vec::new();
+        for directory in &result.output_directories {
+            let tree = Blob::cas(directory.tree_digest.as_ref())?;
+            if tree.size > MAX_TREE_BYTES {
+                tracing::debug!(key = %action.key, tree = %tree.key, "tree too large to check");
+                continue;
+            }
+            // Present a moment ago; gone now is a miss like any other.
+            let Some(data) = self.read_all(&tree, false).await? else {
+                return Ok(Err(Unusable::Incomplete));
+            };
+            let Ok(decoded) = Tree::decode(data) else {
+                return Ok(Err(Unusable::Corrupt("has a tree that does not decode")));
+            };
+            let Ok(inner) = tree_files(&decoded) else {
+                return Ok(Err(Unusable::Corrupt("has a tree with bad digests")));
+            };
+            files.extend(inner);
+        }
+        if !self.missing(files).await?.is_empty() {
+            return Ok(Err(Unusable::Incomplete));
+        }
+        Ok(Ok((result, tier)))
+    }
+}
+
 #[tonic::async_trait]
 impl ActionCache for Services {
     async fn get_action_result(
         &self,
         request: Request<GetActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        observe("GetActionResult", async {
-            let request = request.into_inner();
-            digest::check_function(request.digest_function)?;
-            let action = Blob::action(request.action_digest.as_ref())?;
-            // The action's own size is not the result's: read whatever is stored.
-            let Some(hit) = self
-                .cache
-                .get(&action.key)
-                .await
-                .map_err(|e| status::storage(&e))?
-            else {
-                return Err(status::not_found(&action.key));
-            };
-            let data: Vec<Bytes> = hit
-                .blob
-                .body
-                .try_collect()
-                .await
-                .map_err(|e| status::storage(&CacheError::from(e)))?;
-            let Ok(result) = ActionResult::decode(data.concat().as_slice()) else {
-                tracing::warn!(key = %action.key, "stored action result does not decode; a miss");
-                return Err(status::not_found(&action.key));
-            };
-            // A result whose outputs are gone would fail a client that trusts it, such as Bazel
-            // with --remote_download_minimal: answer a miss so the action runs again.
-            let Ok(outputs) = referenced_blobs(&result) else {
-                tracing::warn!(key = %action.key, "stored action result has bad digests; a miss");
-                return Err(status::not_found(&action.key));
-            };
-            if !self.missing(outputs).await?.is_empty() {
-                tracing::debug!(key = %action.key, "action result outputs missing; a miss");
-                return Err(status::not_found(&action.key));
+        let request = request.into_inner();
+        digest::check_function(request.digest_function)?;
+        let action = Blob::action(request.action_digest.as_ref())?;
+        // The lookup counts as a hit only if the result is usable.
+        match self.action_result(&action).await? {
+            Ok((result, tier)) => {
+                self.cache.count_lookup(Some(tier));
+                Ok(Response::new(result))
             }
-            Ok(Response::new(result))
-        })
-        .await
+            Err(unusable) => {
+                if let Unusable::Corrupt(why) = unusable {
+                    tracing::warn!(key = %action.key, "stored action result {why}; a miss");
+                }
+                self.cache.count_lookup(None);
+                Err(status::not_found(&action.key))
+            }
+        }
     }
 
     async fn update_action_result(
         &self,
         request: Request<UpdateActionResultRequest>,
     ) -> Result<Response<ActionResult>, Status> {
-        observe("UpdateActionResult", async {
+        async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
             let action = Blob::action(request.action_digest.as_ref())?;
@@ -341,25 +399,29 @@ impl ActionCache for Services {
             )
             .await?;
             Ok(Response::new(result))
-        })
+        }
         .await
     }
 }
 
-/// Validates a batch read's digests, refusing the whole call if they add up to more than a batch
-/// may carry.
+/// Validates a batch read's digests, refusing the whole call if its response could pass the
+/// client's message limit: the blobs' data, plus [`BLOB_OVERHEAD`] for each.
 fn batch_blobs(digests: &[Digest]) -> Result<Vec<Blob>, Status> {
     let blobs = digests
         .iter()
         .map(|d| Blob::cas(Some(d)))
         .collect::<Result<Vec<_>, _>>()?;
-    let total: u64 = blobs.iter().map(|b| b.size).sum();
-    if total > MAX_BATCH_BYTES {
+    let total = blobs.iter().try_fold(0_u64, |total, blob| {
+        total.checked_add(blob.size)?.checked_add(BLOB_OVERHEAD)
+    });
+    if total.is_none_or(|total| total > CLIENT_MESSAGE_BYTES) {
         return Err(status::invalid_argument(
             "BATCH_TOO_LARGE",
             format!(
-                "The batch is {total} bytes; max_batch_total_size_bytes is {MAX_BATCH_BYTES}. \
-                 Use ByteStream for larger blobs."
+                "The batch's {} blobs would not fit in one {CLIENT_MESSAGE_BYTES}-byte response; \
+                 max_batch_total_size_bytes is {MAX_BATCH_BYTES}. Read fewer at once, or larger \
+                 blobs over ByteStream.",
+                blobs.len()
             ),
         ));
     }
@@ -372,9 +434,19 @@ impl ContentAddressableStorage for Services {
         &self,
         request: Request<FindMissingBlobsRequest>,
     ) -> Result<Response<FindMissingBlobsResponse>, Status> {
-        observe("FindMissingBlobs", async {
+        async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
+            if request.blob_digests.len() > MAX_FIND_MISSING {
+                return Err(status::invalid_argument(
+                    "TOO_MANY_DIGESTS",
+                    format!(
+                        "The call asks about {} digests; at most {MAX_FIND_MISSING} are allowed. \
+                         Split it.",
+                        request.blob_digests.len()
+                    ),
+                ));
+            }
             let blobs = request
                 .blob_digests
                 .iter()
@@ -384,7 +456,7 @@ impl ContentAddressableStorage for Services {
             Ok(Response::new(FindMissingBlobsResponse {
                 missing_blob_digests: missing.iter().map(Blob::digest).collect(),
             }))
-        })
+        }
         .await
     }
 
@@ -392,7 +464,7 @@ impl ContentAddressableStorage for Services {
         &self,
         request: Request<BatchUpdateBlobsRequest>,
     ) -> Result<Response<BatchUpdateBlobsResponse>, Status> {
-        observe("BatchUpdateBlobs", async {
+        async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
             // The message size limit bounds the batch; each blob's digest is checked on its own.
@@ -417,7 +489,7 @@ impl ContentAddressableStorage for Services {
                 .collect()
                 .await;
             Ok(Response::new(BatchUpdateBlobsResponse { responses }))
-        })
+        }
         .await
     }
 
@@ -425,7 +497,7 @@ impl ContentAddressableStorage for Services {
         &self,
         request: Request<BatchReadBlobsRequest>,
     ) -> Result<Response<BatchReadBlobsResponse>, Status> {
-        observe("BatchReadBlobs", async {
+        async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
             let blobs = batch_blobs(&request.digests)?;
@@ -434,7 +506,7 @@ impl ContentAddressableStorage for Services {
                     let read = if blob.is_empty() {
                         Ok(Some(Bytes::new()))
                     } else {
-                        self.read_all(&blob).await
+                        self.read_all(&blob, true).await
                     };
                     let (data, outcome) = match read {
                         Ok(Some(data)) => (data, status::ok()),
@@ -452,7 +524,7 @@ impl ContentAddressableStorage for Services {
                 .collect()
                 .await;
             Ok(Response::new(BatchReadBlobsResponse { responses }))
-        })
+        }
         .await
     }
 
@@ -462,21 +534,21 @@ impl ContentAddressableStorage for Services {
         &self,
         _request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
-        observe("GetTree", async { Err(unimplemented("GetTree")) }).await
+        Err(unimplemented("GetTree"))
     }
 
     async fn split_blob(
         &self,
         _request: Request<SplitBlobRequest>,
     ) -> Result<Response<SplitBlobResponse>, Status> {
-        observe("SplitBlob", async { Err(unimplemented("SplitBlob")) }).await
+        Err(unimplemented("SplitBlob"))
     }
 
     async fn splice_blob(
         &self,
         _request: Request<SpliceBlobRequest>,
     ) -> Result<Response<SpliceBlobResponse>, Status> {
-        observe("SpliceBlob", async { Err(unimplemented("SpliceBlob")) }).await
+        Err(unimplemented("SpliceBlob"))
     }
 }
 
@@ -497,7 +569,7 @@ impl ByteStream for Services {
         &self,
         request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
-        observe("Read", async {
+        async {
             let request = request.into_inner();
             let blob = digest::read_resource(&request.resource_name)?;
             let offset = u64::try_from(request.read_offset)
@@ -532,14 +604,14 @@ impl ByteStream for Services {
                 tracing::warn!(key = %blob.key, stored = hit.blob.size, "size differs from digest");
                 return Err(status::not_found(&blob.key));
             }
-            let chunks: Self::ReadStream =
-                Box::pin(window(hit.blob.body, offset, wanted).map(|chunk| {
-                    chunk
-                        .map(|data| ReadResponse { data })
-                        .map_err(|e| status::storage(&CacheError::from(e)))
-                }));
+            let chunks = window(hit.blob.body, offset, wanted).map(|chunk| {
+                chunk
+                    .map(|data| ReadResponse { data })
+                    .map_err(|e| status::storage(&CacheError::from(e)))
+            });
+            let chunks: Self::ReadStream = Box::pin(paced(chunks, self.send_timeout));
             Ok(Response::new(chunks))
-        })
+        }
         .await
     }
 
@@ -547,7 +619,7 @@ impl ByteStream for Services {
         &self,
         request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
-        observe("Write", async {
+        async {
             let mut messages = request.into_inner();
             let first = tokio::time::timeout(self.idle_timeout, messages.message())
                 .await
@@ -567,7 +639,7 @@ impl ByteStream for Services {
             Ok(Response::new(WriteResponse {
                 committed_size: committed,
             }))
-        })
+        }
         .await
     }
 
@@ -575,7 +647,7 @@ impl ByteStream for Services {
         &self,
         request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        observe("QueryWriteStatus", async {
+        async {
             let blob = digest::write_resource(&request.into_inner().resource_name)?;
             // Uploads are not resumable: a blob is all there or not at all.
             let complete = self.present(&blob).await?;
@@ -583,7 +655,7 @@ impl ByteStream for Services {
                 committed_size: if complete { to_i64(blob.size) } else { 0 },
                 complete,
             }))
-        })
+        }
         .await
     }
 }
@@ -635,6 +707,58 @@ fn window(
             state.pending = chunk;
         }
     })
+}
+
+/// Hands `chunks` to the client one at a time, and ends them with `DEADLINE_EXCEEDED` once the
+/// client takes none for `timeout`.
+///
+/// HTTP/2 flow control stops a client that stops reading at its stream, not at the socket, so the
+/// connection's send timeout never sees it. Without this, such a read would hold its entry open,
+/// and any promotion of it, until the client went away.
+fn paced<T: Send + 'static>(
+    chunks: impl Stream<Item = Result<T, Status>> + Send + 'static,
+    timeout: Duration,
+) -> impl Stream<Item = Result<T, Status>> + Send {
+    let (tx, rx) = mpsc::channel(1);
+    let stalled = Arc::new(AtomicBool::new(false));
+    let pump = {
+        let stalled = stalled.clone();
+        async move {
+            let mut chunks = pin!(chunks);
+            while let Some(chunk) = chunks.next().await {
+                match tx.send_timeout(chunk, timeout).await {
+                    Ok(()) => {}
+                    Err(SendTimeoutError::Timeout(_)) => {
+                        stalled.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                    // The client went away.
+                    Err(SendTimeoutError::Closed(_)) => return,
+                }
+            }
+        }
+    };
+    tokio::spawn(pump);
+    stream::unfold(Some(rx), move |rx| {
+        let stalled = stalled.clone();
+        async move {
+            let mut rx = rx?;
+            match rx.recv().await {
+                Some(chunk) => Some((chunk, Some(rx))),
+                None if stalled.load(Ordering::Relaxed) => Some((Err(stalled_read()), None)),
+                None => None,
+            }
+        }
+    })
+}
+
+fn stalled_read() -> Status {
+    status::error(
+        Code::DeadlineExceeded,
+        "DOWNLOAD_STALLED",
+        "The client read nothing for too long.",
+        &[],
+    )
 }
 
 fn idle() -> Status {

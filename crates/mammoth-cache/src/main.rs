@@ -248,7 +248,7 @@ async fn serve(config: Config) -> io::Result<()> {
     };
     let mut servers = Vec::new();
     if let Some(listener) = grpc_listener {
-        let routes = reapi::routes(cache.clone(), auth, settings.body_read_timeout);
+        let routes = reapi::routes(cache.clone(), auth, settings);
         let served = reapi::serve(listener, tls.clone(), routes, settings, signal());
         servers.push(("gRPC", tokio::spawn(served)));
     }
