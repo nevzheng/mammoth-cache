@@ -170,14 +170,34 @@ the token owner as author. `release.yml` itself only needs `GITHUB_TOKEN`.
 
 The maintainer does this once:
 
-1. Create the fine-grained token at <https://github.com/settings/personal-access-tokens/new>: this
-   repository only; Contents and Pull requests read and write.
-2. Store it: `gh secret set RELEASE_PLZ_TOKEN -R nevzheng/mammoth-cache` (paste at the prompt).
+1. Run `scripts/setup-release-token.sh`. It opens the token form prefilled with Contents and Pull
+   requests read and write; pick this repository under _Repository access_, generate the token, and
+   paste it at the prompt. The script stores it with `gh secret set RELEASE_PLZ_TOKEN`.
+2. Rerun the script when the token expires (it is created for a year).
 3. After the first image push, make the package public in its settings at
    <https://github.com/users/nevzheng/packages/container/mammoth-cache/settings>. New packages start
    private, and there's no API to change that.
 
-Until step 2 is done, `release-plz.yml` fails on main with a message naming the secret.
+Until step 1 is done, `release-plz.yml` fails on main with a message naming the secret.
+
+### Feature sets and custom builds
+
+Some choices are made at compile time as Cargo features: the global allocator, the memory tier
+backend, the bucket client and TLS. Choices that can change without a rebuild, such as the eviction
+policy, belong in `mammoth.toml` (0005).
+
+The project ships one distribution: the official binaries and images are built with the default
+features, and only that combination is tested and supported. Anyone who wants a different
+combination builds their own:
+
+- Binary: `cargo build --release --locked --no-default-features --features <list>`.
+- Image: `docker build --build-arg CARGO_ARGS="--no-default-features --features <list>" .`, using
+  the from-source `Dockerfile`.
+- A custom storage backend: a separate crate that implements the blob store trait and has its own
+  `main` (0006), packaged however its owner likes.
+
+The user guide should list the features and these commands. The release workflow takes no feature
+inputs; a variant worth shipping officially should become the default instead.
 
 ### Bazel
 
@@ -187,9 +207,9 @@ it should read it from there rather than repeat it.
 
 ## Cross-cutting concerns
 
-- **Performance.** Static musl binaries use musl's allocator, which is much slower than glibc's
-  under multi-threaded load. The server should set a global allocator such as mimalloc or jemalloc
-  before the first release meant for production. This is an app change, not a release one.
+- **Performance.** musl's own allocator is much slower than glibc's under multi-threaded load, so
+  the static binaries rely on the server's global allocator (mimalloc by default, a Cargo feature)
+  rather than musl's.
 - **Security.** Only the token in `release-plz.yml` can push; it is limited to one repository and
   two permissions. Publishing jobs run only on pushes to this repository, never on PRs, so fork PRs
   never see a write token. Actions are pinned by major version, like the rest of the repository's
@@ -216,7 +236,9 @@ it should read it from there rather than repeat it.
 - **Building the image from source per architecture** (the old `docker.yml`). The arm64 build under
   QEMU is slow, and the image would not be the same build as the binaries.
 - **glibc binaries.** Faster default allocator, but tied to the glibc of the build runner, so they
-  fail on older distributions. A static binary plus a better allocator gets both.
+  fail on older distributions. A static binary with mimalloc gets both.
+- **Official builds of several feature sets.** Every extra variant multiplies build time, test
+  matrix and support questions. One default plus documented custom builds keeps that at one.
 
 ## Open questions
 
