@@ -366,3 +366,47 @@ async fn a_refused_upload_over_the_entry_limit_closes_the_connection() {
         "{head}"
     );
 }
+
+/// A client that is not a known user cannot hold the connection by sending a refused body
+/// slowly: the node stops reading after a few seconds, answers, and closes.
+#[tokio::test]
+async fn a_slow_refused_upload_from_an_unknown_client_is_cut_off() {
+    let addr = start_with_limit(4 << 20).await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(put_head("a7", 1000, false, None).as_bytes())
+        .await
+        .unwrap();
+    stream.write_all(b"x").await.unwrap();
+    // Then nothing more.
+    let started = std::time::Instant::now();
+    let (status, head) = timeout(Duration::from_secs(10), read_head(&mut stream))
+        .await
+        .expect("the refused upload held the connection");
+    assert_eq!(status, 401);
+    assert!(
+        head.to_ascii_lowercase().contains("connection: close"),
+        "{head}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// An unknown client's refused body is read only up to 1 MiB, whatever the entry limit.
+#[tokio::test]
+async fn a_large_refused_upload_from_an_unknown_client_closes_the_connection() {
+    let addr = start_with_limit(64 << 20).await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let body = vec![b'x'; 4 << 20];
+    stream
+        .write_all(put_head("a6", body.len() as u64, false, None).as_bytes())
+        .await
+        .unwrap();
+    // The node stops reading part way; the write may fail once it closes.
+    let _ = stream.write_all(&body).await;
+    let (status, head) = read_head(&mut stream).await;
+    assert_eq!(status, 401);
+    assert!(
+        head.to_ascii_lowercase().contains("connection: close"),
+        "{head}"
+    );
+}

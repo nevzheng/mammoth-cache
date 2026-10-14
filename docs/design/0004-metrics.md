@@ -117,7 +117,9 @@ Only with `[tls]` set; defined in [0014](0014-tls.md).
 
 `route` is the route template (`/cache/{key}`), never the requested path. `client` is `gradle`,
 `maven` or `other`, from the `User-Agent` prefix (`Gradle/`, `Apache-Maven/`). `gradle_version` is
-the major and minor version from `X-Gradle-Version` (`8.10`), or `other` if it does not parse.
+the major and minor version from `X-Gradle-Version` (`8.10`), or `other` if it does not parse or
+is out of range (major 1 to 20, minor below 100). It is recorded only on `/cache/{key}` and only
+for requests that passed authentication, so an anonymous client cannot mint series.
 Neither is trusted: clients choose them, so they label metrics and logs and nothing else, and there
 is no list of supported clients. Standard `process_*`
 metrics (memory, CPU, file descriptors) are exported too.

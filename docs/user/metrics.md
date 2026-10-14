@@ -101,9 +101,11 @@ because counting it means listing the bucket. Use the cloud provider's metrics.
 
 `route` is the route template, such as `/cache/{key}`. On the REAPI gRPC port, `method` is the gRPC
 method, such as `FindMissingBlobs`, and `code` the gRPC status, such as `NOT_FOUND`. `client` is
-`gradle`, `maven` or `other`, from the `User-Agent`. `revision` is the commit an official build came
-from, and `unknown` for a build from source. The standard `process_*` metrics (memory, CPU, file
-descriptors) are exported too.
+`gradle`, `maven` or `other`, from the `User-Agent`. `gradle_version` is the major and minor version
+from `X-Gradle-Version`, on `/cache/{key}` requests that passed authentication, or `other` if it
+does not parse or is out of range (major 1 to 20, minor below 100). `revision` is the commit an
+official build came from, and `unknown` for a build from source. The standard `process_*` metrics
+(memory, CPU, file descriptors) are exported too.
 
 ### TLS
 
