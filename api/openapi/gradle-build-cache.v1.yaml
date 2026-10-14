@@ -1,0 +1,167 @@
+openapi: 3.1.0
+info:
+  title: mammoth-cache Gradle HTTP build cache
+  version: 1.0.0
+  summary: The Gradle HTTP build cache protocol, as served by mammoth-cache.
+  description: |
+    Gradle owns this contract; this document describes it, it does not design it. Sources:
+    the Gradle user guide (https://docs.gradle.org/current/userguide/build_cache.html) and
+    `HttpBuildCacheService` in gradle/gradle.
+
+    Rules that come from Gradle and override API style guides, including AIP-193:
+
+    - Gradle reads only the status code. Error bodies follow AIP-193 for humans and tools.
+    - These statuses **fail the build**: 305, 400, 401, 403, 405, 406, 407, 411, 415, 417, 426,
+      505, 511. Never return one for a condition the build should survive.
+    - Any other non-2xx status turns the remote cache off for the rest of the build.
+    - `413` on store is documented as non-fatal: the entry is skipped.
+    - Entries are content-addressed, so they never change once stored.
+
+    Configure Gradle with the base URL `https://<host>/cache/`.
+  contact:
+    name: mammoth-cache
+    url: https://github.com/nevzheng/mammoth-cache
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+servers:
+  - url: http://localhost:5071
+    description: Local default
+security:
+  - basicAuth: []
+  - {}
+tags:
+  - name: gradle
+    description: Gradle HTTP build cache protocol
+paths:
+  /cache/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        description: |
+          The cache key Gradle computed for a task: a lowercase hex hash. Treated as opaque; the
+          length is not fixed by the protocol.
+        schema:
+          type: string
+          pattern: "^[0-9a-f]+$"
+          maxLength: 128
+          examples: [a3f5e1c09b2d4e7f8a1b6c3d5e9f0a2b]
+    get:
+      operationId: loadEntry
+      summary: Load a cache entry
+      description: |
+        A hit returns the entry exactly as it was stored. Gradle sends
+        `Accept: application/vnd.gradle.build-cache-artifact.v2, */*`; the server answers with
+        `application/octet-stream`, which that `*/*` accepts.
+      tags: [gradle]
+      responses:
+        "200":
+          description: Hit.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        "404":
+          $ref: "#/components/responses/Miss"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+    head:
+      operationId: checkEntry
+      summary: Check whether a cache entry exists
+      description: Gradle never sends `HEAD`; other clients do. Same statuses as `GET`, no body.
+      tags: [gradle]
+      responses:
+        "200":
+          description: The entry exists.
+          headers:
+            Content-Length:
+              description: Size of the entry in bytes.
+              schema:
+                type: integer
+        "404":
+          description: The entry does not exist.
+        "401":
+          description: Credentials are missing or wrong.
+        "403":
+          description: The user may not read the cache.
+        "503":
+          description: The server cannot serve the request right now.
+    put:
+      operationId: storeEntry
+      summary: Store a cache entry
+      description: |
+        Gradle sends `Content-Type: application/vnd.gradle.build-cache-artifact.v2`. The server
+        accepts any content type and stores the body as opaque bytes; it must never answer `415`,
+        which fails the build. Storing a key that already exists succeeds without rewriting it.
+        Clients may send `Expect: 100-continue` so the server can reject an oversized or
+        unauthorized upload before the body is sent.
+      tags: [gradle]
+      requestBody:
+        required: true
+        content:
+          "*/*":
+            schema:
+              type: string
+              contentMediaType: application/octet-stream
+      responses:
+        "201":
+          description: Stored.
+        "200":
+          description: The entry was already present; nothing was written.
+        "413":
+          $ref: "#/components/responses/EntryTooLarge"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+components:
+  securitySchemes:
+    basicAuth:
+      $ref: "./common.yaml#/components/securitySchemes/basicAuth"
+  responses:
+    Miss:
+      description: Miss. Not an error for Gradle; it runs the task.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 404
+              message: Cache entry not found.
+              status: NOT_FOUND
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: ENTRY_NOT_FOUND
+                  domain: mammoth-cache.dev
+                  metadata:
+                    key: a3f5e1c09b2d4e7f8a1b6c3d5e9f0a2b
+    EntryTooLarge:
+      description: |
+        The entry is larger than the configured limit. Gradle skips the entry and carries on.
+        AIP-193 alone would suggest `400 INVALID_ARGUMENT`, which would fail the build, so the
+        protocol status `413` wins and the body keeps the canonical name `OUT_OF_RANGE`.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 413
+              message: Cache entry is 157286400 bytes; the limit is 104857600.
+              status: OUT_OF_RANGE
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: ENTRY_TOO_LARGE
+                  domain: mammoth-cache.dev
+                  metadata:
+                    entryBytes: "157286400"
+                    maxEntryBytes: "104857600"

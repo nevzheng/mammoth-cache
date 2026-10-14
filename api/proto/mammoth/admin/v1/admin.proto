@@ -1,0 +1,71 @@
+// Copyright The mammoth-cache Authors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+syntax = "proto3";
+
+package mammoth.admin.v1;
+
+import "google/api/annotations.proto";
+import "google/api/client.proto";
+import "google/api/field_behavior.proto";
+import "google/api/resource.proto";
+import "google/protobuf/duration.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "AdminProto";
+option java_package = "dev.mammothcache.mammoth.admin.v1";
+
+// Manages a mammoth-cache node. Errors follow AIP-193: a `google.rpc.Status` carrying one
+// `google.rpc.ErrorInfo` with domain `mammoth-cache.dev`.
+//
+// Read-only by design: configuration comes from a static config file and is never changed
+// through this API. A cache purge is the only write being considered.
+service AdminService {
+  option (google.api.default_host) = "localhost:5071";
+
+  // Gets the node's status (AIP-131, AIP-156).
+  rpc GetServerStatus(GetServerStatusRequest) returns (ServerStatus) {
+    option (google.api.http) = {get: "/v1/{name=serverStatus}"};
+    option (google.api.method_signature) = "name";
+  }
+}
+
+// The node's current status. A singleton resource (AIP-156).
+message ServerStatus {
+  option (google.api.resource) = {
+    type: "mammoth-cache.dev/ServerStatus"
+    pattern: "serverStatus"
+    singular: "serverStatus"
+    plural: "serverStatuses"
+  };
+
+  // The resource name. Always `serverStatus`.
+  string name = 1 [(google.api.field_behavior) = IDENTIFIER];
+
+  // The server's version, e.g. `0.1.0`.
+  string version = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Time since the process started.
+  google.protobuf.Duration uptime = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Total size of stored entries, in bytes.
+  int64 stored_bytes = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Number of stored entries.
+  int64 entry_count = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Cache hits since the process started.
+  int64 hit_count = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Cache misses since the process started.
+  int64 miss_count = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// Request message for `GetServerStatus`.
+message GetServerStatusRequest {
+  // The resource name. Must be `serverStatus`.
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.resource_reference).type = "mammoth-cache.dev/ServerStatus"
+  ];
+}

@@ -1,0 +1,175 @@
+openapi: 3.1.0
+info:
+  title: mammoth-cache shared components
+  version: 0.1.0
+  description: |
+    Components shared by every mammoth-cache OpenAPI document. Not served on its own.
+  contact:
+    name: mammoth-cache
+    url: https://github.com/nevzheng/mammoth-cache
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+paths: {}
+components:
+  schemas:
+    ErrorResponse:
+      description: |
+        Error body in the shape of Google AIP-193 (https://google.aip.dev/193), as rendered for
+        HTTP/JSON. Every mammoth-cache error response uses it, including on Gradle routes, where
+        Gradle reads only the status code and ignores the body.
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          $ref: "#/components/schemas/Status"
+    Status:
+      description: The JSON form of `google.rpc.Status`.
+      type: object
+      required: [code, message, status, details]
+      additionalProperties: false
+      properties:
+        code:
+          description: The HTTP status code of the response.
+          type: integer
+          format: int32
+          examples: [404]
+        message:
+          description: A developer-facing explanation, in English. Not for programmatic use.
+          type: string
+          examples: ["Cache entry not found."]
+        status:
+          $ref: "#/components/schemas/Code"
+        details:
+          description: |
+            Machine-readable details. AIP-193 requires exactly one `ErrorInfo`; other
+            `google.rpc` detail types may follow it.
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Detail"
+    Code:
+      description: The canonical `google.rpc.Code` name.
+      type: string
+      enum:
+        - CANCELLED
+        - UNKNOWN
+        - INVALID_ARGUMENT
+        - DEADLINE_EXCEEDED
+        - NOT_FOUND
+        - ALREADY_EXISTS
+        - PERMISSION_DENIED
+        - RESOURCE_EXHAUSTED
+        - FAILED_PRECONDITION
+        - ABORTED
+        - OUT_OF_RANGE
+        - UNIMPLEMENTED
+        - INTERNAL
+        - UNAVAILABLE
+        - DATA_LOSS
+        - UNAUTHENTICATED
+    Detail:
+      oneOf:
+        - $ref: "#/components/schemas/ErrorInfo"
+        - $ref: "#/components/schemas/LocalizedMessage"
+      discriminator:
+        propertyName: "@type"
+        mapping:
+          type.googleapis.com/google.rpc.ErrorInfo: "#/components/schemas/ErrorInfo"
+          type.googleapis.com/google.rpc.LocalizedMessage: "#/components/schemas/LocalizedMessage"
+    ErrorInfo:
+      description: The JSON form of `google.rpc.ErrorInfo`.
+      type: object
+      required: ["@type", reason, domain]
+      properties:
+        "@type":
+          type: string
+          const: type.googleapis.com/google.rpc.ErrorInfo
+        reason:
+          description: A stable UPPER_SNAKE_CASE identifier, unique within `domain`.
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]+[A-Z0-9]$"
+          maxLength: 63
+          examples: [ENTRY_TOO_LARGE]
+        domain:
+          description: The service that produced the error.
+          type: string
+          const: mammoth-cache.dev
+        metadata:
+          description: Dynamic values for this occurrence, keyed in lowerCamelCase.
+          type: object
+          additionalProperties:
+            type: string
+          examples:
+            - maxEntryBytes: "104857600"
+    LocalizedMessage:
+      description: The JSON form of `google.rpc.LocalizedMessage`.
+      type: object
+      required: ["@type", locale, message]
+      properties:
+        "@type":
+          type: string
+          const: type.googleapis.com/google.rpc.LocalizedMessage
+        locale:
+          type: string
+          examples: [en-US]
+        message:
+          type: string
+  responses:
+    Unauthenticated:
+      description: Credentials are missing or wrong. Gradle fails the build on this status.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            examples: ['Basic realm="mammoth-cache"']
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 401
+              message: Authentication is required.
+              status: UNAUTHENTICATED
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: CREDENTIALS_MISSING
+                  domain: mammoth-cache.dev
+    PermissionDenied:
+      description: The user may not perform this operation. Gradle fails the build on this status.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 403
+              message: User "ci" has read-only access.
+              status: PERMISSION_DENIED
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: WRITE_NOT_ALLOWED
+                  domain: mammoth-cache.dev
+                  metadata:
+                    user: ci
+    Unavailable:
+      description: The server cannot serve the request right now.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 503
+              message: Cache storage is not writable.
+              status: UNAVAILABLE
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: STORAGE_NOT_WRITABLE
+                  domain: mammoth-cache.dev
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic

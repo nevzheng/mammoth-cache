@@ -1,0 +1,9 @@
+# Spectral (https://stoplight.io/open-source/spectral) rules for the OpenAPI files.
+# Lint: `npx @stoplight/spectral-cli lint api/openapi/*.yaml`
+extends: ["spectral:oas"]
+overrides:
+  # common.yaml only holds components that other documents reference.
+  - files: ["openapi/common.yaml"]
+    rules:
+      oas3-api-servers: off
+      oas3-unused-component: off
