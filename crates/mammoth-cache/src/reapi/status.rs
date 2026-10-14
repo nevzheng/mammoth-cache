@@ -160,4 +160,163 @@ mod tests {
         assert_eq!(info.metadata["maxEntryBytes"], "5");
         assert_eq!(info.metadata["entryBytes"], "10");
     }
+
+    /// Parity between the adapters (design doc 0017): an error renders to the same reason,
+    /// message, canonical code and metadata over HTTP as over gRPC.
+    mod parity {
+        use std::{collections::HashMap, io};
+
+        use axum::response::IntoResponse;
+        use proptest::prelude::*;
+
+        use super::*;
+        use crate::{
+            http::error::ApiError,
+            key::{InvalidKey, Namespace},
+            reapi::{digest::Blob, proto::build::bazel::remote::execution::v2::Digest},
+        };
+
+        /// `google.rpc.Code` names by number, so the gRPC code is checked against the HTTP body's
+        /// `status` without going through [`code`].
+        const CANONICAL: [&str; 17] = [
+            "OK",
+            "CANCELLED",
+            "UNKNOWN",
+            "INVALID_ARGUMENT",
+            "DEADLINE_EXCEEDED",
+            "NOT_FOUND",
+            "ALREADY_EXISTS",
+            "PERMISSION_DENIED",
+            "RESOURCE_EXHAUSTED",
+            "FAILED_PRECONDITION",
+            "ABORTED",
+            "OUT_OF_RANGE",
+            "UNIMPLEMENTED",
+            "INTERNAL",
+            "UNAVAILABLE",
+            "DATA_LOSS",
+            "UNAUTHENTICATED",
+        ];
+
+        const CODES: [Code; 16] = [
+            Code::Cancelled,
+            Code::Unknown,
+            Code::InvalidArgument,
+            Code::DeadlineExceeded,
+            Code::NotFound,
+            Code::AlreadyExists,
+            Code::PermissionDenied,
+            Code::ResourceExhausted,
+            Code::FailedPrecondition,
+            Code::Aborted,
+            Code::OutOfRange,
+            Code::Unimplemented,
+            Code::Internal,
+            Code::Unavailable,
+            Code::DataLoss,
+            Code::Unauthenticated,
+        ];
+
+        const KINDS: [io::ErrorKind; 6] = [
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::WouldBlock,
+            io::ErrorKind::NotFound,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::StorageFull,
+            io::ErrorKind::Other,
+        ];
+
+        /// Any error the core can hand an adapter.
+        fn core_error() -> impl Strategy<Value = cache::Error> {
+            prop_oneof![
+                (proptest::option::of(any::<u64>()), any::<u64>())
+                    .prop_map(|(size, limit)| cache::Error::too_large(size, limit)),
+                (0..CODES.len(), ".{0,40}")
+                    .prop_map(|(i, what)| cache::Error::new(CODES[i], anyhow::anyhow!(what))),
+                (0..KINDS.len(), ".{0,40}")
+                    .prop_map(|(i, what)| cache::Error::from(io::Error::new(KINDS[i], what))),
+                ".{0,40}".prop_map(|what| cache::Error::from(cache::upload_error(what))),
+            ]
+        }
+
+        /// What a client reads from an error, the same fields on both transports.
+        #[derive(Debug, PartialEq, Eq)]
+        struct Seen {
+            code: String,
+            message: String,
+            reason: String,
+            domain: String,
+            metadata: HashMap<String, String>,
+        }
+
+        fn over_http(error: ApiError) -> Seen {
+            let response = error.into_response();
+            let body = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap()
+                .block_on(axum::body::to_bytes(response.into_body(), 1 << 16))
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let error = &json["error"];
+            let info = &error["details"][0];
+            let metadata = info["metadata"].as_object().map_or_else(HashMap::new, |m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
+                    .collect()
+            });
+            Seen {
+                code: error["status"].as_str().unwrap().to_owned(),
+                message: error["message"].as_str().unwrap().to_owned(),
+                reason: info["reason"].as_str().unwrap().to_owned(),
+                domain: info["domain"].as_str().unwrap().to_owned(),
+                metadata,
+            }
+        }
+
+        fn over_grpc(status: &Status) -> Seen {
+            let info = status.get_details_error_info().unwrap();
+            Seen {
+                code: CANONICAL[status.code() as usize].to_owned(),
+                message: status.message().to_owned(),
+                reason: info.reason,
+                domain: info.domain,
+                metadata: info.metadata,
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn core_errors_render_alike(error in core_error()) {
+                let grpc = over_grpc(&storage(&error));
+                let http = over_http(ApiError::from(error));
+                prop_assert_eq!(http, grpc);
+            }
+
+            /// A Bazel digest the node refuses, in a URL path or a `Digest` message.
+            #[test]
+            fn invalid_digests_render_alike(
+                hash in "[0-9a-fA-Fg-z]{0,70}",
+                ac in any::<bool>(),
+            ) {
+                let namespace = if ac { Namespace::BazelAc } else { Namespace::BazelCas };
+                let Err(invalid) = CacheKey::bazel(namespace, &hash) else {
+                    return Err(TestCaseError::reject("a valid digest"));
+                };
+                prop_assert_eq!(invalid, InvalidKey::Bazel);
+                let digest = Digest { hash, size_bytes: 1 };
+                let parsed = if ac { Blob::action(Some(&digest)) } else { Blob::cas(Some(&digest)) };
+                let Err(refused) = parsed else {
+                    return Err(TestCaseError::fail("gRPC accepted a digest HTTP refuses"));
+                };
+                let grpc = over_grpc(&refused);
+                let http = over_http(ApiError::from(invalid));
+                // The reason, code and metadata are the contract; each transport words its own
+                // message for the place the digest came from.
+                prop_assert_eq!(
+                    (&http.code, &http.reason, &http.domain, &http.metadata),
+                    (&grpc.code, &grpc.reason, &grpc.domain, &grpc.metadata)
+                );
+            }
+        }
+    }
 }

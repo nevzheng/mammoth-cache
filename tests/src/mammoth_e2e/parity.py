@@ -12,6 +12,10 @@ may list output directories, as `Tree` blobs whose files are in the CAS.
 Batches carry up to eight blobs, some corrupt, and batches past the size limit are refused whole.
 `FindMissingBlobs` also gets thousands of digests at once, `QueryWriteStatus` must agree with the
 model, and calls switch between instance names, which the node accepts and ignores.
+
+A failure carries the same `ErrorInfo.reason` over HTTP as over gRPC (doc 0017): a miss is
+`ENTRY_NOT_FOUND`, bytes that do not hash to their digest are `DIGEST_MISMATCH`, and a malformed
+digest is `INVALID_DIGEST`, whichever way the client asked.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from hypothesis import strategies as st
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, initialize, rule
 
 from mammoth_e2e import blobs
-from mammoth_e2e.reapi import Message, Reapi, attempt, sha256
+from mammoth_e2e.reapi import Message, Reapi, outcome, reason, sha256
 
 if TYPE_CHECKING:
     from mammoth_e2e.contract import Contracts
@@ -41,7 +45,20 @@ OK, INVALID_ARGUMENT, NOT_FOUND = (
 WAYS = ("http", "batch", "bytestream")
 SIZES = st.one_of(st.integers(0, 64), st.integers(0, 4096), st.integers(50_000, 600_000))
 MAX_BATCH = 4 * 1024 * 1024 - 256 * 1024  # max_batch_total_size_bytes
+MAX_MESSAGE = 4 * 1024 * 1024  # a client's default limit on a response
 INSTANCES = st.sampled_from(["", "main", "ci/linux-x86_64"])
+# Reasons a client gets for the same failure over HTTP and gRPC.
+MISS, MISMATCH, INVALID, TOO_BIG = (
+    "ENTRY_NOT_FOUND",
+    "DIGEST_MISMATCH",
+    "INVALID_DIGEST",
+    "BATCH_TOO_LARGE",
+)
+# Digests the node refuses: not 64 lowercase hex characters. Only characters a URL path carries
+# as they are, so HTTP and gRPC see the same string.
+BAD_DIGESTS = st.text("0123456789abcdefABCDEFxyz", min_size=1, max_size=70).filter(
+    lambda h: len(h) != 64 or any(c not in "0123456789abcdef" for c in h)
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +96,7 @@ class ParityModel(RuleBasedStateMachine):
 
     blobs = Bundle("blobs")
     actions = Bundle("actions")
+    trees = Bundle("trees")  # blobs that are `Tree` messages, also in `blobs`
 
     def __init__(self) -> None:
         super().__init__()
@@ -108,6 +126,11 @@ class ParityModel(RuleBasedStateMachine):
         self.contracts.check(template, response)
         return response
 
+    @staticmethod
+    def http_reason(response: httpx.Response) -> str:
+        """The `ErrorInfo.reason` of an AIP-193 error body (`common.yaml`)."""
+        return response.json()["error"]["details"][0]["reason"]
+
     @initialize()
     def start(self) -> None:
         assert self.target.reapi_address, "the target has no reapi_address"
@@ -122,6 +145,10 @@ class ParityModel(RuleBasedStateMachine):
     @initialize(target=actions, seed=st.text("0123456789abcdef", max_size=8))
     def first_action(self, seed: str) -> Action:
         return self.action(seed)
+
+    @initialize(targets=(blobs, trees))
+    def first_tree(self) -> Blob:
+        return self.tree([])
 
     # Blobs
 
@@ -160,24 +187,33 @@ class ParityModel(RuleBasedStateMachine):
         data[flip % blob.size] ^= 0x01
         match way:
             case "http":
-                status = self.http_send("PUT", f"/bazel/cas/{blob.hash}", bytes(data)).status_code
+                response = self.http_send("PUT", f"/bazel/cas/{blob.hash}", bytes(data))
+                status = response.status_code
                 if blob.hash in self.cas:
                     # Already stored: the node may keep its copy without reading the body.
                     assert status in {200, 400}, f"{blob}: corrupt re-store answered {status}"
                 else:
                     assert status == 400, f"{blob}: corrupt HTTP store answered {status}"
+                if status == 400:
+                    got = self.http_reason(response)
+                    assert got == MISMATCH, f"{blob}: corrupt HTTP store said {got}"
             case "batch":
-                (code,) = self.grpc.batch_update([(self.digest(blob), bytes(data))])
+                (item,) = self.grpc.batch_update_statuses([(self.digest(blob), bytes(data))])
                 if blob.hash not in self.cas:
+                    code = item.code
                     assert code == INVALID_ARGUMENT, f"{blob}: corrupt batch item answered {code}"
+                if item.code != OK:
+                    got = reason(item)
+                    assert got == MISMATCH, f"{blob}: corrupt batch item said {got}"
             case _:
-                code, _ = attempt(
+                code, got, _ = outcome(
                     lambda: self.grpc.write(self.digest(blob), bytes(data), 64 * 1024)
                 )
                 if code == grpc.StatusCode.OK:
                     assert blob.hash in self.cas, f"{blob}: a corrupt Write was accepted"
                 else:
                     assert code == grpc.StatusCode.INVALID_ARGUMENT, f"{blob}: corrupt Write {code}"
+                    assert got == MISMATCH, f"{blob}: corrupt Write said {got}"
         self.read(blob, "bytestream", 0, 0)
 
     @rule(blob=blobs, way=st.sampled_from(WAYS), offset=st.integers(0), limit=st.integers(0))
@@ -191,20 +227,25 @@ class ParityModel(RuleBasedStateMachine):
                     assert response.content == blob.data, f"{blob}: HTTP read wrong bytes"
                 else:
                     assert response.status_code == 404, f"{blob}: HTTP read {response.status_code}"
+                    got = self.http_reason(response)
+                    assert got == MISS, f"{blob}: HTTP miss said {got}"
             case "batch":
-                ((code, data),) = self.grpc.batch_read([self.digest(blob)])
+                ((item, data),) = self.grpc.batch_read_statuses([self.digest(blob)])
+                code = item.code
                 if held:
                     assert (code, data) == (OK, blob.data), f"{blob}: BatchReadBlobs code {code}"
                 else:
                     assert code == NOT_FOUND, f"{blob}: BatchReadBlobs code {code}"
+                    assert reason(item) == MISS, f"{blob}: batch miss said {reason(item)}"
             case _:
                 offset %= blob.size + 1
                 limit %= blob.size + 1
                 wanted = blob.data[offset : offset + limit] if limit else blob.data[offset:]
-                code, data = attempt(lambda: self.grpc.read(self.digest(blob), offset, limit))
+                code, got, data = outcome(lambda: self.grpc.read(self.digest(blob), offset, limit))
                 if code != grpc.StatusCode.OK:
                     assert not held, f"{blob}: Read at {offset}+{limit} failed with {code}"
                     assert code == grpc.StatusCode.NOT_FOUND, f"{blob}: Read failed with {code}"
+                    assert got == MISS, f"{blob}: Read miss said {got}"
                     return
                 # Nothing to send needs no lookup, so an empty window answers even on a miss.
                 assert held or not wanted, f"{blob}: Read of a missing blob answered"
@@ -246,32 +287,39 @@ class ParityModel(RuleBasedStateMachine):
                 data = bytes([data[0] ^ 0x01]) + data[1:]
                 bad.add(i)
             items.append((self.digest(blob), data))
-        codes = self.grpc.batch_update(items)
-        for i, (blob, code) in enumerate(zip(found, codes, strict=True)):
+        statuses = self.grpc.batch_update_statuses(items)
+        for i, (blob, item) in enumerate(zip(found, statuses, strict=True)):
+            code = item.code
             if i not in bad:
                 assert code == OK, f"{blob}: batch item answered {code}"
                 self.cas.add(blob.hash)
             elif blob.hash not in self.cas:
                 assert code == INVALID_ARGUMENT, f"{blob}: corrupt batch item answered {code}"
+                assert reason(item) == MISMATCH, f"{blob}: corrupt batch item said {reason(item)}"
 
     @rule(found=st.lists(blobs, min_size=1, max_size=8))
     def batch_read_many(self, found: list[Blob]) -> None:
         if sum(b.size for b in found) > MAX_BATCH:
             return
-        answers = self.grpc.batch_read([self.digest(b) for b in found])
-        for blob, (code, data) in zip(found, answers, strict=True):
+        answers = self.grpc.batch_read_statuses([self.digest(b) for b in found])
+        for blob, (item, data) in zip(found, answers, strict=True):
+            code = item.code
             if blob.hash in self.cas:
                 assert (code, data) == (OK, blob.data), f"{blob}: batch read code {code}"
             else:
                 assert code == NOT_FOUND, f"{blob}: batch read code {code}"
+                assert reason(item) == MISS, f"{blob}: batch read miss said {reason(item)}"
 
-    @rule(found=st.lists(blobs, max_size=4), claimed=st.integers(MAX_BATCH + 1, 2**40))
+    @rule(found=st.lists(blobs, max_size=4), claimed=st.integers(MAX_MESSAGE + 1, 2**40))
     def batch_read_too_big(self, found: list[Blob], claimed: int) -> None:
-        """A batch read that could not fit in a response is refused whole, before any lookup."""
+        """A batch read that could not fit in a response is refused whole, before any lookup. The
+        node refuses a read past the client's message limit, not past max_batch_total_size_bytes,
+        which bounds uploads."""
         digests = [self.digest(b) for b in found]
         digests.append(self.grpc.s.re.Digest(hash=sha256(self.salt), size_bytes=claimed))
-        code, _ = attempt(lambda: self.grpc.batch_read(digests))
+        code, got, _ = outcome(lambda: self.grpc.batch_read(digests))
         assert code == grpc.StatusCode.INVALID_ARGUMENT, f"oversized batch read answered {code}"
+        assert got == TOO_BIG, f"oversized batch read said {got}"
 
     @rule(seed=st.text("0123456789abcdef", min_size=4, max_size=4))
     def batch_upload_too_big(self, seed: str) -> None:
@@ -282,10 +330,37 @@ class ParityModel(RuleBasedStateMachine):
             Blob(self.salt + blobs.payload(half, f"{self.salt.decode()}/big/{seed}/{i}"))
             for i in range(2)
         ]
-        code, _ = attempt(lambda: self.grpc.batch_update([(self.digest(b), b.data) for b in fresh]))
+        code, got, _ = outcome(
+            lambda: self.grpc.batch_update([(self.digest(b), b.data) for b in fresh])
+        )
         assert code == grpc.StatusCode.INVALID_ARGUMENT, f"oversized batch update answered {code}"
+        assert got == TOO_BIG, f"oversized batch update said {got}"
         missing = self.grpc.find_missing([self.digest(b) for b in fresh])
         assert missing == {(b.hash, b.size) for b in fresh}, "a refused batch stored a blob"
+
+    @rule(
+        bad=BAD_DIGESTS,
+        entry=st.sampled_from(("ac", "cas")),
+        method=st.sampled_from(("GET", "PUT")),
+    )
+    def invalid_digest(self, bad: str, entry: str, method: str) -> None:
+        """A malformed digest is refused with INVALID_DIGEST on both, before any lookup or store."""
+        path = f"/bazel/{entry}/{bad}"
+        response = self.http_send(method, path, b"x" if method == "PUT" else None)
+        assert response.status_code == 400, f"{method} {path} answered {response.status_code}"
+        got = self.http_reason(response)
+        assert got == INVALID, f"{method} {path} said {got}"
+        re = self.grpc.s.re
+        digest = re.Digest(hash=bad, size_bytes=1)
+        calls = {
+            ("ac", "GET"): lambda: self.grpc.get_action_result(digest),
+            ("ac", "PUT"): lambda: self.grpc.update_action_result(digest, re.ActionResult()),
+            ("cas", "GET"): lambda: self.grpc.read(digest),
+            ("cas", "PUT"): lambda: self.grpc.write(digest, b"x", 1),
+        }
+        code, got, _ = outcome(calls[entry, method])
+        assert code == grpc.StatusCode.INVALID_ARGUMENT, f"{method} {bad!r} over gRPC: {code}"
+        assert got == INVALID, f"{method} {bad!r} over gRPC said {got}"
 
     @rule(blob=blobs)
     def query_write_status(self, blob: Blob) -> None:
@@ -311,10 +386,15 @@ class ParityModel(RuleBasedStateMachine):
         command = self.salt + b"/action/" + seed.encode()
         return Action(sha256(command), len(command))
 
-    @rule(target=blobs, files=st.lists(blobs, max_size=4))
+    @rule(targets=(blobs, trees), files=st.lists(blobs, max_size=4))
     def new_tree(self, files: list[Blob]) -> Blob:
+        return self.tree(files)
+
+    def tree(self, files: list[Blob]) -> Blob:
         """A `Tree` of one directory, as a blob. Only files the CAS holds, so that walking the
-        tree or not (doc 0016, open question) gives the same answer: nothing is ever evicted."""
+        tree or not (doc 0016, open question) gives the same answer: nothing is ever evicted.
+        Results list only these as output directories: the node treats a result whose tree does
+        not decode as a miss."""
         re = self.grpc.s.re
         held = [b for b in {b.hash: b for b in files}.values() if b.hash in self.cas]
         # An empty file named after the salt (the empty blob is always present) keeps this run's
@@ -327,7 +407,7 @@ class ParityModel(RuleBasedStateMachine):
     @rule(
         action=actions,
         outputs=st.lists(blobs, max_size=3),
-        trees=st.lists(blobs, max_size=2),
+        trees=st.lists(trees, max_size=2),
         stdout=st.none() | blobs,
         exit_code=st.integers(0, 2),
         way=st.sampled_from(("http", "grpc")),
@@ -370,6 +450,8 @@ class ParityModel(RuleBasedStateMachine):
             response = self.http_send("GET", f"/bazel/ac/{action.hash}")
             if stored is None:
                 assert response.status_code == 404, f"{action}: HTTP read {response.status_code}"
+                got = self.http_reason(response)
+                assert got == MISS, f"{action}: HTTP miss said {got}"
                 return
             assert response.status_code == 200, f"{action}: HTTP read {response.status_code}"
             assert re.ActionResult.FromString(response.content) == stored
@@ -380,9 +462,10 @@ class ParityModel(RuleBasedStateMachine):
         if stored is not None and stored.HasField("stdout_digest"):
             referenced.append(stored.stdout_digest.hash)
         complete = stored is not None and all(h in self.cas for h in referenced)
-        code, got = attempt(lambda: self.grpc.get_action_result(digest))
+        code, why, got = outcome(lambda: self.grpc.get_action_result(digest))
         if code != grpc.StatusCode.OK:
             assert code == grpc.StatusCode.NOT_FOUND, f"{action}: GetActionResult {code}"
+            assert why == MISS, f"{action}: GetActionResult miss said {why}"
             assert not complete, f"{action}: stored with every output, answered NOT_FOUND"
             return
         assert complete, f"{action}: answered although an output is missing or never stored"
