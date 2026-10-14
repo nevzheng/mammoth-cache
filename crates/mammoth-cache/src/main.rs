@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand};
 use mammoth_cache::{
     auth,
     cache::{BucketLimits, BucketWrite, Cache},
-    config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
-    reapi,
+    config::{self, Config, DEFAULT_PATH, PATH_ENV},
+    logging, reapi,
     server::{self, ServerSettings, TlsSettings},
     store::{
         bucket::{BucketConfig, BucketStore},
@@ -21,7 +21,6 @@ use mammoth_cache::{
     telemetry,
     tls::{self, Certificates},
 };
-use tracing_subscriber::EnvFilter;
 
 // The global allocator is chosen at build time (see the features in Cargo.toml).
 #[cfg(feature = "jemalloc")]
@@ -91,7 +90,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    init_logging(&config);
+    // Held to the end of main: dropping it flushes the lines still buffered.
+    let _log = logging::init(&config.log);
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -152,17 +152,6 @@ fn load_config(explicit: Option<PathBuf>) -> anyhow::Result<(Config, Option<Path
     }
     let config = Config::load(&path)?;
     Ok((config, Some(path)))
-}
-
-fn init_logging(config: &Config) {
-    // RUST_LOG still wins, for debugging one module.
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| config.log.level.as_str().into());
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    match config.log.format {
-        LogFormat::Json => builder.json().init(),
-        LogFormat::Text => builder.init(),
-    }
 }
 
 async fn serve(config: Config) -> anyhow::Result<()> {

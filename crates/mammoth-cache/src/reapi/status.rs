@@ -85,9 +85,11 @@ pub(crate) fn ok() -> rpc::Status {
     rpc::Status::default()
 }
 
+/// A miss. Bazel names an entry by its digest, on HTTP and gRPC alike, so the metadata says
+/// `digest`, as it does for the mismatches.
 pub(crate) fn not_found(key: &CacheKey) -> Status {
     error::Status::new(Reason::EntryNotFound, format!("No entry {}.", key.name()))
-        .with("key", key.name())
+        .with("digest", key.name())
         .into()
 }
 
@@ -96,7 +98,7 @@ pub(crate) fn digest_mismatch(key: &CacheKey) -> Status {
         Reason::DigestMismatch,
         "The content does not hash to its digest.",
     )
-    .with("key", key.name())
+    .with("digest", key.name())
     .into()
 }
 
@@ -105,8 +107,8 @@ pub(crate) fn digest_mismatch(key: &CacheKey) -> Status {
 pub(crate) fn storage(e: &cache::Error) -> Status {
     let status = error::Status::from(e);
     match status.code() {
-        Code::Unavailable => tracing::warn!(error = %e, "storage unavailable"),
-        Code::Internal => tracing::error!(error = %e, "storage error"),
+        Code::Unavailable => crate::warn_throttled!(error = %e, "storage unavailable"),
+        Code::Internal => crate::error_throttled!(error = %e, "storage error"),
         // The client's fault, and usually the client is gone.
         _ => tracing::debug!(error = %e, "upload failed"),
     }

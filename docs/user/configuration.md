@@ -255,13 +255,15 @@ authenticates, so a token can be rotated by adding the new hash before removing 
 
 ### `[log]`
 
-| Key          | Type    | Default | Example   | Status       | Meaning                                               |
-| ------------ | ------- | ------- | --------- | ------------ | ----------------------------------------------------- |
-| `level`      | string  | `info`  | `"debug"` | Available    | `error`, `warn`, `info`, `debug` or `trace`           |
-| `format`     | string  | `json`  | `"text"`  | Available    | `json` or `text`                                      |
-| `access_log` | boolean | `true`  | `false`   | Not enforced | Log each request, with the user name, never the token |
+| Key            | Type    | Default  | Example   | Status       | Meaning                                                                   |
+| -------------- | ------- | -------- | --------- | ------------ | ------------------------------------------------------------------------- |
+| `level`        | string  | `info`   | `"debug"` | Available    | `error`, `warn`, `info`, `debug` or `trace`                               |
+| `format`       | string  | `json`   | `"text"`  | Available    | `json` or `text`                                                          |
+| `access_log`   | boolean | `true`   | `false`   | Not enforced | Log each request, with the user name, never the token                     |
+| `buffer_lines` | integer | `128000` | `500000`  | Available    | Lines buffered for stdout; when it is full, lines are dropped and counted |
 
-`RUST_LOG`, when set, replaces `log.level`.
+`RUST_LOG`, when set, replaces `log.level`. The line format, and how to collect the logs, are in
+[Logs](logs.md).
 
 ## Full example
 

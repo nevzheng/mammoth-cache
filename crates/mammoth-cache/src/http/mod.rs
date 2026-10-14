@@ -114,6 +114,7 @@ pub fn router_with(
             },
             auth::require,
         ))
+        .layer(middleware::from_fn(error::render))
         .layer(middleware::from_fn(metrics::record))
         .with_state(AppState { cache, metrics })
 }
