@@ -16,14 +16,16 @@ use std::{
 use futures_util::{StreamExt, stream};
 
 use crate::{
-    key::CacheKey,
+    key::{CacheKey, Namespace},
     store::{Blob, BlobStore, BoundedStore, ByteStream, PutOutcome, Tier, TierUsage},
 };
 
 /// The default largest entry, matching the Build Cache Node's `cache.maxArtifactSize`.
 pub const DEFAULT_MAX_ENTRY_SIZE: u64 = 100 * 1024 * 1024;
 
-/// What to do with an entry over the size limit.
+/// What to do with a Gradle entry over the size limit. Maven entries are always refused, because
+/// Maven only logs a failed store, and dropping one file could leave a build's `buildinfo.xml`
+/// without the files it lists (design doc 0001).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OversizePolicy {
     /// Answer as if stored, discard the bytes and count the entry. The default: Gradle turns its
@@ -201,7 +203,7 @@ impl CacheBuilder {
         self
     }
 
-    /// Sets what happens to an entry over the size limit.
+    /// Sets what happens to a Gradle entry over the size limit.
     #[must_use]
     pub fn oversize(mut self, policy: OversizePolicy) -> Self {
         self.oversize = policy;
@@ -284,15 +286,15 @@ impl Cache {
     ///
     /// Callers should check this before reading a body: under [`OversizePolicy::Drop`] the
     /// transport may need to discard the body itself (see the Gradle adapter).
-    pub fn admit(&self, declared_size: Option<u64>) -> Admission {
+    pub fn admit(&self, key: &CacheKey, declared_size: Option<u64>) -> Admission {
         let limit = self.max_entry_size;
         let Some(size) = declared_size.filter(|&size| size > limit) else {
             return Admission::Accept;
         };
         self.oversized.fetch_add(1, Ordering::Relaxed);
-        match self.oversize {
+        match self.oversize_policy(key.namespace()) {
             OversizePolicy::Drop => {
-                tracing::info!(size, limit, "dropping oversized entry");
+                tracing::info!(%key, size, limit, "dropping oversized entry");
                 Admission::Drop
             }
             OversizePolicy::Reject => Admission::Reject(CacheError::TooLarge {
@@ -302,7 +304,19 @@ impl Cache {
         }
     }
 
+    /// What happens to an oversized entry in a namespace.
+    #[must_use]
+    pub fn oversize_policy(&self, namespace: Namespace) -> OversizePolicy {
+        match namespace {
+            Namespace::Gradle => self.oversize,
+            Namespace::Maven => OversizePolicy::Reject,
+        }
+    }
+
     /// Stores an entry from a stream. `declared_size` is the request's `Content-Length`.
+    ///
+    /// A store to an existing immutable (Gradle) key writes nothing; one to a mutable (Maven) key
+    /// replaces the entry.
     ///
     /// An entry over the size limit is dropped or refused according to the [`OversizePolicy`],
     /// whether its declared size says so or the body passes the limit while streaming. A body
@@ -315,12 +329,12 @@ impl Cache {
         declared_size: Option<u64>,
         body: ByteStream,
     ) -> Result<StoreOutcome, CacheError> {
-        match self.admit(declared_size) {
+        match self.admit(key, declared_size) {
             Admission::Accept => {}
             Admission::Drop => return Ok(StoreOutcome::Dropped),
             Admission::Reject(e) => return Err(e),
         }
-        if self.head(key).await?.is_some() {
+        if key.namespace().is_immutable() && self.head(key).await?.is_some() {
             return Ok(StoreOutcome::Exists);
         }
         let Some(first) = self.tiers.first() else {
@@ -330,7 +344,7 @@ impl Cache {
         };
 
         let limit = self.max_entry_size;
-        let drain = self.oversize == OversizePolicy::Drop;
+        let drain = self.oversize_policy(key.namespace()) == OversizePolicy::Drop;
         match first
             .store
             .put(key, declared_size, limit_stream(body, limit, drain))
@@ -403,7 +417,7 @@ mod tests {
     use crate::store::memory::MemoryStore;
 
     fn key(s: &str) -> CacheKey {
-        CacheKey::parse(s).unwrap()
+        CacheKey::gradle(s).unwrap()
     }
 
     fn body(chunks: &[&'static [u8]]) -> ByteStream {
@@ -518,6 +532,30 @@ mod tests {
         assert_eq!(read.load(Ordering::Relaxed), 4, "every chunk is read");
         assert!(cache.get(&k).await.unwrap().is_none());
         assert_eq!(cache.status().oversized, 1);
+    }
+
+    #[tokio::test]
+    async fn maven_store_replaces_existing_entry() {
+        let cache = cache(1024);
+        let k = CacheKey::maven("v1.2/g/a/abc/buildinfo.xml").unwrap();
+        cache.put(&k, None, body(&[b"first"])).await.unwrap();
+        let outcome = cache.put(&k, None, body(&[b"second"])).await.unwrap();
+        assert_eq!(outcome, StoreOutcome::Stored);
+        let hit = cache.get(&k).await.unwrap().unwrap();
+        assert_eq!(read_all(hit.blob).await, b"second");
+    }
+
+    #[tokio::test]
+    async fn maven_oversize_is_rejected_even_when_gradle_drops() {
+        let cache = cache(4);
+        let k = CacheKey::maven("v1/g/a/abc/a.jar").unwrap();
+        let err = cache.put(&k, Some(5), body(&[b"12345"])).await.unwrap_err();
+        assert!(matches!(err, CacheError::TooLarge { .. }));
+        let err = cache
+            .put(&k, None, body(&[b"123", b"45"]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CacheError::TooLarge { size: None, .. }));
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 //! HTTP adapters. The real tier (admission-aware, bounded by bytes, design doc 0003) replaces it.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     io,
     sync::{PoisonError, RwLock},
 };
@@ -63,7 +63,8 @@ impl BlobStore for MemoryStore {
         mut body: ByteStream,
     ) -> BoxFuture<'a, io::Result<PutOutcome>> {
         Box::pin(async move {
-            if self.lookup(key).is_some() {
+            let immutable = key.namespace().is_immutable();
+            if immutable && self.lookup(key).is_some() {
                 return Ok(PutOutcome::Exists);
             }
             let capacity = size_hint.and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
@@ -74,8 +75,12 @@ impl BlobStore for MemoryStore {
             }
             let mut entries = self.entries.write().unwrap_or_else(PoisonError::into_inner);
             Ok(match entries.entry(key.clone()) {
-                std::collections::hash_map::Entry::Occupied(_) => PutOutcome::Exists,
-                std::collections::hash_map::Entry::Vacant(slot) => {
+                Entry::Occupied(_) if immutable => PutOutcome::Exists,
+                Entry::Occupied(mut slot) => {
+                    slot.insert(buf.freeze());
+                    PutOutcome::Stored
+                }
+                Entry::Vacant(slot) => {
                     slot.insert(buf.freeze());
                     PutOutcome::Stored
                 }

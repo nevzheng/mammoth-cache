@@ -64,7 +64,7 @@ to a hand-written hyper service if a benchmark ever shows axum on the hot path.
 crates/mammoth-cache/src/
 ├── main.rs          thin binary: logging, listener, wiring
 ├── lib.rs
-├── key.rs           CacheKey: validated lowercase hex, at most 128 characters
+├── key.rs           CacheKey: a namespace (gradle, maven) and a validated name
 ├── cache.rs         core: lookup order, size limit, hit and miss counts
 ├── store/
 │   ├── mod.rs       ports: BlobStore, BoundedStore, Blob, ByteStream, Tier
@@ -72,7 +72,10 @@ crates/mammoth-cache/src/
 └── http/
     ├── mod.rs       router
     ├── error.rs     AIP-193 responses
+    ├── entries.rs   load, check and store, shared by the protocol adapters
     ├── gradle.rs    GET, HEAD and PUT /cache/{key}
+    ├── maven.rs     GET, HEAD, PUT, OPTIONS and MKCOL /maven/{path}
+    ├── metrics.rs   request counters labelled by client
     ├── ops.rs       /ping, /livez, /readyz, /metrics
     └── admin.rs     /v1/serverStatus
 ```

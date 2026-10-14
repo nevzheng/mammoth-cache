@@ -28,7 +28,7 @@ fn app_with(max_entry_size: u64, oversize: OversizePolicy) -> Router {
         .max_entry_size(max_entry_size)
         .oversize(oversize)
         .build();
-    router(Arc::new(cache))
+    router(Arc::new(cache), None)
 }
 
 fn app(max_entry_size: u64) -> Router {
@@ -164,4 +164,124 @@ async fn unknown_route_is_aip_193_not_found() {
     let response = send(&app(1024), get("/nope")).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert_eq!(error_reason(response).await, "ROUTE_NOT_FOUND");
+}
+
+fn put_to(uri: &str, content_type: &str, body: &'static [u8]) -> Request<Body> {
+    Request::put(uri)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, body.len())
+        .body(Body::from(body))
+        .unwrap()
+}
+
+fn request(method: &str, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap()
+}
+
+const MAVEN_PATH: &str = "/maven/v1.2/com.example/app/0123456789abcdef/buildinfo.xml";
+
+#[tokio::test]
+async fn gradle_accepts_v1_media_type() {
+    let app = app(1024);
+    let v1 = "application/vnd.gradle.build-cache-artifact.v1";
+    let response = send(&app, put_to(&format!("/cache/{KEY}"), v1, b"old gradle")).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn gradle_miss_names_the_key_without_namespace() {
+    let response = send(&app(1024), get(&format!("/cache/{KEY}"))).await;
+    let json: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(json["error"]["details"][0]["metadata"]["key"], KEY);
+}
+
+#[tokio::test]
+async fn maven_store_then_load_and_replace() {
+    let app = app(1024);
+    let response = send(&app, put_to(MAVEN_PATH, "application/xml", b"<first/>")).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = send(&app, put_to(MAVEN_PATH, "application/xml", b"<second/>")).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = send(&app, get(MAVEN_PATH)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/octet-stream"
+    );
+    assert_eq!(body_bytes(response).await, b"<second/>");
+
+    let response = send(&app, request("HEAD", MAVEN_PATH)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_LENGTH], "9");
+}
+
+#[tokio::test]
+async fn maven_and_gradle_namespaces_are_separate() {
+    let app = app(1024);
+    send(&app, put(KEY, b"gradle")).await;
+    let response = send(&app, get(&format!("/maven/{KEY}"))).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn maven_miss_names_the_path() {
+    let response = send(&app(1024), get(MAVEN_PATH)).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let json: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(
+        json["error"]["details"][0]["metadata"]["path"],
+        MAVEN_PATH.trim_start_matches("/maven/")
+    );
+}
+
+#[tokio::test]
+async fn maven_rejects_bad_paths() {
+    for uri in ["/maven/v1/../etc/passwd", "/maven/v1/a%20b", "/maven/v1//x"] {
+        let response = send(&app(1024), get(uri)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(error_reason(response).await, "INVALID_CACHE_PATH");
+    }
+}
+
+#[tokio::test]
+async fn maven_oversize_is_413() {
+    let response = send(&app(4), put_to(MAVEN_PATH, "application/xml", b"too large")).await;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(error_reason(response).await, "ENTRY_TOO_LARGE");
+}
+
+#[tokio::test]
+async fn maven_options_has_no_dav_header() {
+    let response = send(&app(1024), request("OPTIONS", MAVEN_PATH)).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()[header::ALLOW], "GET, HEAD, PUT, OPTIONS");
+    assert!(response.headers().get("dav").is_none());
+}
+
+#[tokio::test]
+async fn maven_mkcol_is_201_and_does_nothing() {
+    let app = app(1024);
+    let response = send(&app, request("MKCOL", "/maven/v1.2/com.example")).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = send(&app, get("/maven/v1.2/com.example")).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn maven_other_methods_are_405_with_allow() {
+    let response = send(&app(1024), request("DELETE", MAVEN_PATH)).await;
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(response.headers()[header::ALLOW], "GET, HEAD, PUT, OPTIONS");
+    assert_eq!(error_reason(response).await, "METHOD_NOT_ALLOWED");
+}
+
+#[tokio::test]
+async fn metrics_without_a_recorder_is_501() {
+    let response = send(&app(1024), get("/metrics")).await;
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 }
