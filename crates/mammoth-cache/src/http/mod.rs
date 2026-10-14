@@ -1,6 +1,7 @@
 //! Inbound HTTP adapters: translate HTTP to core calls, and core errors to AIP-193 responses.
 
 mod admin;
+mod auth;
 mod entries;
 pub mod error;
 mod gradle;
@@ -13,7 +14,7 @@ use std::sync::Arc;
 use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
 use metrics_exporter_prometheus::PrometheusHandle;
 
-use crate::cache::Cache;
+use crate::{auth::Authenticator, cache::Cache};
 use error::ApiError;
 
 /// State shared by every handler.
@@ -25,9 +26,18 @@ pub struct AppState {
     pub metrics: Option<PrometheusHandle>,
 }
 
-/// Builds the HTTP router over a cache. `metrics` renders `/metrics`; without it, `/metrics`
-/// answers `501`.
+/// Builds the HTTP router over a cache, open to everyone. `metrics` renders `/metrics`; without
+/// it, `/metrics` answers `501`.
 pub fn router(cache: Arc<Cache>, metrics: Option<PrometheusHandle>) -> Router {
+    router_with_auth(cache, metrics, Arc::new(Authenticator::open()))
+}
+
+/// Builds the HTTP router over a cache, checking every request against `auth`.
+pub fn router_with_auth(
+    cache: Arc<Cache>,
+    metrics: Option<PrometheusHandle>,
+    auth: Arc<Authenticator>,
+) -> Router {
     let entries = Router::new()
         .route(
             "/cache/{key}",
@@ -54,6 +64,7 @@ pub fn router(cache: Arc<Cache>, metrics: Option<PrometheusHandle>) -> Router {
         .route("/metrics", get(ops::metrics))
         .route("/v1/serverStatus", get(admin::get_server_status))
         .fallback(|| async { ApiError::route_not_found() })
+        .layer(middleware::from_fn_with_state(auth, auth::require))
         .layer(middleware::from_fn(metrics::record))
         .with_state(AppState { cache, metrics })
 }

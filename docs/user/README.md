@@ -8,7 +8,7 @@ and they reuse task and module outputs that other builds have already produced.
 > [!WARNING]
 > mammoth-cache is pre-alpha. The Gradle and Maven protocols work today with memory, disk and
 > bucket tiers set in `mammoth.toml`, and an `edge` image is published from `main`, but there is no
-> release yet. Authentication and most metrics are still being built. Each page says what works now
+> release yet. TLS and most metrics are still being built. Each page says what works now
 > and what is planned. Don't run it in production yet.
 
 ## What it does
@@ -53,7 +53,7 @@ well.
 | `mammoth.toml` config file                                                  | Available | [Configuration](configuration.md)         |
 | Disk and bucket tiers, in the library and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |
 | Disk and bucket tiers in the `mammoth` binary                               | Available | [Configuration](configuration.md#disk-l2) |
-| Users, tokens and scopes                                                    | Planned   | [Authentication](authentication.md)       |
+| Users, tokens and scopes                                                    | Available | [Authentication](authentication.md)       |
 | TLS                                                                         | Planned   | [Configuration](configuration.md)         |
 | Request metrics at `/metrics`                                               | Available | [Metrics](metrics.md)                     |
 | `edge` container image from `main`                                          | Available | [Quickstart](quickstart.md)               |
