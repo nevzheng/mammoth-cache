@@ -9,7 +9,9 @@
 # settings and on 8081 with nginx's defaults. `mammoth-memory` (5074), `mammoth-memory-disk` (5075)
 # and `mammoth-memory-bucket` (5076) run the other tier topologies; `mammoth-max-available` (5077)
 # sizes its disk tier from a 64 MiB tmpfs. Profiles: `multi` adds
-# `mammoth-2` (5072) on the same bucket; `observe` adds Grafana (3000). MAMMOTH_IMAGE picks the image under test, for example
+# `mammoth-2` (5072) on the same bucket; `observe` adds Grafana (3000); `tls` adds `mammoth-tls`
+# (5078, REAPI gRPC on 6012), serving the certificate in ./tls that the test harness issues, and
+# `mammoth-tls-generated` (5079), serving a self-signed one it generates itself. MAMMOTH_IMAGE picks the image under test, for example
 # ghcr.io/nevzheng/mammoth-cache:edge. MAMMOTH_CONFIG_DIR swaps in other config files.
 
 name: mammoth
@@ -93,6 +95,28 @@ services:
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory-bucket.toml:/etc/mammoth/mammoth.toml:ro
 
+  # Built-in TLS (doc 0014). The harness writes ./tls (a test CA and a certificate from it)
+  # before starting the stack, and renews the certificate in place to test reloads.
+  mammoth-tls:
+    <<: *mammoth
+    profiles: [tls]
+    ports:
+      - "${MAMMOTH_TLS_PORT:-5078}:5071"
+      - "${MAMMOTH_TLS_REAPI_PORT:-6012}:6011"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-tls.toml:/etc/mammoth/mammoth.toml:ro
+      - ./tls:/etc/mammoth/tls:ro
+
+  # [tls] generate: writes a self-signed pair to its volume on first start and reuses it after.
+  mammoth-tls-generated:
+    <<: *mammoth
+    profiles: [tls]
+    ports:
+      - "${MAMMOTH_TLS_GENERATED_PORT:-5079}:5071"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-tls-generated.toml:/etc/mammoth/mammoth.toml:ro
+      - mammoth-tls-generated-disk:/var/lib/mammoth
+
   nginx:
     image: nginx:1.31.6-alpine
     ports:
@@ -144,6 +168,7 @@ services:
       - mammoth-proxied-disk:/disks/mammoth-proxied
       - mammoth-memory-disk-disk:/disks/mammoth-memory-disk
       - mammoth-2-disk:/disks/mammoth-2
+      - mammoth-tls-generated-disk:/disks/mammoth-tls-generated
     depends_on:
       seaweedfs:
         condition: service_healthy
@@ -187,3 +212,4 @@ volumes:
   mammoth-proxied-disk:
   mammoth-memory-disk-disk:
   mammoth-2-disk:
+  mammoth-tls-generated-disk:

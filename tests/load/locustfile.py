@@ -30,6 +30,7 @@ from mammoth_e2e.client import basic
 from mammoth_e2e.loadstats import serve_stats
 from mammoth_e2e.stack import Stack
 from mammoth_e2e.target import Target
+from mammoth_e2e.tlscerts import Authority
 from mammoth_e2e.traffic import MODELS, Model, Traffic
 
 if TYPE_CHECKING:
@@ -68,6 +69,9 @@ def _options(parser: LocustArgumentParser) -> None:
     group.add_argument("--max-p99-ms", type=float, default=100.0, help="Fail above this p99")
     group.add_argument("--max-fail-ratio", type=float, default=0.001, help="Fail above this")
     group.add_argument("--metrics-port", type=int, default=9646, help="0 turns the exporter off")
+    group.add_argument(
+        "--tls", action="store_true", help="Load the profile's [tls] node over HTTPS instead"
+    )
 
 
 @events.init.add_listener
@@ -82,8 +86,7 @@ def _init(environment: Environment, **_: object) -> None:
         and not isinstance(environment.runner, WorkerRunner)
     ):
         Stack(target.compose, target).up()
-    if not environment.host:
-        environment.host = str(target.base_url).rstrip("/")
+    _choose_host(environment, target, tls=options.tls)
     CacheUser.headers = {"Authorization": basic(target.credentials)} if target.credentials else {}
     model = MODELS[options.model or ("warm" if options.run == "warm" else "synthetic")]
     if options.keys:
@@ -109,18 +112,44 @@ def _init(environment: Environment, **_: object) -> None:
 _report: dict[str, Any] = {}
 
 
+def _choose_host(environment: Environment, target: Target, *, tls: bool) -> None:
+    """The profile's main node, or with `tls` its TLS node, unless `--host` names another."""
+    if tls:
+        _use_tls(environment, target)
+    if not environment.host:
+        environment.host = str(target.base_url).rstrip("/")
+
+
+def _use_tls(environment: Environment, target: Target) -> None:
+    """Load the profile's TLS node, verifying it against the harness's test CA as a real client
+    would."""
+    if target.tls is None:
+        raise SystemExit(f"--tls: target {target.name!r} has no [tls] nodes")
+    authority = Authority(target.tls.cert_dir)
+    CacheUser.insecure = False
+    CacheUser.ssl_context_factory = authority.context
+    _report["base"] = str(target.tls.base_url).rstrip("/")
+    _report["verify"] = authority.context()
+    environment.host = environment.host or _report["base"]
+
+
 @events.test_start.add_listener
 def _before(environment: Environment, **_: object) -> None:
     if isinstance(environment.runner, WorkerRunner):
         return
     target: Target | None = _report.get("target")
     if target is not None:
-        _report["before"] = metrics.scrape(target)
+        _report["before"] = _scrape(target)
+
+
+def _scrape(target: Target) -> metrics.Scrape:
+    """The loaded node's metrics: the TLS node's with --tls."""
+    return metrics.scrape(target, base=_report.get("base"), verify=_report.get("verify", True))
 
 
 def _tier_hits(target: Target, before: metrics.Scrape) -> str:
     """Where hits were served from, by the node's own counters."""
-    after = metrics.scrape(target)
+    after = _scrape(target)
     by_tier = {
         tier: metrics.delta(before, after, "mammoth_cache_lookups_total", result="hit", tier=tier)
         for tier in ("memory", "disk", "bucket")

@@ -101,6 +101,8 @@ class Reapi:
     address: str
     authorization: str | None = None
     instance: str = ""
+    # PEM CA certificates to trust; set for a node with [tls], which serves gRPC over TLS.
+    root_certificates: bytes | None = None
     s: Stubs = field(default_factory=stubs)
     _channel: grpc.Channel = field(init=False)
     _cas: Any = field(init=False)
@@ -108,13 +110,15 @@ class Reapi:
     _bytestream: Any = field(init=False)
 
     def __post_init__(self) -> None:
-        self._channel = grpc.insecure_channel(
-            self.address,
-            options=[
-                ("grpc.max_receive_message_length", 64 * 1024 * 1024),
-                ("grpc.max_send_message_length", 64 * 1024 * 1024),
-            ],
-        )
+        options = [
+            ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+            ("grpc.max_send_message_length", 64 * 1024 * 1024),
+        ]
+        if self.root_certificates is None:
+            self._channel = grpc.insecure_channel(self.address, options=options)
+        else:
+            credentials = grpc.ssl_channel_credentials(root_certificates=self.root_certificates)
+            self._channel = grpc.secure_channel(self.address, credentials, options=options)
         self._cas = self.s.re_grpc.ContentAddressableStorageStub(self._channel)
         self._ac = self.s.re_grpc.ActionCacheStub(self._channel)
         self._bytestream = self.s.bs_grpc.ByteStreamStub(self._channel)

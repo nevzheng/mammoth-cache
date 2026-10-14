@@ -1,0 +1,35 @@
+# HTTPS with a self-signed certificate the node generates itself ([tls] generate, issue #87), for
+# tests/e2e/test_tls.py. The pair is written to the disk volume, so it survives a restart, and a
+# new one is generated only once both files are deleted. Anonymous requests may read and write,
+# so the tests exercise TLS, not auth.
+version = 1
+listen = "0.0.0.0:5071"
+
+[limits]
+max_entry_size = "16MiB"
+
+[memory]
+size = "64MiB"
+max_entry_size = "8MiB"
+
+[disk]
+path = "/var/lib/mammoth/cache"
+size = "256MiB"
+free_space_buffer = "16MiB"
+
+[tls]
+cert = "/var/lib/mammoth/tls/tls.crt"
+key = "/var/lib/mammoth/tls/tls.key"
+generate = true
+
+[protocols]
+gradle = true
+maven = true
+bazel = true
+
+[auth]
+anonymous = ["cache:read", "cache:write"]
+
+[log]
+level = "info"
+format = "text"

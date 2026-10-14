@@ -11,3 +11,6 @@
 
 # The REAPI code generator (its own Cargo workspace).
 /scripts/reapi-codegen/target/
+
+# Test certificates the e2e harness issues for the Compose stack.
+/deploy/compose/tls/

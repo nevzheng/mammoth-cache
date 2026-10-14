@@ -7,8 +7,8 @@ proxy_url = "http://localhost:8080" # nginx, set up as docs/user/deployment.md s
 proxy_defaults_url = "http://localhost:8081" # the same nginx on its defaults
 
 # Server features this target has. Tests that need a missing one are skipped, so a feature is
-# switched on here in the PR that builds it. Known: config, auth, disk, bucket, bazel, reapi.
-features = ["config", "auth", "disk", "bucket", "bazel", "reapi"]
+# switched on here in the PR that builds it. Known: config, auth, disk, bucket, bazel, reapi, tls.
+features = ["config", "auth", "disk", "bucket", "bazel", "reapi", "tls"]
 reapi_address = "localhost:6011" # [reapi] listen on the mammoth service
 open_reapi_address = "localhost:6013" # and on mammoth-open
 
@@ -24,6 +24,15 @@ anonymous_scopes = [] # [auth] anonymous in deploy/compose/config/mammoth.toml
 [compose]
 file = "../../deploy/compose/compose.yaml"
 project = "mammoth-e2e"
+profiles = ["tls"]
+
+# The built-in TLS nodes (profile tls in deploy/compose). The harness issues mammoth-tls's
+# certificate into cert_dir from a new test CA before the stack starts.
+[tls]
+base_url = "https://localhost:5078"
+generated_base_url = "https://localhost:5079" # [tls] generate = true
+reapi_address = "localhost:6012"
+cert_dir = "../../deploy/compose/tls"
 
 [bucket]
 name = "mammoth-e2e"
