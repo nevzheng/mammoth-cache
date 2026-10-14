@@ -25,9 +25,13 @@ const CI: &str = "Basic Y2k6Y2ktdG9rZW4=";
 
 /// Starts a server with a 1 KiB entry limit. Anonymous requests may read; `ci` may write.
 async fn start() -> SocketAddr {
+    start_with_limit(LIMIT).await
+}
+
+async fn start_with_limit(limit: u64) -> SocketAddr {
     let cache = Cache::builder()
-        .bounded_tier(Arc::new(MemoryStore::new(1 << 20)))
-        .max_entry_size(LIMIT)
+        .bounded_tier(Arc::new(MemoryStore::new(128 << 20)))
+        .max_entry_size(limit)
         .build();
     let auth = Authenticator::new(
         [Scope::CacheRead].into_iter().collect(),
@@ -266,4 +270,52 @@ async fn sizes_at_the_edges() {
             assert_eq!(status, 404, "{key}");
         }
     }
+}
+
+#[tokio::test]
+async fn a_slow_answer_to_expect_continue_still_reads_the_body() {
+    let addr = start_with_limit(4 << 20).await;
+    // Large enough that hyper does not read it on its own.
+    let size = 1 << 20;
+    let half = vec![b'1'; size / 2];
+    // The first upload of a key holds it for 3.5 s, sending half its body now, half later.
+    let mut first = TcpStream::connect(addr).await.unwrap();
+    first
+        .write_all(put_head("c7", size as u64, false, Some(CI)).as_bytes())
+        .await
+        .unwrap();
+    first.write_all(&half).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // A second upload of the key asks first, but like Apache HttpClient sends the body anyway
+    // after 3 s without `100 Continue`. The server is still waiting on the first upload then.
+    let mut second = TcpStream::connect(addr).await.unwrap();
+    second
+        .write_all(put_head("c7", size as u64, true, Some(CI)).as_bytes())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let (reader, mut writer) = second.into_split();
+    // In the background: the server reads it only once it has decided.
+    let sent =
+        tokio::spawn(async move { writer.write_all(&vec![b'2'; size]).await.map(|()| writer) });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    first.write_all(&half).await.unwrap();
+    assert_eq!(read_response(&mut first).await.0, 201);
+
+    // The second store finds the entry. Its body was read, so the connection carries on.
+    let writer = sent
+        .await
+        .unwrap()
+        .expect("the server stopped reading the body");
+    let mut second = reader.reunite(writer).unwrap();
+    let (mut status, _) = read_head(&mut second).await;
+    if status == 100 {
+        status = read_response(&mut second).await.0;
+    }
+    assert_eq!(status, 200);
+    assert_eq!(
+        send(&mut second, &put_head("c8", 2, false, Some(CI)), b"ok").await,
+        201
+    );
 }

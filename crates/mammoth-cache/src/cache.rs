@@ -17,7 +17,7 @@
 //!   logged, and the `mammoth_tier_up{tier="bucket"}` gauge follows it.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt, io,
     sync::{
         Arc, Mutex, PoisonError,
@@ -31,6 +31,10 @@ use tokio::{
     sync::{Notify, mpsc},
     task::JoinHandle,
 };
+
+mod gate;
+
+use gate::Gate;
 
 use crate::{
     key::{CacheKey, Namespace},
@@ -472,7 +476,7 @@ impl CacheBuilder {
             oversized: AtomicU64::new(0),
             started: Instant::now(),
             shutting_down: AtomicBool::new(false),
-            writing: Mutex::default(),
+            gate: Arc::default(),
         }
     }
 }
@@ -489,23 +493,8 @@ pub struct Cache {
     oversized: AtomicU64,
     started: Instant,
     shutting_down: AtomicBool,
-    /// Immutable keys being stored now. One store per key writes; the rest find it exists.
-    writing: Mutex<HashSet<CacheKey>>,
-}
-
-/// Holds an immutable key in [`Cache::writing`] while it is stored.
-struct Writing<'a> {
-    keys: &'a Mutex<HashSet<CacheKey>>,
-    key: CacheKey,
-}
-
-impl Drop for Writing<'_> {
-    fn drop(&mut self) {
-        self.keys
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.key);
-    }
+    /// Stores and promotions in progress, per key.
+    gate: Arc<Gate>,
 }
 
 impl Cache {
@@ -546,7 +535,16 @@ impl Cache {
     /// Counts a hit at `depth` in the lookup order and promotes it into the local tiers above.
     fn hit(&self, key: &CacheKey, tier: Tier, blob: Blob, depth: usize) -> Hit {
         self.hits.fetch_add(1, Ordering::Relaxed);
-        let blob = promote(key, tier, blob, &self.tiers[..depth]);
+        let above = &self.tiers[..depth];
+        let blob = if above.is_empty() {
+            blob
+        } else {
+            match self.gate.promotion(key) {
+                Some(guard) => promote(key, tier, blob, above, guard),
+                // A client is storing the key now; its copy is the one to keep.
+                None => blob,
+            }
+        };
         Hit { tier, blob }
     }
 
@@ -626,28 +624,14 @@ impl Cache {
             Admission::Drop => return Ok(StoreOutcome::Dropped),
             Admission::Reject(e) => return Err(e),
         }
-        let _writing = if key.namespace().is_immutable() {
-            // Racing stores of one key may carry different bytes (a task that is not
-            // reproducible), so only the first is written, and every tier gets the same copy.
-            if !self
-                .writing
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(key.clone())
-            {
-                return Ok(StoreOutcome::Exists);
-            }
-            let writing = Writing {
-                keys: &self.writing,
-                key: key.clone(),
-            };
-            if self.head(key).await?.is_some() {
-                return Ok(StoreOutcome::Exists);
-            }
-            Some(writing)
-        } else {
-            None
-        };
+        let immutable = key.namespace().is_immutable();
+        // Racing stores of an immutable key may carry different bytes (a task that is not
+        // reproducible), so they write one at a time, and the later ones find the first's copy.
+        // A later one writes only if the first failed.
+        let _gate = self.gate.store(key, immutable).await;
+        if immutable && self.head(key).await?.is_some() {
+            return Ok(StoreOutcome::Exists);
+        }
         // The deepest local tier decides the outcome; the others, and the bucket when it is
         // written inline, get copies of the same stream.
         let mut writers: Vec<&Arc<dyn BlobStore>> = self
@@ -902,7 +886,14 @@ async fn bucket_read<'a, T>(
 
 /// Copies a hit from a lower tier into the tiers `above` it while it streams to the client. Each
 /// copy is written in the background and abandoned if it falls behind the client.
-fn promote(key: &CacheKey, from: Tier, blob: Blob, above: &[TierHandle]) -> Blob {
+/// `guard` holds off stores of the key until every copy is done.
+fn promote(
+    key: &CacheKey,
+    from: Tier,
+    blob: Blob,
+    above: &[TierHandle],
+    guard: gate::Guard,
+) -> Blob {
     if above.is_empty() {
         return blob;
     }
@@ -916,10 +907,13 @@ fn promote(key: &CacheKey, from: Tier, blob: Blob, above: &[TierHandle]) -> Blob
         return blob;
     }
     let (body, copies) = tee(blob.body, above.len(), tee::Mode::Lossy, Some(size));
+    let guard = Arc::new(guard);
     for (handle, copy) in above.into_iter().zip(copies) {
         let store = handle.store.clone();
         let key = key.clone();
+        let guard = guard.clone();
         tokio::spawn(async move {
+            let _guard = guard;
             let to = store.tier();
             match store.put(&key, Some(size), copy).await {
                 Ok(PutOutcome::Stored) => {
@@ -1539,6 +1533,67 @@ mod tests {
             let bucket = read_all(t.bucket.get(&k).await.unwrap().unwrap()).await;
             assert_eq!(memory, disk);
             assert_eq!(memory, bucket);
+        }
+
+        #[tokio::test]
+        async fn a_racing_store_writes_when_the_first_one_fails() {
+            let t = tiers().await;
+            let cache = Arc::new(cache(&t, BucketWrite::Sync));
+            let k = key("ab13");
+            // The first store sends half its body, then the client goes away.
+            let (fail, failed) = tokio::sync::oneshot::channel::<()>();
+            let first =
+                stream::iter([Ok(Bytes::from_static(b"1111"))]).chain(stream::once(async move {
+                    let _ = failed.await;
+                    Err(io::Error::other("client went away"))
+                }));
+            let first = tokio::spawn({
+                let (cache, k) = (cache.clone(), k.clone());
+                async move { cache.put(&k, Some(8), first.boxed()).await }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let second = tokio::spawn({
+                let (cache, k) = (cache.clone(), k.clone());
+                async move { cache.put(&k, Some(8), body(&[b"22222222"])).await }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            fail.send(()).unwrap();
+
+            assert!(first.await.unwrap().is_err());
+            // Not told "exists" for an entry that never landed: it waited, then wrote its own.
+            assert_eq!(second.await.unwrap().unwrap(), StoreOutcome::Stored);
+            let hit = cache.get(&k).await.unwrap().unwrap();
+            assert_eq!(read_all(hit.blob).await, b"22222222");
+        }
+
+        #[tokio::test]
+        async fn a_promotion_never_lands_over_a_newer_store() {
+            let t = tiers().await;
+            let cache = Arc::new(
+                Cache::builder()
+                    .bounded_tier(t.memory.clone())
+                    .bucket_tier(t.bucket.clone(), BucketWrite::Sync)
+                    .build(),
+            );
+            let k = CacheKey::maven("v1/g/a/buildinfo.xml").unwrap();
+            t.bucket.put(&k, Some(3), body(&[b"old"])).await.unwrap();
+
+            // A read hits the bucket and starts promoting the old copy into memory.
+            let hit = cache.get(&k).await.unwrap().unwrap();
+            assert_eq!(hit.tier, Tier::Bucket);
+            // Meanwhile a client stores a new copy.
+            let store = tokio::spawn({
+                let (cache, k) = (cache.clone(), k.clone());
+                async move { cache.put(&k, Some(3), body(&[b"new"])).await }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert_eq!(read_all(hit.blob).await, b"old");
+            assert_eq!(store.await.unwrap().unwrap(), StoreOutcome::Stored);
+            // Let any promotion still running finish.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+
+            let memory = read_all(t.memory.get(&k).await.unwrap().unwrap()).await;
+            assert_eq!(memory, b"new");
         }
 
         #[tokio::test]

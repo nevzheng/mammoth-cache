@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, ready},
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -25,6 +26,10 @@ use crate::{
     key::CacheKey,
     store::ByteStream,
 };
+
+/// How long a client waits for `100 Continue` before sending the body unasked, less a margin.
+/// Apache `HttpClient`, under Gradle and Maven, waits 3 s.
+const CONTINUE_WAIT: Duration = Duration::from_secs(2);
 
 const OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
 
@@ -91,6 +96,9 @@ pub(super) async fn store_through<E: From<CacheError>>(
     // store returns before reading all of it, read and discard the rest, so the client finishes
     // its upload and gets a clean response, not a reset. With `Expect` and an unread body, the
     // client is waiting for `100 Continue` and sends nothing.
+    // Gradle's and Maven's HTTP client waits 3 s for `100 Continue`, then sends the body anyway.
+    // So once deciding has taken close to that, the body may be on its way too.
+    let decided_at = Instant::now();
     let in_flight = !expects_continue(headers);
     let result = match state.cache.admit(key, declared_size) {
         Admission::Accept => {
@@ -108,7 +116,7 @@ pub(super) async fn store_through<E: From<CacheError>>(
         Admission::Reject(e) => Err(e.into()),
         Admission::Drop => Ok(StatusCode::OK),
     };
-    if in_flight || body.started() {
+    if in_flight || body.started() || decided_at.elapsed() >= CONTINUE_WAIT {
         body.drain().await;
     }
     result
