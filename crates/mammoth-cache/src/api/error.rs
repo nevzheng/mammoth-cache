@@ -28,9 +28,9 @@ pub enum Reason {
     /// The entry is over the size limit. Metadata: `maxEntryBytes` and, when declared,
     /// `entryBytes`.
     EntryTooLarge,
-    /// A CAS upload whose content does not hash to its digest. Metadata: `key`.
+    /// A CAS upload whose content does not hash to its digest. Metadata: `digest`.
     DigestMismatch,
-    /// An upload whose length is not its digest's size.
+    /// An upload whose length is not its digest's size. Metadata: `digest`.
     SizeMismatch,
     /// The upload ended before it was complete.
     UploadIncomplete,

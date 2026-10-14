@@ -184,7 +184,7 @@ impl ApiError {
             Reason::DigestMismatch,
             "The uploaded content does not hash to its digest.",
         )
-        .with("key", key.name())
+        .with("digest", key.name())
     }
 
     /// `501 UNIMPLEMENTED` for `method`, which this server does not offer, such as `GET /metrics`

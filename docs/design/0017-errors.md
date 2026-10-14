@@ -342,15 +342,16 @@ bold.
 
 | Reason                        | Code                           | HTTP | Metadata                       |
 | ----------------------------- | ------------------------------ | ---- | ------------------------------ |
-| `ENTRY_NOT_FOUND`             | `NOT_FOUND`                    | 404  | **`key`**, the bare name, on   |
-|                               |                                |      | all protocols                  |
+| `ENTRY_NOT_FOUND`             | `NOT_FOUND`                    | 404  | the bare name: `key` (Gradle), |
+|                               |                                |      | `path` (Maven), **`digest`**   |
+|                               |                                |      | (Bazel HTTP and gRPC)          |
 | `ROUTE_NOT_FOUND`             | `NOT_FOUND`                    | 404  |                                |
 | `INVALID_REQUEST`             | `INVALID_ARGUMENT`             | 4xx* | (status kept as sent; fallback |
 |                               |                                |      | rewrite only)                  |
 | `ENTRY_TOO_LARGE`             | **`INVALID_ARGUMENT`**         | 413* | `maxEntryBytes`, `entryBytes`  |
 |                               | (HTTP body was `OUT_OF_RANGE`) |      |                                |
-| `DIGEST_MISMATCH`             | `INVALID_ARGUMENT`             | 400  | **`key`** (HTTP sent `digest`) |
-| `SIZE_MISMATCH`               | `INVALID_ARGUMENT`             | 400  | **`key`** (new)                |
+| `DIGEST_MISMATCH`             | `INVALID_ARGUMENT`             | 400  | `digest`                       |
+| `SIZE_MISMATCH`               | `INVALID_ARGUMENT`             | 400  | **`digest`** (new)             |
 | `UPLOAD_INCOMPLETE`           | `INVALID_ARGUMENT`             | 400  |                                |
 | `UPLOAD_CANCELLED`            | `CANCELLED`                    | 400* |                                |
 | `UPLOAD_IDLE`                 | `DEADLINE_EXCEEDED`            | 400* |                                |

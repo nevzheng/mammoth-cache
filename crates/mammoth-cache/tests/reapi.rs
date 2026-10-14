@@ -351,7 +351,7 @@ async fn batch_upload_checks_each_blob() {
         .get_details_error_info()
         .unwrap();
     assert_eq!(
-        size_mismatch.metadata["key"],
+        size_mismatch.metadata["digest"],
         digest_of(b"short").hash,
         "the bare digest"
     );
@@ -512,7 +512,10 @@ async fn bytestream_read_misses() {
     assert_eq!(err.code(), Code::NotFound);
     let not_found = info(&err);
     assert_eq!(not_found.reason, "ENTRY_NOT_FOUND");
-    assert_eq!(not_found.metadata["key"], digest_of(b"nothing here").hash);
+    assert_eq!(
+        not_found.metadata["digest"],
+        digest_of(b"nothing here").hash
+    );
     let status = node
         .bytestream()
         .query_write_status(QueryWriteStatusRequest {
@@ -544,7 +547,7 @@ async fn bytestream_write_checks_the_digest() {
     assert_eq!(err.code(), Code::InvalidArgument);
     let mismatch = info(&err);
     assert_eq!(mismatch.reason, "DIGEST_MISMATCH");
-    assert_eq!(mismatch.metadata["key"], claimed.hash);
+    assert_eq!(mismatch.metadata["digest"], claimed.hash);
     assert_eq!(
         read(&node, &claimed, 0, 0).await.unwrap_err().code(),
         Code::NotFound
