@@ -6,8 +6,7 @@ info:
   description: |
     Gradle owns this contract; this document describes it, it does not design it. Sources:
     the Gradle user guide (https://docs.gradle.org/current/userguide/build_cache.html),
-    `HttpBuildCacheService` and `BaseRemoteBuildCacheServiceHandle` in gradle/gradle, and the
-    Develocity docs for the Develocity Gradle plugin and Maven extension, which use the same route.
+    and `HttpBuildCacheService` and `BaseRemoteBuildCacheServiceHandle` in gradle/gradle.
 
     Rules that come from Gradle and override API style guides, including AIP-193:
 
@@ -20,10 +19,8 @@ info:
     - Gradle never retries a failed request and ignores `Retry-After`.
     - Entries are content-addressed, so they never change once stored.
 
-    Gradle `HttpBuildCache` sends HTTP Basic preemptively. Develocity clients send an access
-    token, most likely as Bearer or as the Basic password with an empty user name; both are
-    accepted. Their exact requests are unverified until captured from real traffic, so they are
-    not claimed as supported clients yet.
+    Gradle `HttpBuildCache` sends HTTP Basic preemptively; it supports nothing else. Develocity
+    clients are not supported.
 
     Configure Gradle with the base URL `https://<host>/cache/`.
   contact:
@@ -38,7 +35,6 @@ servers:
     x-internal: false
 security:
   - basicAuth: []
-  - bearerAuth: []
   - {}
 tags:
   - name: gradle
@@ -170,8 +166,6 @@ components:
   securitySchemes:
     basicAuth:
       $ref: "./common.yaml#/components/securitySchemes/basicAuth"
-    bearerAuth:
-      $ref: "./common.yaml#/components/securitySchemes/bearerAuth"
   parameters:
     GradleVersion:
       name: X-Gradle-Version

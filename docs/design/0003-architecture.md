@@ -67,8 +67,7 @@ From Gradle's HTTP build cache client:
 - No backoff: `Retry-After` is ignored, so `429` and `503` cannot be used to pace clients.
 - No refusal is free. The Gradle user guide says `413` on store only skips the entry, but the client
   code turns the remote cache off for that too.
-- `HttpBuildCache` supports only HTTP Basic; Develocity clients may also send Bearer tokens
-  (unverified, [0002](0002-authentication.md)).
+- HTTP Basic is the only authentication ([0002](0002-authentication.md)).
 - `Expect: 100-continue` must be honoured, so refused uploads are never sent.
 
 From the environment:
