@@ -129,9 +129,9 @@ all five.
 1. **Recorder and HELP.** Move recorder construction into a `telemetry` module: install the
    recorder, set the buckets, call `describe_*` for every catalogued metric, record
    `mammoth_build_info` (version from Cargo, revision from `MAMMOTH_REVISION` at build time, which
-   the release workflow sets, and `unknown` otherwise), and add `metrics-process` for `process_*`. Tests get a
-   `telemetry::test_recorder()` that installs once per process behind a `OnceLock` and returns the
-   handle.
+   the release workflow sets, and `unknown` otherwise), and add `metrics-process` for `process_*`.
+   Tests get a `telemetry::test_recorder()` that installs once per process behind a `OnceLock` and
+   returns the handle.
 2. **Cache outcomes.** In `Cache::get`, `head` and `put`: `mammoth_cache_lookups_total`,
    `mammoth_cache_stores_total`, `mammoth_cache_entry_size_bytes`. The `hits`/`misses`/`oversized`
    atomics move behind the same helper so `serverStatus` cannot disagree.
