@@ -11,13 +11,17 @@ build is as fast as the default one.
 
 ## Cargo features
 
-Optional parts ship behind Cargo features, so the default binary stays small. None exist on
-`main` yet; the first are proposed:
+Optional parts ship behind Cargo features, so the default binary stays small. Build with a
+different set from a clone of the repository:
 
-| Feature    | Default | What it does                                         | Status   |
-| ---------- | ------- | ---------------------------------------------------- | -------- |
-| `mimalloc` | yes     | Use mimalloc as the global allocator                 | Proposed |
-| `jemalloc` | no      | Use jemalloc instead; wins if both are enabled       | Proposed |
+```sh
+cargo build --release --bin mammoth --no-default-features --features jemalloc
+```
+
+| Feature    | Default | What it does                                   | Status    |
+| ---------- | ------- | ---------------------------------------------- | --------- |
+| `mimalloc` | yes     | Use mimalloc as the global allocator           | Available |
+| `jemalloc` | no      | Use jemalloc instead; wins if both are enabled | Available |
 
 The allocator matters because release binaries are static musl builds, and musl's own allocator is
 slow under concurrent load. Which allocator stays the default will be decided by load tests.

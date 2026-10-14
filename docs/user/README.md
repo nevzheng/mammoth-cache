@@ -46,7 +46,7 @@ well.
 | --------------------------------------------------------------- | --------- | ------------------------------------------- |
 | Gradle `GET`, `HEAD`, `PUT` on `/cache/{key}`                   | Available | [Gradle](gradle.md)                         |
 | Entry size limit, oversized stores accepted and dropped         | Available | [Gradle](gradle.md#entry-size-limit)        |
-| In-memory tier, without a size limit or eviction yet            | Available | [Configuration](configuration.md)           |
+| In-memory tier, 1 GiB with S3-FIFO eviction                     | Available | [Configuration](configuration.md)           |
 | `/ping`, `/livez`, `/readyz`                                    | Available | [Health checks](health.md)                  |
 | Admin status, `/v1/serverStatus`                                | Available | [Health checks](health.md)                  |
 | Maven routes, `/maven/{path}`                                   | Available | [Maven](maven.md)                           |

@@ -69,8 +69,7 @@ curl http://localhost:5071/v1/serverStatus
 }
 ```
 
-The response uses the proto3 JSON mapping, so 64-bit numbers are strings. The memory tier's
-`capacityBytes` is a placeholder until that tier enforces a limit. Its contract is
+The response uses the proto3 JSON mapping, so 64-bit numbers are strings. Its contract is
 [`admin.proto`](https://github.com/nevzheng/mammoth-cache/blob/main/api/proto/mammoth/admin/v1/admin.proto).
 Today the route is open; once [authentication](authentication.md) lands it needs a Bearer token
 with the `admin:read` scope. For monitoring over time, use [metrics](metrics.md) instead: the
