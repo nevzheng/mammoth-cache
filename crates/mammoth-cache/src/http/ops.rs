@@ -1,9 +1,13 @@
 //! Operational routes: health checks and metrics (`api/openapi/ops.v1.yaml`). No authentication.
 
-use axum::extract::Query;
+use axum::{
+    extract::{Query, State},
+    http::{HeaderValue, header},
+    response::{IntoResponse, Response},
+};
 use serde::Deserialize;
 
-use super::error::ApiError;
+use super::{AppState, error::ApiError};
 
 /// Build Cache Node compatible health check.
 pub(super) async fn ping() -> &'static str {
@@ -30,7 +34,16 @@ pub(super) async fn readyz(Query(params): Query<ReadyzParams>) -> String {
     }
 }
 
-/// Prometheus metrics. The catalog is design doc 0004; not wired up yet.
-pub(super) async fn metrics() -> ApiError {
-    ApiError::unimplemented("Metrics")
+/// Prometheus metrics in the text exposition format. The catalog is design doc 0004; only the
+/// request counters are recorded so far.
+pub(super) async fn metrics(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let handle = state
+        .metrics
+        .as_ref()
+        .ok_or_else(|| ApiError::unimplemented("Metrics"))?;
+    let headers = [(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; version=0.0.4"),
+    )];
+    Ok((headers, handle.render()).into_response())
 }
