@@ -1,0 +1,67 @@
+name: release-plz
+
+# Every push to main opens or updates the release PR (version bump and CHANGELOG.md). Merging that
+# PR tags `vX.Y.Z` and creates the GitHub release; the tag push then starts release.yml.
+#
+# Runs with RELEASE_PLZ_TOKEN, a fine-grained token with Contents and Pull requests write on this
+# repository. PRs and tags made with GITHUB_TOKEN start no workflows, so with it the release PR
+# would get no CI and the tag would build nothing. See docs/design/0009-releases.md.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    # The release job must not share a concurrency group: a newer push could cancel a pending
+    # release.
+    if: github.repository == 'nevzheng/mammoth-cache'
+    runs-on: ubuntu-latest
+    steps:
+      # Until the secret exists, skip the remaining steps with a warning instead of failing main.
+      - &check-token
+        id: token
+        name: Check RELEASE_PLZ_TOKEN
+        env:
+          TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::RELEASE_PLZ_TOKEN is not set, skipping; run scripts/setup-release-token.sh"
+            echo "set=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "set=true" >> "$GITHUB_OUTPUT"
+          fi
+      - &checkout
+        if: steps.token.outputs.set == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - &toolchain
+        if: steps.token.outputs.set == 'true'
+        run: rustup toolchain install
+      - if: steps.token.outputs.set == 'true'
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+  release-pr:
+    if: github.repository == 'nevzheng/mammoth-cache'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-pr
+      cancel-in-progress: false
+    steps:
+      - *check-token
+      - *checkout
+      - *toolchain
+      - if: steps.token.outputs.set == 'true'
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

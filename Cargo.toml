@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -26,3 +26,10 @@ todo = "warn"
 print_stdout = "warn"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
+
+# Release binaries (release.yml): slower to build, smaller and faster to run.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
