@@ -16,7 +16,7 @@ on:
       run:
         description: Shape of the run
         type: choice
-        options: [smoke, steady, ramp, spike]
+        options: [smoke, steady, ramp, spike, warm]
         default: steady
       rate:
         description: Peak lookups a second (0 for the run's default)
@@ -40,10 +40,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pull requests get the smoke run; nightly the steady and spike runs; dispatch its input.
+        # Pull requests get the smoke run; nightly steady, spike and warm; dispatch its input.
         run: >-
           ${{ fromJSON(github.event_name == 'pull_request' && '["smoke"]'
-          || github.event_name == 'schedule' && '["steady", "spike"]'
+          || github.event_name == 'schedule' && '["steady", "spike", "warm"]'
           || format('["{0}"]', inputs.run)) }}
     defaults:
       run:
@@ -61,7 +61,7 @@ jobs:
       - run: uv sync --locked
       - name: locust ${{ matrix.run }}
         run: >-
-          uv run locust -f load/locustfile.py --headless --only-summary
+          uv run locust -f load/locustfile.py --headless --only-summary --processes -1
           --target targets/compose.toml --up --run "${{ matrix.run }}" --rate "${RATE:-0}"
           --csv "$RUNNER_TEMP/load/${{ matrix.run }}" --html "$RUNNER_TEMP/load/${{ matrix.run }}.html"
         env:

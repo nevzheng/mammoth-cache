@@ -248,7 +248,10 @@ share the harness, and Locust is the most widely used Python load tool.
   sides. More throughput than one process gives comes from `--processes`.
 
 Traffic models are Python in the harness (`mammoth_e2e.traffic`), seeded so every run asks for the
-same keys and sizes. The synthetic model is built; the replay models come later:
+same keys and sizes. The synthetic and warm models are built; the replay models come later. The warm
+model is an incremental build over a warm cache: 100k Gradle entries of a few KiB to a few hundred
+KiB, stored first, then requested uniformly with 1% new keys. Its run reports p50, p99 and requests
+a second, and how many hits came from memory and from disk:
 
 | Model        | Shape                                                                                           |
 | ------------ | ----------------------------------------------------------------------------------------------- |
@@ -262,6 +265,7 @@ same keys and sizes. The synthetic model is built; the replay models come later:
 | Steady      | Fixed rate per model for 10 minutes           | Nightly                     |
 | Ramp        | Increase the rate until a threshold breaks    | On demand                   |
 | Spike       | Short bursts over a steady baseline           | Nightly                     |
+| Warm        | 100k entries stored, then read back, 99% hits | Nightly                     |
 | Soak        | Steady rate for hours                         | On demand, real hardware    |
 | Cold bucket | Wiped node, all reads fall through to L3      | Nightly                     |
 

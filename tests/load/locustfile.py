@@ -13,26 +13,29 @@ Client-side numbers are served on `--metrics-port` for Prometheus, next to mammo
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import math
+import subprocess
+import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, override
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 from locust import LoadTestShape, constant_throughput, events, task
 from locust.contrib.fasthttp import FastHttpUser
 from locust.runners import WorkerRunner
 
+from mammoth_e2e import metrics
 from mammoth_e2e.client import basic
 from mammoth_e2e.loadstats import serve_stats
 from mammoth_e2e.stack import Stack
 from mammoth_e2e.target import Target
-from mammoth_e2e.traffic import Model, Traffic
+from mammoth_e2e.traffic import MODELS, Model, Traffic
 
 if TYPE_CHECKING:
     from locust.argument_parser import LocustArgumentParser
     from locust.env import Environment
 
-DEFAULT_MODEL = Model()
 PER_USER_RATE = 5.0  # lookups a second per simulated client
 GRADLE_CONTENT_TYPE = "application/vnd.gradle.build-cache-artifact.v2"
 
@@ -42,7 +45,11 @@ RUNS = {
     "steady": (500.0, 600.0),
     "ramp": (2000.0, 600.0),
     "spike": (1000.0, 300.0),
+    # A warm incremental build: the model's entries are stored first, then read back at a high
+    # rate over keep-alive connections, almost all hits.
+    "warm": (2000.0, 120.0),
 }
+SEED = Path(__file__).with_name("seed.py")
 
 
 @events.init_command_line_parser.add_listener
@@ -54,8 +61,10 @@ def _options(parser: LocustArgumentParser) -> None:
     group.add_argument("--rate", type=float, default=0.0, help="Peak lookups a second")
     group.add_argument("--duration", type=float, default=0.0, help="Seconds")
     group.add_argument("--mix", default="8:1:1", help="Weights for Gradle:Maven:Bazel clients")
-    group.add_argument("--keys", type=int, default=DEFAULT_MODEL.keys, help="Distinct entries")
-    group.add_argument("--churn", type=float, default=DEFAULT_MODEL.churn, help="Share of new keys")
+    group.add_argument("--model", choices=sorted(MODELS), help="Traffic model (default per run)")
+    group.add_argument("--keys", type=int, default=0, help="Distinct entries (0: the model's)")
+    group.add_argument("--churn", type=float, help="Share of new keys (default: the model's)")
+    group.add_argument("--no-seed", action="store_true", help="Skip storing the warm entries")
     group.add_argument("--max-p99-ms", type=float, default=100.0, help="Fail above this p99")
     group.add_argument("--max-fail-ratio", type=float, default=0.001, help="Fail above this")
     group.add_argument("--metrics-port", type=int, default=9646, help="0 turns the exporter off")
@@ -76,21 +85,69 @@ def _init(environment: Environment, **_: object) -> None:
     if not environment.host:
         environment.host = str(target.base_url).rstrip("/")
     CacheUser.headers = {"Authorization": basic(target.credentials)} if target.credentials else {}
-    CacheUser.model = Model(keys=options.keys, churn=options.churn)
-    weights = [int(w) for w in options.mix.split(":")]
+    model = MODELS[options.model or ("warm" if options.run == "warm" else "synthetic")]
+    if options.keys:
+        model = model.with_keys(options.keys)
+    if options.churn is not None:
+        model = dataclasses.replace(model, churn=options.churn)
+    CacheUser.model = model
+    mix = options.mix
+    if options.run == "warm":
+        mix = "1:0:0"  # the seeder stores Gradle entries
+        if not options.no_seed and not isinstance(environment.runner, WorkerRunner):
+            argv = [sys.executable, str(SEED), "--target", options.target]
+            argv += ["--model", options.model or "warm", "--keys", str(model.keys)]
+            subprocess.run(argv, check=True)
+    _report["target"] = target
+    weights = [int(w) for w in mix.split(":")]
     for cls, weight in zip((GradleUser, MavenUser, BazelUser), weights, strict=True):
         cls.weight = weight
     if options.metrics_port and not isinstance(environment.runner, WorkerRunner):
         serve_stats(environment, options.metrics_port)
 
 
+_report: dict[str, Any] = {}
+
+
+@events.test_start.add_listener
+def _before(environment: Environment, **_: object) -> None:
+    if isinstance(environment.runner, WorkerRunner):
+        return
+    target: Target | None = _report.get("target")
+    if target is not None:
+        _report["before"] = metrics.scrape(target)
+
+
+def _tier_hits(target: Target, before: metrics.Scrape) -> str:
+    """Where hits were served from, by the node's own counters."""
+    after = metrics.scrape(target)
+    by_tier = {
+        tier: metrics.delta(before, after, "mammoth_cache_lookups_total", result="hit", tier=tier)
+        for tier in ("memory", "disk", "bucket")
+    }
+    if any(by_tier.values()):
+        return ", ".join(f"{tier} {n:.0f}" for tier, n in by_tier.items())
+    # Older nodes only count promotions; every disk hit is promoted to memory.
+    promoted = metrics.delta(before, after, "mammoth_tier_promotions_total", **{"from": "disk"})
+    return f"disk {promoted:.0f} (from promotions), the rest from memory"
+
+
 @events.quitting.add_listener
 def _thresholds(environment: Environment, **_: object) -> None:
     options = environment.parsed_options
-    if options is None:
-        return
+    if options is None or isinstance(environment.runner, WorkerRunner):
+        return  # workers hold no totals; the master reports
     total = environment.stats.total
+    p50 = total.get_response_time_percentile(0.5) or 0.0
     p99 = total.get_response_time_percentile(0.99) or 0.0
+    print(  # noqa: T201 - the run's numbers
+        f"{options.run}: {total.num_requests} requests, {total.total_rps:.0f}/s, "
+        f"p50 {p50:.0f} ms, p99 {p99:.0f} ms"
+    )
+    target: Target | None = _report.get("target")
+    before: metrics.Scrape | None = _report.get("before")
+    if target is not None and before is not None:
+        print(f"hits by tier: {_tier_hits(target, before)}")  # noqa: T201
     failed = []
     if total.num_requests == 0:
         failed.append("no requests were sent")

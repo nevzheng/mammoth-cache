@@ -38,9 +38,11 @@ uv run locust -f load/locustfile.py --headless --target targets/compose.toml --u
 uv run locust -f load/locustfile.py --target targets/compose.toml   # web UI on :8089
 ```
 
-`--run` picks the shape (`smoke`, `steady`, `ramp`, `spike`), `--rate` the peak lookups a second
+`--run` picks the shape (`smoke`, `steady`, `ramp`, `spike`, or `warm`, which stores 100k entries
+first), `--rate` the peak lookups a second
 and `--mix` the Gradle:Maven:Bazel weights. The run fails when p99 passes `--max-p99-ms` or failures
-pass `--max-fail-ratio`. While it runs, Prometheus on port 9090 scrapes its `locust_*` metrics.
+pass `--max-fail-ratio`. `--processes -1` uses every core; one process tops out near 1,500
+requests a second. While it runs, Prometheus on port 9090 scrapes its `locust_*` metrics.
 `--up` starts the stack first; `docker compose -p mammoth-e2e -f ../deploy/compose/compose.yaml
 down -v` stops it.
 

@@ -8,6 +8,7 @@ model gives the same keys and sizes on every run and every machine.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import itertools
 import math
@@ -28,6 +29,9 @@ class Model:
     size_sigma: float = 1.5  # log-normal spread; 1.5 puts the 99th percentile near 0.5 MiB
     size_max: int = 8 * 1024 * 1024  # keep under the target's memory.max_entry_size
     seed: str = "mammoth-load"
+
+    def with_keys(self, keys: int) -> Model:
+        return dataclasses.replace(self, keys=keys)
 
 
 @dataclass(slots=True)
@@ -72,6 +76,22 @@ class Traffic:
         offset = random.Random(f"{self.model.seed}/offset/{rank}").randrange(_BUFFER_SIZE - size)  # noqa: S311
         return (prefix + self._buffer[offset : offset + size])[:size]
 
+
+MODELS = {
+    # A mix of warm and changed keys, skewed toward popular ones.
+    "synthetic": Model(),
+    # A warm incremental build: every input is already cached and the build asks for all of them,
+    # so keys are uniform (zipf_s 0), 1% are new, and entries are a few KiB to a few hundred KiB.
+    "warm": Model(
+        keys=100_000,
+        zipf_s=0.0,
+        churn=0.01,
+        size_median=8 * 1024,
+        size_sigma=1.0,
+        size_max=512 * 1024,
+        seed="mammoth-warm",
+    ),
+}
 
 _buffers: dict[str, bytes] = {}
 
