@@ -2,13 +2,13 @@
 
 ## Status
 
-Draft
+Accepted
 
 ## Summary
 
 Inside, errors use Google's standard: a canonical `google.rpc.Code` (the same 17 codes as
 `absl::StatusCode`), a typed detail only where a caller needs data, and `anyhow` context for the
-logs, on a `thiserror` type. No private error vocabulary.
+logs. No private error vocabulary.
 
 At the edge, each protocol owns a mapping
 to what its clients understand. AIP-193 is the default: a stable `reason`, the code and fixed
@@ -193,17 +193,18 @@ The codes the core actually uses, and when:
 
 How the codes become reasons (`From<&cache::Error> for Status`):
 
-| Core code and detail            | Reason                | HTTP sent (all protocols)    |
-| ------------------------------- | --------------------- | ---------------------------- |
-| `INVALID_ARGUMENT` + `TooLarge` | `ENTRY_TOO_LARGE`     | `413` (Gradle `Drop`: `200`) |
-| `INVALID_ARGUMENT`              | `UPLOAD_INCOMPLETE`   | `400`                        |
-| `CANCELLED`                     | `UPLOAD_INCOMPLETE`   | `400` (as today)             |
-| `DEADLINE_EXCEEDED`             | `UPLOAD_IDLE`         | `400` (as today; gRPC keeps  |
-|                                 |                       | `DEADLINE_EXCEEDED`)         |
-| `UNAVAILABLE`                   | `STORAGE_UNAVAILABLE` | `503`                        |
-| `DATA_LOSS`                     | never sent: the read  | miss (`404`)                 |
-|                                 | answers as a miss     |                              |
-| `INTERNAL`                      | `INTERNAL`            | `500`                        |
+| Core code and detail            | Reason                | HTTP sent (all protocols)       |
+| ------------------------------- | --------------------- | ------------------------------- |
+| `INVALID_ARGUMENT` + `TooLarge` | `ENTRY_TOO_LARGE`     | `413` (`400` AIP-193 elsewhere) |
+| `INVALID_ARGUMENT`              | `UPLOAD_INCOMPLETE`   | `400`                           |
+| `CANCELLED`                     | `UPLOAD_CANCELLED`    | `400` (as today; gRPC keeps     |
+|                                 |                       | `CANCELLED`)                    |
+| `DEADLINE_EXCEEDED`             | `UPLOAD_IDLE`         | `400` (as today; gRPC keeps     |
+|                                 |                       | `DEADLINE_EXCEEDED`)            |
+| `UNAVAILABLE`                   | `STORAGE_UNAVAILABLE` | `503`                           |
+| `DATA_LOSS`                     | never sent: the read  | miss (`404`)                    |
+|                                 | answers as a miss     |                                 |
+| `INTERNAL`                      | `INTERNAL`            | `500`                           |
 
 Splitting the upload codes improves gRPC and the logs, but must not change what HTTP clients see:
 today every upload failure is `400 UPLOAD_INCOMPLETE` on HTTP, so the HTTP mappings pin `400` for
@@ -276,8 +277,7 @@ The status-code overrides for today's HTTP protocols:
 | ------------ | -------------------- | ------- | ----- | -------------------------------- |
 | Gradle       | `ENTRY_TOO_LARGE`    | `400`   | `413` | Under `Reject`; `Drop` sends 200 |
 | Maven, Bazel | `ENTRY_TOO_LARGE`    | `400`   | `413` | Clients log and carry on         |
-| all HTTP     | `UPLOAD_INCOMPLETE`  | `499`   | `400` | Unchanged from today             |
-|              | (from `CANCELLED`)   |         |       |                                  |
+| all HTTP     | `UPLOAD_CANCELLED`   | `499`   | `400` | Unchanged from today             |
 | all HTTP     | `UPLOAD_IDLE`        | `504`   | `400` | Unchanged from today             |
 | all HTTP     | `METHOD_NOT_ALLOWED` | `501`   | `405` | HTTP semantics, with `Allow`     |
 
@@ -323,43 +323,45 @@ error. That is why the reasons match the HTTP ones: an operator sees `ENTRY_TOO_
 ### Catalogue
 
 The catalogue is the `Reason` enum; this table is its documentation and a test keeps them equal.
-The proposed resolutions of gaps 1 and 2 are in bold.
+The proposed resolutions of gaps 1 and 2, and metadata added where a protocol sent none, are in
+bold.
 
-| Reason                        | Code                           | HTTP | Metadata                      |
-| ----------------------------- | ------------------------------ | ---- | ----------------------------- |
-| `ENTRY_NOT_FOUND`             | `NOT_FOUND`                    | 404  | **`key`**, the bare name, on  |
-|                               |                                |      | all protocols                 |
-| `ROUTE_NOT_FOUND`             | `NOT_FOUND`                    | 404  |                               |
-| `ENTRY_TOO_LARGE`             | **`INVALID_ARGUMENT`**         | 413* | `maxEntryBytes`, `entryBytes` |
-|                               | (HTTP body was `OUT_OF_RANGE`) |      |                               |
-| `DIGEST_MISMATCH`             | `INVALID_ARGUMENT`             | 400  | `key`                         |
-| `SIZE_MISMATCH`               | `INVALID_ARGUMENT`             | 400  | `key`                         |
-| `UPLOAD_INCOMPLETE`           | `INVALID_ARGUMENT`             | 400  |                               |
-| `UPLOAD_IDLE`                 | `DEADLINE_EXCEEDED`            | 400* |                               |
-| `EMPTY_WRITE`                 | `INVALID_ARGUMENT`             | 400  |                               |
-| `UNSUPPORTED_COMPRESSOR`      | `INVALID_ARGUMENT`             | 400  |                               |
-| `ACTION_RESULT_MISSING`       | `INVALID_ARGUMENT`             | 400  |                               |
-| `INVALID_CACHE_KEY`           | `INVALID_ARGUMENT`             | 400  |                               |
-| `INVALID_CACHE_PATH`          | `INVALID_ARGUMENT`             | 400  |                               |
-| `INVALID_DIGEST`              | `INVALID_ARGUMENT`             | 400  |                               |
-| `INVALID_RESOURCE_NAME`       | `INVALID_ARGUMENT`             | 400  |                               |
-| `INVALID_READ_LIMIT`          | `INVALID_ARGUMENT`             | 400  |                               |
-| `INVALID_WRITE`               | `INVALID_ARGUMENT`             | 400  |                               |
-| `OFFSET_OUT_OF_RANGE`         | `OUT_OF_RANGE`                 | 400  |                               |
-| `BATCH_TOO_LARGE`             | `INVALID_ARGUMENT`             | 400  |                               |
-| `UNSUPPORTED_DIGEST_FUNCTION` | `INVALID_ARGUMENT`             | 400  |                               |
-| `CREDENTIALS_MISSING`         | `UNAUTHENTICATED`              | 401  |                               |
-| `CREDENTIALS_INVALID`         | `UNAUTHENTICATED`              | 401  |                               |
-| `SCOPE_MISSING`               | `PERMISSION_DENIED`            | 403  | `user`, `requiredScope`       |
-| `METHOD_NOT_ALLOWED`          | `UNIMPLEMENTED`                | 405* |                               |
-| **`METHOD_NOT_SUPPORTED`**    | `UNIMPLEMENTED`                | 501  | `method` (replaces HTTP's     |
-|                               |                                |      | `NOT_IMPLEMENTED`)            |
-| `STORAGE_UNAVAILABLE`         | `UNAVAILABLE`                  | 503  |                               |
-| `STORAGE_NOT_WRITABLE`        | `UNAVAILABLE`                  | 503  | `check`, tier details         |
-| `STORAGE_FREE_SPACE_LOW`      | `UNAVAILABLE`                  | 503  | `check`, tier details         |
-| `SHUTTING_DOWN`               | `UNAVAILABLE`                  | 503  | `check`                       |
-| **`INTERNAL`**                | `INTERNAL`                     | 500  | (replaces gRPC's              |
-|                               |                                |      | `STORAGE_ERROR`)              |
+| Reason                        | Code                           | HTTP | Metadata                       |
+| ----------------------------- | ------------------------------ | ---- | ------------------------------ |
+| `ENTRY_NOT_FOUND`             | `NOT_FOUND`                    | 404  | **`key`**, the bare name, on   |
+|                               |                                |      | all protocols                  |
+| `ROUTE_NOT_FOUND`             | `NOT_FOUND`                    | 404  |                                |
+| `ENTRY_TOO_LARGE`             | **`INVALID_ARGUMENT`**         | 413* | `maxEntryBytes`, `entryBytes`  |
+|                               | (HTTP body was `OUT_OF_RANGE`) |      |                                |
+| `DIGEST_MISMATCH`             | `INVALID_ARGUMENT`             | 400  | **`key`** (HTTP sent `digest`) |
+| `SIZE_MISMATCH`               | `INVALID_ARGUMENT`             | 400  | **`key`** (new)                |
+| `UPLOAD_INCOMPLETE`           | `INVALID_ARGUMENT`             | 400  |                                |
+| `UPLOAD_CANCELLED`            | `CANCELLED`                    | 400* |                                |
+| `UPLOAD_IDLE`                 | `DEADLINE_EXCEEDED`            | 400* |                                |
+| `EMPTY_WRITE`                 | `INVALID_ARGUMENT`             | 400  |                                |
+| `UNSUPPORTED_COMPRESSOR`      | `INVALID_ARGUMENT`             | 400  |                                |
+| `ACTION_RESULT_MISSING`       | `INVALID_ARGUMENT`             | 400  |                                |
+| `INVALID_CACHE_KEY`           | `INVALID_ARGUMENT`             | 400  |                                |
+| `INVALID_CACHE_PATH`          | `INVALID_ARGUMENT`             | 400  |                                |
+| `INVALID_DIGEST`              | `INVALID_ARGUMENT`             | 400  |                                |
+| `INVALID_RESOURCE_NAME`       | `INVALID_ARGUMENT`             | 400  |                                |
+| `INVALID_READ_LIMIT`          | `INVALID_ARGUMENT`             | 400  |                                |
+| `INVALID_WRITE`               | `INVALID_ARGUMENT`             | 400  |                                |
+| `OFFSET_OUT_OF_RANGE`         | `OUT_OF_RANGE`                 | 400  |                                |
+| `BATCH_TOO_LARGE`             | `INVALID_ARGUMENT`             | 400  |                                |
+| `UNSUPPORTED_DIGEST_FUNCTION` | `INVALID_ARGUMENT`             | 400  |                                |
+| `CREDENTIALS_MISSING`         | `UNAUTHENTICATED`              | 401  |                                |
+| `CREDENTIALS_INVALID`         | `UNAUTHENTICATED`              | 401  |                                |
+| `SCOPE_MISSING`               | `PERMISSION_DENIED`            | 403  | `user`, `requiredScope`        |
+| `METHOD_NOT_ALLOWED`          | `UNIMPLEMENTED`                | 405* |                                |
+| **`METHOD_NOT_SUPPORTED`**    | `UNIMPLEMENTED`                | 501  | **`method`** (new; replaces    |
+|                               |                                |      | HTTP's `NOT_IMPLEMENTED`)      |
+| `STORAGE_UNAVAILABLE`         | `UNAVAILABLE`                  | 503  |                                |
+| `STORAGE_NOT_WRITABLE`        | `UNAVAILABLE`                  | 503  | `check`, tier details          |
+| `STORAGE_FREE_SPACE_LOW`      | `UNAVAILABLE`                  | 503  | `check`, tier details          |
+| `SHUTTING_DOWN`               | `UNAVAILABLE`                  | 503  | `check`                        |
+| **`INTERNAL`**                | `INTERNAL`                     | 500  | (replaces gRPC's               |
+|                               |                                |      | `STORAGE_ERROR`)               |
 
 `*` is a protocol override from the table above. Renaming the two gRPC-only reasons is allowed
 now: the gRPC adapter has not shipped in a release. Moving `ENTRY_TOO_LARGE`'s HTTP body from
@@ -392,22 +394,26 @@ code stays `413`.
 
 Each step is one PR that keeps CI green.
 
-1. This doc, as Draft. Review the catalogue and the two renames.
+1. This doc, Accepted, with the catalogue and the two renames.
 2. Core: `cache::Error` as canonical code, typed detail and `anyhow` context, `thiserror` on the
    error types, `anyhow` in `main` and config loading. No behaviour change.
-3. Translation layer: `api::error` (`Reason`, `Code`, `Status`, `DOMAIN`) and the catalogue test.
+3. Translation layer: `api::error` (`Reason`, `Code`, `Status`, `DOMAIN`), the catalogue test, and
+   the full reason list in `api/openapi/common.yaml` (today only a pattern and examples).
    Both adapters render through it, which fixes gaps 1 to 4, 7 and 9. No status code changes; the
    two gRPC reasons are renamed.
 4. Rejections and panics: `Path`/`Query` wrappers, `CatchPanicLayer`, the fallback layer and the
    router fuzz test (gaps 5 and 6).
 5. Parity: the proptest and the `ParityModel` reason check.
-6. Mark this doc Accepted, add the `405` row to 0001's exception table (gap 8), update 0001's
+6. Add the `405` row to 0001's exception table (gap 8), update 0001's
    error example to `INVALID_ARGUMENT` (gap 2b), and list the reasons in the user docs.
 
 ## Cross-cutting concerns
 
 - **Performance.** Errors are off the hot path; a miss stays `Ok(None)`. `Reason` is `Copy`.
-- **Security.** `source` chains are logged, never sent. Messages name no paths, hosts or tokens.
+- **Security.** `source` chains are logged, never sent. Messages name no paths, hosts or tokens,
+  with one exception today: `STORAGE_NOT_WRITABLE` on the unauthenticated `/readyz` carries the
+  disk path in its message and `path` metadata. Step 3 drops the path from the response and keeps
+  it in the log.
 - **Observability.** Metrics keep their `outcome` labels; a `reason` label is not added (it would
   multiply series for little gain over logs).
 
