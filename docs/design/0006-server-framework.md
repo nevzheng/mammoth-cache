@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft
+Accepted
 
 ## Summary
 
@@ -63,20 +63,30 @@ to a hand-written hyper service if a benchmark ever shows axum on the hot path.
 
 ```text
 crates/mammoth-cache/src/
-├── main.rs          thin binary: logging, listener, wiring
+├── main.rs          thin binary: config, logging, listener, `config check`, `token new`
 ├── lib.rs
-├── key.rs           CacheKey: a namespace (gradle, maven) and a validated name
-├── cache.rs         core: lookup order, size limit, hit and miss counts
+├── config.rs        mammoth.toml: parsing, defaults, validation
+├── auth.rs          users, token hashes, scopes
+├── key.rs           CacheKey: a namespace (gradle, maven, bazel-ac, bazel-cas) and a validated name
+├── cache.rs         core: lookup order, promotion, size limit, write fan-out, upload queue
+├── tee.rs           streams one body into several tiers at once
+├── server.rs        hyper connection loop: timeouts, drain on shutdown, TLS accept
+├── tls.rs           [tls]: PEM loading, checks, reload, metrics
 ├── store/
 │   ├── mod.rs       ports: BlobStore, BoundedStore, Blob, ByteStream, Tier
-│   └── memory.rs    L1 adapter
+│   ├── meta.rs      EntryMeta shared by every tier
+│   ├── memory/      L1 adapter over foyer
+│   ├── disk.rs      L2 adapter: one file per entry, CRC32C, warm index
+│   └── bucket.rs    L3 adapter over object_store
 └── http/
-    ├── mod.rs       router
+    ├── mod.rs       router and protocol switches
+    ├── auth.rs      authentication middleware
     ├── error.rs     AIP-193 responses
     ├── entries.rs   load, check and store, shared by the protocol adapters
     ├── gradle.rs    GET, HEAD and PUT /cache/{key}
     ├── maven.rs     GET, HEAD, PUT, OPTIONS and MKCOL /maven/{path}
-    ├── metrics.rs   request counters labelled by client
+    ├── bazel.rs     GET, HEAD and PUT /bazel/ac/{digest} and /bazel/cas/{digest}
+    ├── metrics.rs   request counters labelled by route, method, status and client
     ├── ops.rs       /ping, /livez, /readyz, /metrics
     └── admin.rs     /v1/serverStatus
 ```

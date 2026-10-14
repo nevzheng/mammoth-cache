@@ -8,16 +8,17 @@
 mammoth-cache is a fast, open-source **remote build cache server for Gradle and Maven**, written in
 Rust. It is a self-hosted, drop-in alternative to the Gradle Build Cache Node, which reaches end of
 life after December 31, 2026: same `/cache/` endpoint, same port, no Develocity needed. It serves
-Gradle's HTTP build cache and the Apache Maven Build Cache Extension, and is designed to keep
-entries in memory, on local disk and in an optional S3, GCS or Azure bucket, with Prometheus
-metrics.
+Gradle's HTTP build cache, the Apache Maven Build Cache Extension and, off by default, Bazel's HTTP
+remote cache. Entries live in memory, on local disk and in an optional S3, GCS or Azure bucket,
+with Prometheus metrics and Kubernetes-style health checks.
 
 For operators it is meant to be easy: one dependency (a bucket, and even that is optional), a few
 lines of config and a load balancer, and you're set.
 
-Pre-alpha: memory, disk and bucket tiers, the config file and token authentication work today;
-graceful shutdown, TLS and most metrics are on the way. Try it with the `edge` image
-(`ghcr.io/nevzheng/mammoth-cache:edge`), but don't run it in production yet.
+Pre-alpha: the three protocols, the memory, disk and bucket tiers, the config file, token
+authentication, graceful shutdown, readiness checks and optional built-in TLS all work today. There
+is no release yet and part of the metrics catalog is still being wired up. Try it with the `edge`
+image (`ghcr.io/nevzheng/mammoth-cache:edge`), but don't run it in production yet.
 
 ## Documentation
 

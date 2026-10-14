@@ -54,7 +54,7 @@ Kubernetes from restarting it during that time.
 
 ### Draining
 
-On `SIGTERM` the node turns `/readyz` to `503` (check `shutting-down`) and keep `/livez` at
+On `SIGTERM` the node turns `/readyz` to `503` (check `shutting-down`) and keeps `/livez` at
 `200`, so it leaves rotation without being restarted. It keeps serving for `server.shutdown_delay`
 (5 s) while load balancers catch up, then finishes requests in flight and flushes bucket uploads
 before exiting, all within `server.shutdown_timeout` (25 s). No `preStop` hook is needed, and the

@@ -6,9 +6,8 @@ self-hosted node without Develocity.
 
 > [!WARNING]
 > mammoth-cache is pre-alpha. Today it can stand in for a BCN in a trial (Gradle and Maven, with
-> memory, disk and bucket tiers and authentication), but not in production: there is no release
-> yet, and TLS is still planned. This page describes the full migration as designed, so you can
-> plan it.
+> memory, disk and bucket tiers, authentication and TLS), but not in production: there is no
+> release yet. This page describes the full migration as designed, so you can plan it.
 
 ## What stays the same
 

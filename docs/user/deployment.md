@@ -21,6 +21,7 @@ What a node needs to run well on Kubernetes, and where each part is covered:
 
 | Need                                     | How                                                     | Status   |
 | ---------------------------------------- | ------------------------------------------------------- | -------- |
+| Keep serving when the bucket is down     | Local tiers answer; [Bucket outages](#bucket-outages)   | Done     |
 | Exit cleanly on `SIGTERM`                | Built in                                                | Done     |
 | Drain before exiting                     | [Shutdown and timeouts](#shutdown-and-timeouts)         | Done     |
 | Liveness, readiness and startup probes   | [Health checks](health.md#kubernetes)                   | Done     |
@@ -211,6 +212,12 @@ allow_http = true
 Not supported: AWS profiles and SSO from `~/.aws/config`, and GCP federation from outside Google
 Cloud (external-account files). Use keys from a Secret there. Entries are never deleted from the
 bucket, so set a lifecycle rule to expire them, for example after 30 days.
+
+## Bucket outages
+
+A bucket outage degrades a node to its local tiers: bucket reads that fail or pass `bucket.timeout`
+are misses, the bucket is skipped for `bucket.cooldown`, and `/readyz` stays ready, so builds keep
+their cache. Details and the alert to set are on [Health checks](health.md#bucket-outages).
 
 ## Metrics
 

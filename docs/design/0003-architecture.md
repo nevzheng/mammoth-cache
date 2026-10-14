@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft
+Accepted
 
 ## Summary
 
@@ -297,8 +297,8 @@ is handled inside instead:
 
 ## Implementation status
 
-As of 2026-10-14 (`main` at `c03e77f`, plus the drain and readiness change). The design above is
-the target; this section says how much of it the code does today, and is updated as parts land.
+As of 2026-10-14 (`main` at `3f02071`). The design above is the target; this section says how much
+of it the code does today, and is updated as parts land.
 
 ```mermaid
 flowchart LR
@@ -312,7 +312,7 @@ flowchart LR
         q["Upload queue"]
     end
     l3[("L3 bucket<br/>S3, GCS, Azure, S3-compatible")]
-    client -- "HTTP; TLS at the proxy" --> http
+    client -- "HTTP, or HTTPS with [tls]" --> http
     http --> auth --> core
     core -- "reads, writes, promotes" --> l1
     core -- "reads, writes, promotes" --> l2
@@ -320,21 +320,22 @@ flowchart LR
     core --> q -- "async writes" --> l3
 ```
 
-| Area                         | State                                                                                        |
-| ---------------------------- | -------------------------------------------------------------------------------------------- |
-| Gradle and Maven routes      | Done: `GET`, `HEAD`, `PUT`; Maven `OPTIONS` and `MKCOL`; namespaced keys                     |
-| Entry size limit             | Done: accept and drop for Gradle, `413` for Maven, by `Content-Length` and while streaming   |
-| L1 memory                    | Done: foyer, five eviction policies, eviction counter                                        |
-| L2 disk                      | Done: atomic writes, CRC32C, warm index, LRU and age; set by `[disk]`                        |
-| L3 bucket                    | Done: S3 and S3-compatible, GCS, Azure, local files; set by `[bucket]`                       |
-| Core read path               | Lookup in order, failed tier skipped, hits promoted to faster tiers; no single-flight        |
-| Core write path              | Writes every local tier at once; bucket inline or through a bounded upload queue             |
-| Configuration (0005)         | Done: `mammoth.toml`, `config check`; some keys validated but not enforced yet               |
-| Authentication (0002)        | Done: users, token hashes, scopes, Basic and Bearer; open until configured                   |
-| Metrics (0004)               | Request counters and memory evictions only; the rest of the catalog is missing               |
-| Health                       | Done: `/ping`, `/livez`; `/readyz` checks config, shutdown, disk writability and free space  |
-| Flow control                 | Idle and body read timeouts, upload queue, bucket deadline and cooldown; no per-tier limits  |
-| TLS                          | In progress; terminate at the proxy until then                                               |
+| Area                        | State                                                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gradle, Maven, Bazel routes | Done: `GET`, `HEAD`, `PUT`; Maven `OPTIONS` and `MKCOL`; Bazel `/ac` and `/cas` (0012); AIP-193 `405` with `Allow`; `404` for protocols that are off                      |
+| Entry size limit            | Done: accept and drop for Gradle, `413` for Maven and Bazel, by `Content-Length` and while streaming; rejected and duplicate uploads are drained                          |
+| L1 memory                   | Done: foyer, five eviction policies, eviction counter                                                                                                                     |
+| L2 disk                     | Done: atomic writes, CRC32C, warm index for every namespace, LRU and age; set by `[disk]`                                                                                 |
+| L3 bucket                   | Done: S3 and S3-compatible (`allow_http`), GCS, Azure, local files; set by `[bucket]`                                                                                     |
+| Core read path              | Lookup in order, failed tier skipped, hits promoted to faster tiers; no single-flight                                                                                     |
+| Core write path             | Writes every local tier at once, one writer per racing key; bucket inline or through a bounded, per-key-ordered upload queue                                              |
+| Configuration (0005)        | Done: `mammoth.toml`, `config check`, `token new`; `log.access_log` read but not enforced                                                                                 |
+| Authentication (0002)       | Done: users, token hashes, scopes, Basic and Bearer; open until configured                                                                                                |
+| Metrics (0004)              | Request, Gradle version, promotion, eviction, integrity, bucket queue, shutdown, disk free and TLS metrics; the rest of the catalog is gated by a test and lands per 0015 |
+| Health                      | Done: `/ping`, `/livez`; `/readyz` checks config, shutdown, disk writability and free space                                                                               |
+| Shutdown (0013)             | Done: `SIGTERM` fails `/readyz`, keeps serving for `shutdown_delay`, drains and flushes uploads within `shutdown_timeout`                                                 |
+| Flow control                | Idle and body read timeouts, bounded upload queue, bucket deadline and cooldown with `mammoth_tier_up`; no per-tier concurrency limits                                    |
+| TLS (0014)                  | Done: optional `[tls]` with rustls, certificate reload every minute, TLS metrics                                                                                          |
 
 Without `[disk]`, a node keeps nothing across a restart, and entries are capped at
 `memory.max_entry_size`.
