@@ -163,10 +163,10 @@ Each BCN user needs a new token, set in Gradle where the password was.
 
 ### Operations
 
-The listener, TLS and storage change rarely, and a restart of a stateless node costs only its L1
+The listener and storage change rarely, and a restart of a stateless node costs only its L1
 contents (L2 can be re-indexed, see [0003](0003-architecture.md)). That makes hot reload not worth
-its complexity. Certificate rotation by tools such as cert-manager is handled by restarting the
-pod when the certificate changes.
+its complexity. The one exception is the TLS certificate and key, which the node re-reads from
+their files so a renewal needs no restart; see [0014](0014-tls.md).
 
 ## Alternatives considered
 
@@ -183,5 +183,3 @@ pod when the certificate changes.
 ## Open questions
 
 - Whether to ship `mammoth config import-bcn` to translate a BCN `config.yaml`.
-- Whether TLS certificates should reload without a restart after all, for setups that cannot
-  restart on rotation.

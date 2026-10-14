@@ -103,13 +103,18 @@ balancers keep connections 600 s, so raise it there.
 
 ### `[tls]`
 
-Not built yet: a `[tls]` section is rejected at startup. Serve plain HTTP behind a proxy that
-terminates TLS. With authentication on, the node logs a warning at startup.
+Optional. With it, the node serves HTTPS on `listen` instead of plain HTTP (TLS 1.2 and 1.3,
+HTTP/1.1). Without it, serve plain HTTP behind a proxy that terminates TLS; with authentication on,
+the node then logs a warning at startup.
 
-| Key    | Type   | Default  | Meaning                    |
-| ------ | ------ | -------- | -------------------------- |
-| `cert` | path   | required | PEM certificate chain      |
-| `key`  | path   | required | PEM private key            |
+| Key    | Type | Default  | Meaning                                                                      |
+| ------ | ---- | -------- | ---------------------------------------------------------------------------- |
+| `cert` | path | required | PEM certificate chain: the server certificate first, then any intermediates  |
+| `key`  | path | required | PEM private key, unencrypted: PKCS#8, PKCS#1 (RSA) or SEC1 (EC)              |
+
+Startup, and `mammoth config check`, fail if either file can't be read or the key doesn't match the
+certificate. The node re-reads both files every minute and picks up a renewed pair without a
+restart; see [TLS on the node](deployment.md#tls-on-the-node).
 
 ### `[limits]`
 
@@ -198,4 +203,3 @@ the environment. It can live in version control and be readable by anyone who ru
 mammoth-cache is pre-alpha. These keys are read and validated but don't take effect yet:
 
 - `log.access_log`.
-- `[tls]` is rejected; terminate TLS in a proxy.

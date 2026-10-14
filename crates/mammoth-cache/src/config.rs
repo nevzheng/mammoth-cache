@@ -94,7 +94,8 @@ impl Default for Server {
     }
 }
 
-/// `[tls]`.
+/// `[tls]`: serve HTTPS with this certificate (design doc 0014). The files are read and checked
+/// at startup, and re-read while serving, so a renewed certificate is picked up without a restart.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tls {
@@ -502,9 +503,6 @@ impl Config {
                 server.shutdown_delay, server.shutdown_timeout
             ));
         }
-        if self.tls.is_some() {
-            return Err("[tls] is not supported yet; terminate TLS in a proxy for now".to_owned());
-        }
         for (name, user) in &self.auth.users {
             if user.token_hashes.is_empty() {
                 return Err(format!("auth.users.{name} has no token_hashes"));
@@ -816,8 +814,12 @@ mod tests {
                 "must be \"sha256:\" and 64",
             ),
             (
-                &format!("{MINIMAL}[tls]\ncert = \"c\"\nkey = \"k\"\n"),
-                "[tls] is not supported yet",
+                &format!("{MINIMAL}[tls]\ncert = \"c\"\n"),
+                "missing field `key`",
+            ),
+            (
+                &format!("{MINIMAL}[tls]\ncert = \"c\"\nkey = \"k\"\nclient_ca = \"ca\"\n"),
+                "unknown field `client_ca`",
             ),
             (
                 &format!("{MINIMAL}[protocols]\ngradle = false\nmaven = false\n"),

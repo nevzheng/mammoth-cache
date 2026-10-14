@@ -4,12 +4,13 @@ use mammoth_cache::{
     auth,
     cache::{BucketWrite, Cache},
     config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
-    server::{self, ServerSettings},
+    server::{self, ServerSettings, TlsSettings},
     store::{
         bucket::{BucketConfig, BucketStore},
         disk::{DiskConfig, DiskStore},
         memory::{MemoryConfig, MemoryStore},
     },
+    tls::{self, Certificates},
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
@@ -56,6 +57,13 @@ fn main() -> ExitCode {
         }
     };
     if matches!(command, Command::Check) {
+        // Check the certificate too, without the startup log.
+        if let Some(tls) = &config.tls
+            && let Err(error) = Certificates::load(&tls.cert, &tls.key)
+        {
+            eprintln!("mammoth: {error}");
+            return ExitCode::FAILURE;
+        }
         eprintln!("config ok");
         return ExitCode::SUCCESS;
     }
@@ -158,13 +166,18 @@ fn init_logging(config: &Config) {
 
 async fn serve(config: Config) -> io::Result<()> {
     let auth = config.auth.authenticator(&config.metrics);
-    if config.auth.is_configured(&config.metrics) {
-        tracing::warn!(
-            "authentication is on and this server speaks plain HTTP: serve it behind a proxy \
-             that terminates TLS, or tokens cross the network in clear"
-        );
-    } else {
+    // Before anything else, so a bad certificate fails fast.
+    let certificates = match &config.tls {
+        Some(tls) => Some(Arc::new(Certificates::load(&tls.cert, &tls.key)?)),
+        None => None,
+    };
+    if !config.auth.is_configured(&config.metrics) {
         tracing::warn!("no [auth] users configured: every request is allowed");
+    } else if certificates.is_none() {
+        tracing::warn!(
+            "authentication is on and this server speaks plain HTTP: set [tls] or serve it \
+             behind a proxy that terminates TLS, or tokens cross the network in clear"
+        );
     }
     let cache = build_cache(&config).await?;
     let protocols = &config.protocols;
@@ -175,7 +188,11 @@ async fn serve(config: Config) -> io::Result<()> {
         "protocols"
     );
     let listener = TcpListener::bind(config.listen).await?;
-    tracing::info!(addr = %listener.local_addr()?, "mammoth-cache listening");
+    tracing::info!(
+        addr = %listener.local_addr()?,
+        scheme = if certificates.is_some() { "https" } else { "http" },
+        "mammoth-cache listening"
+    );
 
     let metrics = PrometheusBuilder::new()
         .install_recorder()
@@ -193,7 +210,7 @@ async fn serve(config: Config) -> io::Result<()> {
         idle_timeout: config.server.idle_timeout.0,
         body_read_timeout: config.server.body_read_timeout.0,
     };
-    server::serve(listener, app, cache, settings, async {
+    let signal = async {
         shutdown_signal().await;
         // A second signal skips the drain.
         tokio::spawn(async {
@@ -201,8 +218,18 @@ async fn serve(config: Config) -> io::Result<()> {
             tracing::warn!("second shutdown signal; exiting without draining");
             std::process::exit(130);
         });
-    })
-    .await
+    };
+    match certificates {
+        Some(certificates) => {
+            let tls = TlsSettings {
+                config: certificates.server_config()?,
+                handshake_timeout: tls::HANDSHAKE_TIMEOUT,
+            };
+            tokio::spawn(certificates.watch(tls::RELOAD_INTERVAL));
+            server::serve_tls(listener, tls, app, cache, settings, signal).await
+        }
+        None => server::serve(listener, app, cache, settings, signal).await,
+    }
 }
 
 /// Builds the tiers in lookup order: memory, then disk, then the bucket.
