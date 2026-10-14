@@ -17,8 +17,9 @@ which reaches end of life after December 31, 2026.
   as an engineering goal, because every lookup sits on a build's critical path.
 - **Stateless.** With a shared S3, GCS or Azure bucket, nodes hold only copies. Scale out behind a
   load balancer, and replace a failed node with a fresh one.
-- **Simple to run.** One static binary or a distroless image, and one TOML file. No web UI, no
-  database, no JVM.
+- **Easy to operate.** One dependency, a bucket, and even that is optional. Add a few lines of
+  config and a load balancer, and you're set. One static binary or a distroless image; no web UI,
+  no database, no JVM.
 - **Observable.** Prometheus metrics with a documented catalog, and Kubernetes-style health checks.
 - **Open.** MIT or Apache-2.0, with every design decision written down.
 
