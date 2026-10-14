@@ -133,9 +133,33 @@ Initial targets, to be checked by benchmarks before they are relied on:
 
 ### Security
 
-Bucket credentials come from the platform's standard sources (IAM roles, workload identity,
-environment), never from the config file. Client authentication is in
-[0002](0002-authentication.md).
+Client authentication is in [0002](0002-authentication.md).
+
+#### Bucket access
+
+L3 sits behind a small object-store interface (get, put, head) backed by an existing library that
+speaks S3, GCS, Azure Blob and the local file system, such as the `object_store` crate or Apache
+OpenDAL. The choice is open.
+
+Credentials come from each cloud's default credential chain, the same one the official SDKs use, so
+workload identity works without code of our own:
+
+| Platform | Picked up automatically                                                          |
+| -------- | -------------------------------------------------------------------------------- |
+| AWS      | EKS IRSA and Pod Identity, ECS task roles, EC2 instance roles, environment keys  |
+| GCP      | GKE Workload Identity and VM service accounts (metadata server), key files       |
+| Azure    | AKS Workload Identity, managed identity, environment keys                        |
+
+Federation from outside a cloud (on-premises or CI to GCS through an "external account" file, or
+to S3 through `AssumeRoleWithWebIdentity`) depends on the library, and which flows each candidate
+supports must be checked before choosing.
+
+The config file names only the bucket, region, key prefix and, for S3-compatible stores such as
+MinIO or Cloudflare R2, an endpoint. It never holds keys; static keys are accepted only from the
+environment, as a last resort.
+
+The node needs `get`, `put` and `head` on its prefix, and nothing else: no `delete`, no `list`.
+Expiry is the bucket's lifecycle rules.
 
 ### Observability
 
