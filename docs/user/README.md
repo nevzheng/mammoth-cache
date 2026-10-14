@@ -8,9 +8,9 @@ Cache Node, and they reuse task and module outputs that other builds have alread
 > [!WARNING]
 > mammoth-cache is pre-alpha. The Gradle, Maven and Bazel protocols work today with memory, disk
 > and bucket tiers set in `mammoth.toml`, with authentication, graceful shutdown and optional TLS,
-> and an `edge` image is published from `main`. There is no release yet, and part of the metrics
-> catalog is still being built. Each page says what works now and what is planned. Don't run it in
-> production yet.
+> and ship as versioned images and binaries from 0.1.0, with `edge` built from `main`. Still
+> pre-alpha: no compatibility promises before 1.0. Each page says what works now and what is
+> planned. Deploy at your own judgment.
 
 ## What it does
 
@@ -62,9 +62,9 @@ is out of scope: mammoth-cache is a cache, not a remote build system.
 | Graceful shutdown, readiness storage checks, timeouts                                | Available | [Deployment](deployment.md)               |
 | Request, tier and bucket metrics at `/metrics`                                       | Available | [Metrics](metrics.md)                     |
 | `edge` container image from `main`                                                   | Available | [Quickstart](quickstart.md)               |
-| Full metrics catalog                                                                 | Planned   | [Metrics](metrics.md)                     |
+| Metrics catalog (0004), all but `mammoth_tier_oldest_entry_age_seconds`              | Available | [Metrics](metrics.md)                     |
 | Access log with client addresses                                                     | Planned   | [Deployment](deployment.md)               |
-| Release binaries and versioned images                                                | Planned   | [Quickstart](quickstart.md)               |
+| Release binaries and versioned images, with checksums and attestations               | Available | [Quickstart](quickstart.md)               |
 
 ## Where to go next
 

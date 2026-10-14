@@ -11,8 +11,9 @@ distributing and supporting after December 31, 2026: same `/cache/` path, same p
 `/ping` health check, and no Develocity. One static binary, a few lines of config and a load
 balancer, and your builds keep their cache.
 
-> Early stage: there is no tagged release yet, and `main` and the `edge` image are what we test.
-> Everything below marked "today" works there. Deploy at your own judgment.
+> Early stage: 0.1.0 is the first tagged release, with versioned images and binaries; `main` and
+> the `edge` image are what we test between releases. Still pre-alpha, with no compatibility
+> promises before 1.0. Deploy at your own judgment.
 
 ## What it is
 
@@ -54,7 +55,7 @@ for a few stateless nodes behind a load balancer rather than one JVM with a web 
 ## Quickstart
 
 ```sh
-docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:edge
+docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:0.1.0
 curl http://localhost:5071/ping   # SUCCESS
 ```
 
@@ -93,8 +94,8 @@ and [deployment guide](docs/user/deployment.md) take it from there.
 | `mammoth.toml`, users, tokens and scopes               | Done                               |
 | Graceful shutdown, readiness checks, timeouts          | Done                               |
 | Optional built-in TLS with certificate reload          | Done                               |
-| Prometheus metrics                                     | Core metrics; the rest landing     |
-| Release binaries and versioned images                  | Pipeline ready; first release soon |
+| Prometheus metrics                                     | Catalog done, one gauge pending    |
+| Release binaries and versioned images                  | Done; checksums and attestations   |
 
 Details per feature are in the [user guide](docs/user/README.md#feature-status).
 

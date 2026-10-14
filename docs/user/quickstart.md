@@ -9,15 +9,16 @@ tiers and authentication.
 
 ## With Docker
 
-There is no release yet, but every change to `main` publishes an `edge` image for linux/amd64 and
-linux/arm64:
+Each release is published as `ghcr.io/nevzheng/mammoth-cache:<version>` for linux/amd64 and
+linux/arm64, with `:latest` following the newest release:
 
 ```sh
-docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:edge
+docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:0.1.0
 ```
 
 The image runs as a non-root user on a distroless base, and listens on port 5071 over IPv4 and IPv6.
-`edge` changes with every merge; pin a `sha-<commit>` tag if you need the same build twice.
+Every change to `main` also publishes an `edge` image, the pre-release option: it changes with every
+merge, so pin a `sha-<commit>` tag if you need the same build twice.
 
 To build the image yourself from a clone of the repository:
 
@@ -28,9 +29,38 @@ docker build -t mammoth-cache .
 docker run --rm -p 5071:5071 mammoth-cache
 ```
 
-> [!NOTE]
-> From the first release, each version is published as `ghcr.io/nevzheng/mammoth-cache:<version>`,
-> with `:latest` following the newest release.
+## With the release binary
+
+Each [GitHub release](https://github.com/nevzheng/mammoth-cache/releases) carries static Linux
+binaries for x86_64 and aarch64 and a macOS arm64 binary, as `mammoth-<target>.tar.gz` with the
+licenses and README inside:
+
+```sh
+curl -LO https://github.com/nevzheng/mammoth-cache/releases/download/v0.1.0/mammoth-x86_64-unknown-linux-musl.tar.gz
+tar -xzf mammoth-x86_64-unknown-linux-musl.tar.gz
+./mammoth-x86_64-unknown-linux-musl/mammoth --version
+# mammoth 0.1.0
+./mammoth-x86_64-unknown-linux-musl/mammoth
+```
+
+The other targets are `aarch64-unknown-linux-musl` and `aarch64-apple-darwin`. File names carry no
+version, so `releases/latest/download/<file>` always fetches the newest release.
+
+### Verify a download
+
+Every release ships `SHA256SUMS` and a build attestation for each tarball and for the image, signed
+by GitHub for this repository's release workflow. Check both with the
+[GitHub CLI](https://cli.github.com):
+
+```sh
+curl -LO https://github.com/nevzheng/mammoth-cache/releases/download/v0.1.0/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify mammoth-x86_64-unknown-linux-musl.tar.gz -R nevzheng/mammoth-cache
+gh attestation verify oci://ghcr.io/nevzheng/mammoth-cache:0.1.0 -R nevzheng/mammoth-cache
+```
+
+A passing check means the file or image was built by this repository's workflow from the tagged
+commit, not altered since. The image also carries an SBOM and provenance in the registry.
 
 ## From source
 
@@ -50,11 +80,6 @@ only. To change that, write a [config file](configuration.md) and pass it with `
 ```sh
 ./target/release/mammoth --config mammoth.toml
 ```
-
-> [!NOTE]
-> From the first release, each GitHub release carries static Linux binaries for x86_64 and
-> aarch64 and a macOS arm64 binary, with `SHA256SUMS` and build attestations you can check with
-> `gh attestation verify <file> -R nevzheng/mammoth-cache`.
 
 ## Check it works
 
@@ -83,6 +108,13 @@ See what the node holds:
 ```sh
 curl http://localhost:5071/v1/serverStatus
 ```
+
+## Upgrading
+
+Nodes are stateless, so an upgrade is a new image tag or binary and a restart; the disk tier is
+re-indexed on start. `mammoth --version` prints the running version, and the same string is in
+`/v1/serverStatus` and `mammoth_build_info`. Include it in bug reports. Before 1.0 a release may
+change the config file or the disk format; the release notes say when.
 
 ## Next steps
 

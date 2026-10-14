@@ -7,7 +7,7 @@ build is as fast as the default one.
 
 > [!NOTE]
 > The library's Rust API is not stable before 1.0, and the crate is not published to crates.io.
-> Depend on it from git and pin a commit; tags come with the first release.
+> Depend on it from git and pin a release tag such as `v0.1.0`, or a commit.
 
 ## Cargo features
 
