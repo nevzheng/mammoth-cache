@@ -47,7 +47,7 @@ eviction = "s3-fifo" # or lru, w-tinylfu, sieve, fifo
 # L2: disk. Optional; without it the node keeps entries in memory only.
 [disk]
 path = "/var/lib/mammoth" # required; one directory per node
-size = "10GiB" # bytes of entries kept on disk; at least limits.max_entry_size
+size = "10GiB" # bytes of entries kept on disk, or "max-available" for the volume less the buffer
 free_space_buffer = "1GiB" # free space to keep on the volume
 max_entry_age = "30d" # optional; evict entries older than this
 

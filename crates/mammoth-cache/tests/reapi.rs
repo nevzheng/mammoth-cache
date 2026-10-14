@@ -18,7 +18,7 @@ use mammoth_cache::{
     cache::Cache,
     config::Protocols,
     reapi::{
-        self, GrpcSettings,
+        self,
         proto::{
             build::bazel::remote::execution::v2::{
                 ActionResult, BatchReadBlobsRequest, BatchUpdateBlobsRequest, Digest,
@@ -39,6 +39,7 @@ use mammoth_cache::{
         },
     },
     router_with,
+    server::ServerSettings,
     store::memory::{FoyerBackend, MemoryConfig, MemoryStore},
 };
 use prost::Message;
@@ -83,10 +84,11 @@ impl Node {
         );
         let routes = reapi::routes(cache.clone(), Arc::new(auth), Duration::from_secs(5));
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let settings = GrpcSettings {
+        let settings = ServerSettings {
             shutdown_delay: Duration::ZERO,
             shutdown_timeout: Duration::from_secs(5),
             idle_timeout: Duration::from_secs(5),
+            ..ServerSettings::default()
         };
         let server = tokio::spawn(reapi::serve(listener, None, routes, settings, async {
             let _ = stopped.await;
@@ -980,10 +982,11 @@ async fn serves_grpcs_with_the_node_certificate() {
         Arc::new(Authenticator::open()),
         Duration::from_secs(5),
     );
-    let settings = GrpcSettings {
+    let settings = ServerSettings {
         shutdown_delay: Duration::ZERO,
         shutdown_timeout: Duration::from_secs(5),
         idle_timeout: Duration::from_secs(5),
+        ..ServerSettings::default()
     };
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(reapi::serve(listener, Some(tls), routes, settings, async {

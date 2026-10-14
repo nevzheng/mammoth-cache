@@ -151,7 +151,7 @@ access_log = true
 | BCN                                   | mammoth-cache                                                        |
 | ------------------------------------- | -------------------------------------------------------------------- |
 | `cache.targetSize` (`fixed`, `size`)  | `disk.size` (`50000` MiB becomes `"50000MiB"`)                       |
-| `cache.targetSize.type: maxAvailable` | No equivalent yet: set `disk.size` to the volume less the buffer     |
+| `cache.targetSize.type: maxAvailable` | `disk.size = "max-available"`                                        |
 | `cache.freeSpaceBufferSize`           | `disk.free_space_buffer`                                             |
 | `cache.maxArtifactSize`               | `limits.max_entry_size`                                              |
 | `cache.maxEntryAgeInHours`            | `disk.max_entry_age`                                                 |

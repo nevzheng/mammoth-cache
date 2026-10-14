@@ -73,7 +73,8 @@ class Target(BaseSettings):
     proxy_url: HttpUrl | None = None
     proxy_defaults_url: HttpUrl | None = None
     # Nodes with fewer tiers than the full one, by topology: "memory", "memory-disk",
-    # "memory-bucket". Anonymous requests may read and write on them.
+    # "memory-bucket", plus "max-available" (a 64 MiB tmpfs disk tier sized from the volume).
+    # Anonymous requests may read and write on them.
     topologies: dict[str, HttpUrl] = Field(default_factory=dict)
     prometheus_url: HttpUrl | None = None
     # host:port of the REAPI gRPC listener ([reapi] listen), in plain gRPC.

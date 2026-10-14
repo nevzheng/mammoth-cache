@@ -1,5 +1,5 @@
-//! The HTTP/1.1 server: accepts connections, applies timeouts, and drains on shutdown (design doc
-//! 0013).
+//! The servers: HTTP/1.1 for the REST protocols and HTTP/2 for gRPC. Both accept connections,
+//! apply timeouts, and drain on shutdown the same way (design doc 0013).
 //!
 //! `axum::serve` sets no timeouts and waits for open connections without limit, so this module
 //! serves each connection with hyper directly.
@@ -21,16 +21,18 @@ use axum::{
     middleware::{self, Next},
     response::Response,
 };
-use futures_util::{StreamExt, stream};
-use hyper::server::conn::http1;
+use futures_util::{StreamExt, stream, stream::FuturesUnordered};
+use hyper::server::conn::{http1, http2};
 use hyper_util::{
-    rt::{TokioIo, TokioTimer},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
     server::graceful::{GracefulShutdown, Watcher},
     service::TowerToHyperService,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpSocket, TcpStream},
+    sync::watch,
+    task::JoinHandle,
     time::{Instant, Sleep},
 };
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
@@ -45,8 +47,9 @@ pub struct ServerSettings {
     pub shutdown_delay: Duration,
     /// From the shutdown signal, how long requests and queued bucket uploads may take to finish.
     pub shutdown_timeout: Duration,
-    /// How long a connection may wait for, and take to send, its next request's headers. hyper
-    /// starts its header timer when a keep-alive connection goes idle, so one timeout covers both.
+    /// How long an HTTP connection may wait for, and take to send, its next request's headers.
+    /// hyper starts its header timer when a keep-alive connection goes idle, so one timeout covers
+    /// both. On the gRPC port, how long a new connection may send nothing.
     pub idle_timeout: Duration,
     /// How long a request body may send nothing before the request fails.
     pub body_read_timeout: Duration,
@@ -126,9 +129,9 @@ pub struct TlsSettings {
 /// 1. `/readyz` starts failing, through [`Cache::begin_shutdown`].
 /// 2. New connections are still accepted for `shutdown_delay`, while load balancers notice.
 /// 3. The listener closes, idle connections close, and requests in flight finish.
-/// 4. Queued bucket uploads finish.
 ///
-/// Steps 2 to 4 share the `shutdown_timeout` deadline; whatever is left then is abandoned.
+/// Steps 2 and 3 share the `shutdown_timeout` deadline; whatever is left then is abandoned. Queued
+/// bucket uploads are not flushed here but by [`run_node`], once every listener has drained.
 pub async fn serve(
     listener: TcpListener,
     app: Router,
@@ -136,7 +139,16 @@ pub async fn serve(
     settings: ServerSettings,
     signal: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    run(listener, None, app, cache, settings, signal).await
+    run(
+        listener,
+        None,
+        app,
+        Protocol::Http1,
+        Some(&cache),
+        settings,
+        signal,
+    )
+    .await
 }
 
 /// Like [`serve`], but over TLS: each connection completes a handshake, within
@@ -153,72 +165,95 @@ pub async fn serve_tls(
         acceptor: TlsAcceptor::from(tls.config),
         handshake_timeout: tls.handshake_timeout,
     };
-    run(listener, Some(tls), app, cache, settings, signal).await
+    run(
+        listener,
+        Some(tls),
+        app,
+        Protocol::Http1,
+        Some(&cache),
+        settings,
+        signal,
+    )
+    .await
 }
 
-struct Tls {
-    acceptor: TlsAcceptor,
-    handshake_timeout: Duration,
-}
-
-async fn run(
+/// Serves gRPC `app` over HTTP/2 on `listener`, over TLS when `tls` is set, until `signal`
+/// resolves; then drains like [`serve`]: accept for `shutdown_delay`, send `GOAWAY`, and let calls
+/// in flight finish until `shutdown_timeout` after the signal. Readiness is the HTTP port's.
+///
+/// A connection must send something within `idle_timeout` of opening, and one that has not sent
+/// its first request when the drain starts is closed at once, so silent connections hold neither
+/// file descriptors nor the drain. Request bodies and responses get the same per-read and
+/// per-write timeouts as HTTP.
+pub(crate) async fn serve_http2(
     listener: TcpListener,
-    tls: Option<Tls>,
+    tls: Option<TlsSettings>,
     app: Router,
-    cache: Arc<Cache>,
     settings: ServerSettings,
     signal: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    let app = app.layer(middleware::from_fn_with_state(
-        settings.body_read_timeout,
-        body_read_timeout,
-    ));
-    let graceful = GracefulShutdown::new();
-    let mut paused = AcceptErrors::default();
-    let mut signal = pin!(signal);
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
-                    paused.recovered();
-                    accept(stream, &app, &graceful, settings, tls.as_ref());
-                }
-                Err(error) => paused.failed(&error).await,
-            },
-            () = &mut signal => break,
-        }
-    }
+    let tls = tls.map(|tls| Tls {
+        acceptor: TlsAcceptor::from(tls.config),
+        handshake_timeout: tls.handshake_timeout,
+    });
+    run(listener, tls, app, Protocol::Http2, None, settings, signal).await
+}
 
-    let deadline = Instant::now() + settings.shutdown_timeout;
-    cache.begin_shutdown();
-    tracing::info!(
-        delay = ?settings.shutdown_delay,
-        timeout = ?settings.shutdown_timeout,
-        "shutting down: /readyz now fails"
-    );
-    let stop_accepting = tokio::time::sleep(settings.shutdown_delay);
-    let mut stop_accepting = pin!(stop_accepting);
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
-                    paused.recovered();
-                    accept(stream, &app, &graceful, settings, tls.as_ref());
-                }
-                Err(error) => paused.failed(&error).await,
-            },
-            () = &mut stop_accepting => break,
-        }
-    }
-    drop(listener);
+/// A spawned server, named for logs, as [`run_node`] takes it.
+pub type Server = (&'static str, JoinHandle<io::Result<()>>);
 
-    tracing::info!("no longer accepting connections; finishing requests in flight");
-    if tokio::time::timeout_at(deadline, graceful.shutdown())
-        .await
-        .is_err()
-    {
-        tracing::warn!("shutdown timeout reached with requests in flight; abandoning them");
+/// Runs a node's servers to the end. Each drains once `stop` is set, by the shutdown signal; when
+/// every one has, the bucket uploads they queued finish within what is left of `shutdown_timeout`
+/// from the signal. Flushing earlier would drop what a server still draining stores.
+///
+/// If a server stops before `stop` is set, which only a bug can cause, the others are stopped too
+/// and this returns an error, so the orchestrator restarts the process rather than leaving
+/// `/readyz` passing with a port dead.
+///
+/// # Errors
+///
+/// The first server's error, or an error if one stopped before `stop` was set.
+pub async fn run_node(
+    cache: &Cache,
+    servers: Vec<Server>,
+    stop: &watch::Sender<bool>,
+    shutdown_timeout: Duration,
+) -> io::Result<()> {
+    let signalled = {
+        let mut stopped = stop.subscribe();
+        tokio::spawn(async move {
+            let _ = stopped.wait_for(|stop| *stop).await;
+            Instant::now()
+        })
+    };
+    let mut running: FuturesUnordered<_> = servers
+        .into_iter()
+        .map(|(name, server)| async move { (name, server.await) })
+        .collect();
+    let mut result = Ok(());
+    while let Some((name, joined)) = running.next().await {
+        let mut served = joined.unwrap_or_else(|error| Err(io::Error::other(error)));
+        if !*stop.borrow() {
+            match &served {
+                Ok(()) => tracing::error!(server = name, "server stopped; shutting down"),
+                Err(error) => {
+                    tracing::error!(server = name, %error, "server failed; shutting down");
+                }
+            }
+            stop.send_replace(true);
+            served = served.and(Err(io::Error::other(format!("the {name} server stopped"))));
+        }
+        result = result.and(served);
     }
+    if let Ok(signalled) = signalled.await {
+        flush_uploads(cache, signalled + shutdown_timeout).await;
+    }
+    tracing::info!("shut down");
+    result
+}
+
+/// Finishes queued bucket uploads by `deadline`, counting and logging those left behind.
+async fn flush_uploads(cache: &Cache, deadline: Instant) {
     if tokio::time::timeout_at(deadline, cache.flush_uploads())
         .await
         .is_err()
@@ -231,7 +266,112 @@ async fn run(
             "shutdown timeout reached with bucket uploads queued; they stay on this node only"
         );
     }
-    tracing::info!("shut down");
+}
+
+/// What a listener speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protocol {
+    /// HTTP/1.1, for the REST protocols.
+    Http1,
+    /// HTTP/2 only, for gRPC.
+    Http2,
+}
+
+impl Protocol {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Http1 => "HTTP",
+            Self::Http2 => "gRPC",
+        }
+    }
+}
+
+/// HTTP/2 pings that find dead peers on idle gRPC connections.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Calls one gRPC connection may have open at once. Each can buffer a message of up to
+/// [`crate::reapi::MAX_MESSAGE_BYTES`] while it decodes.
+const MAX_CONCURRENT_STREAMS: u32 = 128;
+
+struct Tls {
+    acceptor: TlsAcceptor,
+    handshake_timeout: Duration,
+}
+
+async fn run(
+    listener: TcpListener,
+    tls: Option<Tls>,
+    app: Router,
+    protocol: Protocol,
+    cache: Option<&Cache>,
+    settings: ServerSettings,
+    signal: impl Future<Output = ()>,
+) -> io::Result<()> {
+    let app = app.layer(middleware::from_fn_with_state(
+        settings.body_read_timeout,
+        body_read_timeout,
+    ));
+    let graceful = GracefulShutdown::new();
+    // Set when the listener closes; HTTP/2 connections that have sent nothing yet close then.
+    let (draining, _) = watch::channel(false);
+    let mut paused = AcceptErrors::default();
+    let mut signal = pin!(signal);
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    paused.recovered();
+                    accept(stream, &app, protocol, &graceful, &draining, settings, tls.as_ref());
+                }
+                Err(error) => paused.failed(&error).await,
+            },
+            () = &mut signal => break,
+        }
+    }
+
+    let deadline = Instant::now() + settings.shutdown_timeout;
+    let server = protocol.name();
+    if let Some(cache) = cache {
+        cache.begin_shutdown();
+    }
+    tracing::info!(
+        server,
+        delay = ?settings.shutdown_delay,
+        timeout = ?settings.shutdown_timeout,
+        "shutting down: /readyz now fails"
+    );
+    let stop_accepting = tokio::time::sleep(settings.shutdown_delay);
+    let mut stop_accepting = pin!(stop_accepting);
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    paused.recovered();
+                    accept(stream, &app, protocol, &graceful, &draining, settings, tls.as_ref());
+                }
+                Err(error) => paused.failed(&error).await,
+            },
+            () = &mut stop_accepting => break,
+        }
+    }
+    drop(listener);
+    draining.send_replace(true);
+
+    tracing::info!(
+        server,
+        "no longer accepting connections; finishing requests in flight"
+    );
+    if tokio::time::timeout_at(deadline, graceful.shutdown())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            server,
+            "shutdown timeout reached with requests in flight; abandoning them"
+        );
+    }
+    tracing::info!(server, "drained");
     Ok(())
 }
 
@@ -276,7 +416,9 @@ impl AcceptErrors {
 fn accept(
     stream: TcpStream,
     app: &Router,
+    protocol: Protocol,
     graceful: &GracefulShutdown,
+    draining: &watch::Sender<bool>,
     settings: ServerSettings,
     tls: Option<&Tls>,
 ) {
@@ -286,16 +428,21 @@ fn accept(
     }
     // Taken now, so the drain also waits for connections still in their handshake.
     let watcher = graceful.watcher();
+    let draining = draining.subscribe();
     let app = app.clone();
     let Some(tls) = tls else {
-        tokio::spawn(serve_connection(stream, app, watcher, settings));
+        tokio::spawn(serve_connection(
+            stream, app, protocol, watcher, draining, settings,
+        ));
         return;
     };
     let acceptor = tls.acceptor.clone();
     let handshake_timeout = tls.handshake_timeout;
     tokio::spawn(async move {
         let reason = match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
-            Ok(Ok(stream)) => return serve_connection(stream, app, watcher, settings).await,
+            Ok(Ok(stream)) => {
+                return serve_connection(stream, app, protocol, watcher, draining, settings).await;
+            }
             // Scanners and plain-HTTP clients do this all day: not worth more than debug.
             Ok(Err(error)) => {
                 tracing::debug!(%error, "TLS handshake failed");
@@ -310,20 +457,121 @@ fn accept(
     });
 }
 
-async fn serve_connection<S>(stream: S, app: Router, watcher: Watcher, settings: ServerSettings)
-where
+async fn serve_connection<S>(
+    stream: S,
+    app: Router,
+    protocol: Protocol,
+    watcher: Watcher,
+    mut draining: watch::Receiver<bool>,
+    settings: ServerSettings,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let connection = http1::Builder::new()
-        .timer(TokioTimer::new())
-        .header_read_timeout(settings.idle_timeout)
-        .keep_alive(true)
-        .serve_connection(
-            TokioIo::new(SendTimeout::new(stream, settings.send_timeout)),
-            TowerToHyperService::new(app),
-        );
-    if let Err(error) = watcher.watch(connection).await {
+    let io = SendTimeout::new(stream, settings.send_timeout);
+    let served = match protocol {
+        Protocol::Http1 => {
+            let connection = http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(settings.idle_timeout)
+                .keep_alive(true)
+                .serve_connection(TokioIo::new(io), TowerToHyperService::new(app));
+            watcher.watch(connection).await
+        }
+        Protocol::Http2 => {
+            let connection = http2::Builder::new(TokioExecutor::new())
+                .timer(TokioTimer::new())
+                .keep_alive_interval(Some(KEEPALIVE_INTERVAL))
+                .keep_alive_timeout(KEEPALIVE_TIMEOUT)
+                .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
+                .serve_connection(
+                    TokioIo::new(FirstRead::new(io, async move {
+                        // hyper waits for the client's preface even when draining, so give up on a
+                        // connection that has sent nothing once the drain starts too.
+                        let drain = draining.wait_for(|draining| *draining);
+                        let _ = tokio::time::timeout(settings.idle_timeout, drain).await;
+                    })),
+                    TowerToHyperService::new(app),
+                );
+            watcher.watch(connection).await
+        }
+    };
+    if let Err(error) = served {
         tracing::debug!(%error, "connection ended with an error");
+    }
+}
+
+/// Fails a connection that sends nothing before `deadline` resolves. HTTP/2 has no header
+/// timeout, so a client that connects and stays silent, such as a port scanner or an L4 health
+/// check, would otherwise hold a file descriptor, and the drain, until it goes away.
+struct FirstRead<S> {
+    inner: S,
+    /// Polled until the first byte arrives.
+    deadline: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+}
+
+impl<S> FirstRead<S> {
+    fn new(inner: S, deadline: impl Future<Output = ()> + Send + 'static) -> Self {
+        Self {
+            inner,
+            deadline: Some(Box::pin(deadline)),
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for FirstRead<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        let Some(deadline) = self.deadline.as_mut() else {
+            return poll;
+        };
+        match poll {
+            Poll::Ready(Ok(())) if buf.filled().len() > before => self.deadline = None,
+            Poll::Ready(_) => {}
+            Poll::Pending => {
+                if deadline.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "the connection sent nothing for too long",
+                    )));
+                }
+            }
+        }
+        poll
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for FirstRead<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 

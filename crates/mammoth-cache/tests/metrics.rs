@@ -1110,3 +1110,50 @@ async fn a_broken_upload_is_a_client_error() {
     assert_eq!(delta("client_error"), 1);
     assert_eq!(delta("error"), 0);
 }
+
+/// `disk.size = "max-available"` sizes the disk tier from the volume holding `disk.path`, less
+/// the free space buffer, and `/metrics` reports the resolved capacity.
+#[cfg(unix)]
+#[tokio::test]
+async fn max_available_disk_capacity_is_the_volume_less_the_buffer() {
+    let _serial = serial().await;
+    let handle = recorder();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("not-yet-created");
+    let file = dir.path().join("mammoth.toml");
+    std::fs::write(
+        &file,
+        format!(
+            "version = 1\n[disk]\npath = {:?}\nsize = \"max-available\"\n\
+             free_space_buffer = \"1MiB\"\n",
+            path.display().to_string()
+        ),
+    )
+    .unwrap();
+    let config = mammoth_cache::config::Config::load(&file).unwrap();
+    let disk = config.disk.as_ref().unwrap();
+
+    let capacity = config.resolve_disk_size(disk).unwrap().bytes();
+    let stats = rustix::fs::statvfs(dir.path()).unwrap();
+    assert_eq!(capacity, stats.f_blocks * stats.f_frsize - (1 << 20));
+
+    let store = DiskStore::open(DiskConfig {
+        path: disk.path.clone(),
+        capacity_bytes: capacity,
+        max_entry_age: None,
+        free_space_buffer: disk.free_space_buffer.bytes(),
+    })
+    .await
+    .unwrap();
+    let cache = Cache::builder()
+        .bounded_tier(Arc::new(MemoryStore::new(1 << 20)))
+        .bounded_tier(Arc::new(store))
+        .build();
+    let app = router_with_auth(Arc::new(cache), Some(handle), Arc::new(authenticator()));
+    assert_eq!(
+        scrape(&app)
+            .await
+            .count("mammoth_tier_capacity_bytes", &[("tier", "disk")]),
+        i64::try_from(capacity).unwrap()
+    );
+}
