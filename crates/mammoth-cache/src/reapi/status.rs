@@ -6,7 +6,10 @@ use prost::Message;
 use tonic::{Code, Status};
 
 use super::proto::google::rpc;
-use crate::{cache::CacheError, key::CacheKey};
+use crate::{
+    cache::{self, Detail},
+    key::CacheKey,
+};
 
 const DOMAIN: &str = "mammoth-cache.dev";
 
@@ -95,20 +98,22 @@ pub(crate) fn too_large(size: Option<u64>, limit: u64) -> Status {
 }
 
 /// A storage error as a status. A bucket outage never gets here: the core turns it into misses.
-pub(crate) fn storage(error: &CacheError) -> Status {
-    match error {
-        CacheError::TooLarge { size, limit } => too_large(*size, *limit),
-        CacheError::Upload(e) => {
-            tracing::debug!(error = %e, "upload failed");
-            self::error(
-                Code::InvalidArgument,
-                "UPLOAD_INCOMPLETE",
-                "The upload failed before it completed.",
-                &[],
-            )
-        }
-        CacheError::Unavailable(e) => {
-            tracing::warn!(error = %e, "storage unavailable");
+pub(crate) fn storage(error: &cache::Error) -> Status {
+    if let Some(&Detail::TooLarge { size, limit }) = error.detail() {
+        return too_large(size, limit);
+    }
+    if error.is_upload() {
+        tracing::debug!(%error, "upload failed");
+        return self::error(
+            Code::InvalidArgument,
+            "UPLOAD_INCOMPLETE",
+            "The upload failed before it completed.",
+            &[],
+        );
+    }
+    match error.code() {
+        cache::Code::Unavailable => {
+            tracing::warn!(%error, "storage unavailable");
             self::error(
                 Code::Unavailable,
                 "STORAGE_UNAVAILABLE",
@@ -116,8 +121,24 @@ pub(crate) fn storage(error: &CacheError) -> Status {
                 &[],
             )
         }
-        CacheError::Internal(e) => {
-            tracing::error!(error = %e, "storage error");
+        // The core sends no other code today; the catalogue (design doc 0017, step 3) maps each
+        // one.
+        cache::Code::Cancelled
+        | cache::Code::Unknown
+        | cache::Code::InvalidArgument
+        | cache::Code::DeadlineExceeded
+        | cache::Code::NotFound
+        | cache::Code::AlreadyExists
+        | cache::Code::PermissionDenied
+        | cache::Code::ResourceExhausted
+        | cache::Code::FailedPrecondition
+        | cache::Code::Aborted
+        | cache::Code::OutOfRange
+        | cache::Code::Unimplemented
+        | cache::Code::Internal
+        | cache::Code::DataLoss
+        | cache::Code::Unauthenticated => {
+            tracing::error!(%error, "storage error");
             self::error(Code::Internal, "STORAGE_ERROR", "Storage failed.", &[])
         }
     }

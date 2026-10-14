@@ -61,7 +61,7 @@ pub enum OversizePolicy {
     /// so refusing one large entry would cost the build every later hit.
     #[default]
     Drop,
-    /// Refuse with [`CacheError::TooLarge`] (HTTP `413`), as the Build Cache Node does.
+    /// Refuse with [`Detail::TooLarge`] (HTTP `413`), as the Build Cache Node does.
     Reject,
 }
 
@@ -271,7 +271,7 @@ pub enum Admission {
     /// Answer success without storing.
     Drop,
     /// Refuse.
-    Reject(CacheError),
+    Reject(Error),
 }
 
 /// What [`Cache::put`] did.
@@ -303,62 +303,134 @@ pub struct Hit {
     pub blob: Blob,
 }
 
-/// Why a cache operation failed.
-#[derive(Debug)]
-pub enum CacheError {
+/// The canonical codes of `google.rpc.Code` (`absl::StatusCode`), without `OK`: the vocabulary
+/// every error in the cache is described in, before an adapter turns it into what its protocol
+/// sends. No HTTP or gRPC types (design doc 0017).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Code {
+    Cancelled,
+    Unknown,
+    InvalidArgument,
+    DeadlineExceeded,
+    NotFound,
+    AlreadyExists,
+    PermissionDenied,
+    ResourceExhausted,
+    FailedPrecondition,
+    Aborted,
+    OutOfRange,
+    Unimplemented,
+    Internal,
+    Unavailable,
+    DataLoss,
+    Unauthenticated,
+}
+
+/// Typed data a mapping needs beyond the code, like an `absl::Status` payload. Added only when
+/// some mapping branches on it, never to name a failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Detail {
     /// The entry is over the size limit. `size` is the declared size, when known before reading.
     TooLarge { size: Option<u64>, limit: u64 },
-    /// The client's upload failed: it reset, ended before its `Content-Length` or stalled. The
-    /// body stream marked the error with [`upload_error`]. Nothing was stored.
-    Upload(io::Error),
-    /// A tier failed in a way that may pass, such as a timeout.
-    Unavailable(io::Error),
-    /// Anything else.
-    Internal(io::Error),
 }
 
-impl fmt::Display for CacheError {
+/// Why a cache operation failed: a canonical [`Code`], a [`Detail`] when a caller needs data,
+/// and `anyhow` context for the logs.
+///
+/// The codes the core uses:
+///
+/// - `INVALID_ARGUMENT`: the entry is over the size limit (with [`Detail::TooLarge`]), or the
+///   client's upload failed (see [`upload_error`] and [`Error::is_upload`]).
+/// - `UNAVAILABLE`: a tier failed in a way that may pass, such as a timeout.
+/// - `INTERNAL`: anything else.
+#[derive(Debug)]
+pub struct Error {
+    code: Code,
+    detail: Option<Detail>,
+    context: anyhow::Error,
+}
+
+impl Error {
+    /// An error with `code`, described by `context`.
+    pub fn new(code: Code, context: impl Into<anyhow::Error>) -> Self {
+        Self {
+            code,
+            detail: None,
+            context: context.into(),
+        }
+    }
+
+    /// The entry is over `limit` bytes; `size` is its declared size, when known.
+    #[must_use]
+    pub fn too_large(size: Option<u64>, limit: u64) -> Self {
+        let message = match size {
+            Some(size) => format!("cache entry is {size} bytes; the limit is {limit}"),
+            None => format!("cache entry is over the limit of {limit} bytes"),
+        };
+        Self {
+            code: Code::InvalidArgument,
+            detail: Some(Detail::TooLarge { size, limit }),
+            context: anyhow::Error::msg(message),
+        }
+    }
+
+    #[must_use]
+    pub fn code(&self) -> Code {
+        self.code
+    }
+
+    #[must_use]
+    pub fn detail(&self) -> Option<&Detail> {
+        self.detail.as_ref()
+    }
+
+    /// Whether the client's upload failed (its body stream was marked with [`upload_error`]), as
+    /// opposed to the cache.
+    #[must_use]
+    pub fn is_upload(&self) -> bool {
+        self.find::<UploadFailed>().is_some()
+    }
+
+    /// Finds an error of type `T` in the context, such as one an adapter put in its body stream.
+    #[must_use]
+    pub fn find<T: std::error::Error + 'static>(&self) -> Option<&T> {
+        find_in(self.context.as_ref())
+    }
+}
+
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooLarge {
-                size: Some(size),
-                limit,
-            } => {
-                write!(f, "cache entry is {size} bytes; the limit is {limit}")
-            }
-            Self::TooLarge { size: None, limit } => {
-                write!(f, "cache entry is over the limit of {limit} bytes")
-            }
-            Self::Upload(e) => write!(f, "the upload failed: {e}"),
-            Self::Unavailable(e) => write!(f, "storage unavailable: {e}"),
-            Self::Internal(e) => write!(f, "storage error: {e}"),
-        }
+        write!(f, "{:#}", self.context)
     }
 }
 
-impl std::error::Error for CacheError {
+impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::TooLarge { .. } => None,
-            Self::Upload(e) | Self::Unavailable(e) | Self::Internal(e) => Some(e),
-        }
+        Some(self.context.as_ref())
     }
 }
 
-impl From<io::Error> for CacheError {
+/// Classifies a tier's or a body stream's error: an upload failure if marked so, `UNAVAILABLE`
+/// for a timeout, `INTERNAL` otherwise.
+impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
-        if is_upload_error(&e) {
-            return Self::Upload(e);
-        }
-        match e.kind() {
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Self::Unavailable(e),
-            _ => Self::Internal(e),
-        }
+        let (code, what) = if is_upload_error(&e) {
+            (Code::InvalidArgument, "the upload failed")
+        } else {
+            match e.kind() {
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                    (Code::Unavailable, "storage unavailable")
+                }
+                _ => (Code::Internal, "storage error"),
+            }
+        };
+        Self::new(code, anyhow::Error::new(e).context(what))
     }
 }
 
 /// Marks an error from the client's request body, such as a reset or a truncated upload, so a
-/// store that fails on it reports [`CacheError::Upload`] rather than a storage error. Adapters
+/// store that fails on it reports an upload failure ([`Error::is_upload`]) rather than a storage
+/// error. Adapters
 /// wrap their body stream's errors in it before handing the stream to [`Cache::put`].
 pub fn upload_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::other(UploadFailed(error.into()))
@@ -372,8 +444,15 @@ fn is_upload_error(e: &io::Error) -> bool {
 ///
 /// `io::Error::source` skips the error an `io::Error` wraps and goes straight to that error's
 /// source, so this steps into every `io::Error` it meets with `get_ref` instead.
+#[must_use]
 pub fn find<T: std::error::Error + 'static>(e: &io::Error) -> Option<&T> {
-    let mut next: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    find_in(e)
+}
+
+fn find_in<'a, T: std::error::Error + 'static>(
+    e: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a T> {
+    let mut next = Some(e);
     while let Some(current) = next {
         if let Some(found) = current.downcast_ref::<T>() {
             return Some(found);
@@ -634,7 +713,7 @@ impl Cache {
     /// A hit below the first tier is copied into the local tiers above it as it streams. A tier
     /// that fails is skipped and the next one tried: for a cache, a failed read is a miss. So is
     /// a bucket read past [`BucketLimits::timeout`], or one during a cooldown.
-    pub async fn get(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
+    pub async fn get(&self, key: &CacheKey) -> Result<Option<Hit>, Error> {
         let hit = self.get_uncounted(key).await?;
         self.count_lookup(hit.as_ref().map(|hit| hit.tier));
         Ok(hit)
@@ -643,7 +722,7 @@ impl Cache {
     /// Like [`get`](Self::get), but leaves the lookup uncounted, for a caller that may still find
     /// the entry unusable (a REAPI action result whose outputs are gone) to count with
     /// [`count_lookup`](Self::count_lookup) once it knows. A hit is promoted all the same.
-    pub async fn get_uncounted(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
+    pub async fn get_uncounted(&self, key: &CacheKey) -> Result<Option<Hit>, Error> {
         for (depth, handle) in self.tiers.iter().enumerate() {
             let tier = handle.store.tier();
             let started = Instant::now();
@@ -698,7 +777,7 @@ impl Cache {
     }
 
     /// Returns an entry's size without reading it. `Ok(None)` is a miss, as for [`get`](Self::get).
-    pub async fn head(&self, key: &CacheKey) -> Result<Option<u64>, CacheError> {
+    pub async fn head(&self, key: &CacheKey) -> Result<Option<u64>, Error> {
         for handle in &self.tiers {
             let started = Instant::now();
             let result = handle.store.head(key).await;
@@ -738,10 +817,7 @@ impl Cache {
                 tracing::info!(%key, size, limit, "dropping oversized entry");
                 Admission::Drop
             }
-            OversizePolicy::Reject => Admission::Reject(CacheError::TooLarge {
-                size: Some(size),
-                limit,
-            }),
+            OversizePolicy::Reject => Admission::Reject(Error::too_large(Some(size), limit)),
         }
     }
 
@@ -770,7 +846,7 @@ impl Cache {
         key: &CacheKey,
         declared_size: Option<u64>,
         body: ByteStream,
-    ) -> Result<StoreOutcome, CacheError> {
+    ) -> Result<StoreOutcome, Error> {
         let received = Arc::new(AtomicU64::new(0));
         let result = self.store(key, declared_size, body, &received).await;
         // Oversized stores were counted where they were found.
@@ -782,9 +858,10 @@ impl Cache {
                 Some("stored")
             }
             Ok(StoreOutcome::Exists) => Some("exists"),
-            Ok(StoreOutcome::Dropped) | Err(CacheError::TooLarge { .. }) => None,
+            Ok(StoreOutcome::Dropped) => None,
+            Err(e) if matches!(e.detail(), Some(Detail::TooLarge { .. })) => None,
             // The client's fault, such as a dropped connection, not the node's.
-            Err(CacheError::Upload(_)) => Some("client_error"),
+            Err(e) if e.is_upload() => Some("client_error"),
             Err(_) => Some("error"),
         };
         if let Some(result) = counted {
@@ -800,7 +877,7 @@ impl Cache {
         declared_size: Option<u64>,
         body: ByteStream,
         received: &Arc<AtomicU64>,
-    ) -> Result<StoreOutcome, CacheError> {
+    ) -> Result<StoreOutcome, Error> {
         match self.admit(key, declared_size) {
             Admission::Accept => {}
             Admission::Drop => return Ok(StoreOutcome::Dropped),
@@ -837,9 +914,7 @@ impl Cache {
             }
         }
         let Some((primary, others)) = writers.split_first() else {
-            return Err(CacheError::Internal(io::Error::other(
-                "no storage tiers configured",
-            )));
+            return Err(io::Error::other("no storage tiers configured").into());
         };
 
         let limit = self.max_entry_size;
@@ -881,7 +956,7 @@ impl Cache {
                     tracing::info!(%key, limit, "dropping oversized entry");
                     Ok(StoreOutcome::Dropped)
                 } else {
-                    Err(CacheError::TooLarge { size: None, limit })
+                    Err(Error::too_large(None, limit))
                 }
             }
             Err(e) => Err(e.into()),
@@ -1310,11 +1385,12 @@ mod tests {
     }
 
     fn classify(e: io::Error) -> &'static str {
-        match CacheError::from(e) {
-            CacheError::TooLarge { .. } => "too large",
-            CacheError::Upload(_) => "upload",
-            CacheError::Unavailable(_) => "unavailable",
-            CacheError::Internal(_) => "internal",
+        let e = Error::from(e);
+        match e.code() {
+            Code::InvalidArgument if e.is_upload() => "upload",
+            Code::Unavailable => "unavailable",
+            Code::Internal => "internal",
+            code => panic!("unexpected {code:?}: {e}"),
         }
     }
 
@@ -1358,6 +1434,32 @@ mod tests {
         let deep = wrapped(upload_error(Context(io::Error::other("deep"))));
         assert!(find::<UploadFailed>(&deep).is_some());
         assert!(find::<Context>(&deep).is_some());
+    }
+
+    #[test]
+    fn errors_say_what_failed_and_keep_their_markers() {
+        let e = Error::from(io::Error::other("disk"));
+        assert_eq!(
+            (e.code(), e.to_string()),
+            (Code::Internal, "storage error: disk".into())
+        );
+        let e = Error::from(io::Error::new(io::ErrorKind::TimedOut, "slow"));
+        assert_eq!(
+            (e.code(), e.to_string()),
+            (Code::Unavailable, "storage unavailable: slow".into())
+        );
+        let e = Error::from(wrapped(upload_error(Context(io::Error::other("reset")))));
+        assert_eq!(e.code(), Code::InvalidArgument);
+        assert!(e.is_upload() && e.detail().is_none());
+        assert!(e.to_string().starts_with("the upload failed: "), "{e}");
+        // An adapter finds what it put in its body stream.
+        assert!(e.find::<Context>().is_some());
+        assert!(std::error::Error::source(&e).is_some());
+
+        let e = Error::too_large(Some(5), 4);
+        assert_eq!(e.code(), Code::InvalidArgument);
+        assert!(!e.is_upload());
+        assert_eq!(e.to_string(), "cache entry is 5 bytes; the limit is 4");
     }
 
     fn body(chunks: &[&'static [u8]]) -> ByteStream {
@@ -1434,13 +1536,15 @@ mod tests {
             .put(&key("ab"), Some(5), body(&[b"12345"]))
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            CacheError::TooLarge {
+        assert_eq!(err.code(), Code::InvalidArgument);
+        assert_eq!(
+            err.detail(),
+            Some(&Detail::TooLarge {
                 size: Some(5),
                 limit: 4
-            }
-        ));
+            })
+        );
+        assert_eq!(err.to_string(), "cache entry is 5 bytes; the limit is 4");
     }
 
     #[tokio::test]
@@ -1451,13 +1555,14 @@ mod tests {
             .put(&k, None, body(&[b"123", b"45"]))
             .await
             .unwrap_err();
-        assert!(matches!(
-            err,
-            CacheError::TooLarge {
+        assert_eq!(
+            err.detail(),
+            Some(&Detail::TooLarge {
                 size: None,
                 limit: 4
-            }
-        ));
+            })
+        );
+        assert_eq!(err.to_string(), "cache entry is over the limit of 4 bytes");
         assert!(cache.get(&k).await.unwrap().is_none());
     }
 
@@ -1503,12 +1608,15 @@ mod tests {
         let cache = cache(4);
         let k = CacheKey::maven("v1/g/a/abc/a.jar").unwrap();
         let err = cache.put(&k, Some(5), body(&[b"12345"])).await.unwrap_err();
-        assert!(matches!(err, CacheError::TooLarge { .. }));
+        assert!(matches!(err.detail(), Some(Detail::TooLarge { .. })));
         let err = cache
             .put(&k, None, body(&[b"123", b"45"]))
             .await
             .unwrap_err();
-        assert!(matches!(err, CacheError::TooLarge { size: None, .. }));
+        assert!(matches!(
+            err.detail(),
+            Some(Detail::TooLarge { size: None, .. })
+        ));
     }
 
     #[tokio::test]

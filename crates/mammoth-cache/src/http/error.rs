@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::{
     auth::Scope,
-    cache::CacheError,
+    cache::{self, Code, Detail},
     key::{CacheKey, InvalidKey, Namespace},
 };
 
@@ -176,36 +176,36 @@ impl From<InvalidKey> for ApiError {
     }
 }
 
-impl From<CacheError> for ApiError {
-    fn from(e: CacheError) -> Self {
-        match e {
-            // Maven always; Gradle only under `OversizePolicy::Reject`, since any non-2xx turns
-            // Gradle's remote cache off for the rest of the build.
-            CacheError::TooLarge { size, limit } => {
-                let error = Self::new(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "OUT_OF_RANGE",
-                    "ENTRY_TOO_LARGE",
-                    sentence(&e),
-                )
-                .with("maxEntryBytes", limit.to_string());
-                match size {
-                    Some(size) => error.with("entryBytes", size.to_string()),
-                    None => error,
-                }
-            }
-            // The client's fault, and usually the client is gone: not worth an error log.
-            CacheError::Upload(ref source) => {
-                tracing::warn!(error = %source, "upload failed");
-                Self::new(
-                    StatusCode::BAD_REQUEST,
-                    "INVALID_ARGUMENT",
-                    "UPLOAD_INCOMPLETE",
-                    "The request body ended before it was complete.",
-                )
-            }
-            CacheError::Unavailable(ref source) => {
-                tracing::warn!(error = %source, "storage unavailable");
+impl From<cache::Error> for ApiError {
+    fn from(e: cache::Error) -> Self {
+        // Maven always; Gradle only under `OversizePolicy::Reject`, since any non-2xx turns
+        // Gradle's remote cache off for the rest of the build.
+        if let Some(&Detail::TooLarge { size, limit }) = e.detail() {
+            let error = Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "OUT_OF_RANGE",
+                "ENTRY_TOO_LARGE",
+                sentence(&e),
+            )
+            .with("maxEntryBytes", limit.to_string());
+            return match size {
+                Some(size) => error.with("entryBytes", size.to_string()),
+                None => error,
+            };
+        }
+        // The client's fault, and usually the client is gone: not worth an error log.
+        if e.is_upload() {
+            tracing::warn!(error = %e, "upload failed");
+            return Self::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_ARGUMENT",
+                "UPLOAD_INCOMPLETE",
+                "The request body ended before it was complete.",
+            );
+        }
+        match e.code() {
+            Code::Unavailable => {
+                tracing::warn!(error = %e, "storage unavailable");
                 Self::new(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "UNAVAILABLE",
@@ -213,8 +213,24 @@ impl From<CacheError> for ApiError {
                     "Storage is unavailable.",
                 )
             }
-            CacheError::Internal(ref source) => {
-                tracing::error!(error = %source, "storage error");
+            // The core sends no other code today; the catalogue (design doc 0017, step 3) maps
+            // each one.
+            Code::Cancelled
+            | Code::Unknown
+            | Code::InvalidArgument
+            | Code::DeadlineExceeded
+            | Code::NotFound
+            | Code::AlreadyExists
+            | Code::PermissionDenied
+            | Code::ResourceExhausted
+            | Code::FailedPrecondition
+            | Code::Aborted
+            | Code::OutOfRange
+            | Code::Unimplemented
+            | Code::Internal
+            | Code::DataLoss
+            | Code::Unauthenticated => {
+                tracing::error!(error = %e, "storage error");
                 Self::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL",

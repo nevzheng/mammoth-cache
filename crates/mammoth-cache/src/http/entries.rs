@@ -21,7 +21,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 
 use super::{AppState, error::ApiError};
 use crate::{
-    cache::{Admission, CacheError, StoreOutcome, upload_error},
+    cache::{self, Admission, StoreOutcome, upload_error},
     key::CacheKey,
     store::ByteStream,
 };
@@ -79,7 +79,7 @@ pub(super) async fn store(
 /// checks the content as it streams. An error from the wrapped stream fails the store, and no tier
 /// keeps the entry. Storage errors come back as `E`, so the adapter can recognize its own error
 /// inside one.
-pub(super) async fn store_through<E: From<CacheError>>(
+pub(super) async fn store_through<E: From<cache::Error>>(
     state: &AppState,
     key: &CacheKey,
     headers: &HeaderMap,
