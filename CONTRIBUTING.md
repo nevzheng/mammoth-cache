@@ -120,6 +120,16 @@ Put machine-specific Bazel settings, such as a disk cache or registry mirror, in
 echo 'common --disk_cache=~/.cache/bazel-disk' >> user.bazelrc
 ```
 
+To share a cache between machines, point Bazel at a mammoth node with `protocols.bazel` on (see
+[docs/user/bazel.md](docs/user/bazel.md)):
+
+```sh
+echo 'build --remote_cache=http://localhost:5071/bazel' >> user.bazelrc
+```
+
+Each test file under `tests/` is its own Bazel test target, so they already run in parallel and
+cache separately; none is long enough to be worth sharding.
+
 A container image is built from the `Dockerfile`; pushing a `v*` tag publishes it to
 `ghcr.io/nevzheng/mammoth-cache`.
 

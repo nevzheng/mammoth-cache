@@ -1,7 +1,6 @@
 # Bazel settings shared by every contributor and CI. Put machine-specific settings (a disk cache,
 # a remote cache, a registry mirror) in user.bazelrc, which is git-ignored.
 
-common --enable_bzlmod
 # Cargo.lock pins the crates and MODULE.bazel pins exact module versions. A MODULE.bazel.lock would
 # also record a digest of Cargo.lock, so every Dependabot or release-plz bump would need a Bazel run.
 common --lockfile_mode=off
