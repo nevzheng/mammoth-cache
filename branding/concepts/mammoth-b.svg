@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t">
+  <title id="t">mammoth-cache mascot, concept B: front-facing mammoth badge</title>
+  <circle cx="64" cy="64" r="62" fill="#073642"/>
+  <!-- Small ears -->
+  <ellipse cx="28" cy="62" rx="9" ry="12" fill="#a33a0f"/>
+  <ellipse cx="100" cy="62" rx="9" ry="12" fill="#a33a0f"/>
+  <!-- Domed head -->
+  <path fill="#cb4b16" d="M30 66 C26 30 46 18 64 18 C82 18 102 30 98 66 C96 80 84 88 76 90 L52 90 C44 88 32 80 30 66 Z"/>
+  <!-- Shaggy fur on top of the dome -->
+  <path fill="#cb4b16" d="M44 24 L48 12 L54 22 L58 8 L64 20 L70 8 L74 22 L80 12 L84 24 Z"/>
+  <!-- Trunk, curling to one side -->
+  <path fill="none" stroke="#cb4b16" stroke-width="14" stroke-linecap="round"
+        d="M64 80 C64 96 62 106 70 110 C78 114 84 108 82 102"/>
+  <!-- Tusks curving out and up -->
+  <path fill="#fdf6e3" d="M54 84 C42 108 12 104 12 70 C20 90 38 92 48 78 Z"/>
+  <path fill="#fdf6e3" d="M74 84 C86 108 116 104 116 70 C108 90 90 92 80 78 Z"/>
+  <!-- Eyes -->
+  <circle cx="50" cy="56" r="4" fill="#073642"/>
+  <circle cx="78" cy="56" r="4" fill="#073642"/>
+</svg>
