@@ -12,18 +12,27 @@ use axum::{
     response::Response,
 };
 use http_body_util::BodyExt;
-use mammoth_cache::{cache::Cache, router, store::memory::MemoryStore};
+use mammoth_cache::{
+    cache::{Cache, OversizePolicy},
+    router,
+    store::memory::MemoryStore,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 
 const KEY: &str = "a3f5e1c09b2d4e7f8a1b6c3d5e9f0a2b";
 
-fn app(max_entry_size: u64) -> Router {
+fn app_with(max_entry_size: u64, oversize: OversizePolicy) -> Router {
     let cache = Cache::builder()
         .bounded_tier(Arc::new(MemoryStore::new(1 << 20)))
         .max_entry_size(max_entry_size)
+        .oversize(oversize)
         .build();
     router(Arc::new(cache))
+}
+
+fn app(max_entry_size: u64) -> Router {
+    app_with(max_entry_size, OversizePolicy::Drop)
 }
 
 async fn send(app: &Router, request: Request<Body>) -> Response {
@@ -118,8 +127,19 @@ async fn invalid_key_is_400() {
 }
 
 #[tokio::test]
-async fn oversized_entry_is_413() {
-    let response = send(&app(4), put(KEY, b"too large")).await;
+async fn oversized_entry_is_dropped_with_200() {
+    let app = app(4);
+    let response = send(&app, put(KEY, b"too large")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = send(&app, get(&format!("/cache/{KEY}"))).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn oversized_entry_is_413_when_rejecting() {
+    let app = app_with(4, OversizePolicy::Reject);
+    let response = send(&app, put(KEY, b"too large")).await;
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(error_reason(response).await, "ENTRY_TOO_LARGE");
 }

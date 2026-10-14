@@ -114,7 +114,8 @@ impl From<InvalidKey> for ApiError {
 impl From<CacheError> for ApiError {
     fn from(e: CacheError) -> Self {
         match e {
-            // Gradle skips an entry on 413 and carries on; 400 would fail the build (0001).
+            // Only under `OversizePolicy::Reject`. Any non-2xx turns Gradle's remote cache off for
+            // the rest of the build; 413 at least keeps the Build Cache Node's meaning.
             CacheError::TooLarge { size, limit } => {
                 let error = Self::new(
                     StatusCode::PAYLOAD_TOO_LARGE,
