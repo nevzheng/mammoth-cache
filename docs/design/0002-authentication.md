@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft
+Accepted
 
 ## Summary
 
@@ -120,9 +120,10 @@ Failures use AIP-193 errors with domain `mammoth-cache.dev`:
 | Unknown user or wrong token                   | `401`  | `CREDENTIALS_INVALID`                         |
 | Valid credentials, missing scope              | `403`  | `SCOPE_MISSING` (`requiredScope` in metadata) |
 
-`401` responses carry `WWW-Authenticate: Basic realm="mammoth-cache"` on `/cache/` and
-`/maven/`, and `WWW-Authenticate: Bearer` elsewhere. Maven depends on the challenge. Both statuses
-fail a Gradle build, which is what a misconfigured credential should do.
+Every `401` carries `WWW-Authenticate: Basic realm="mammoth-cache"`, on every route. Maven depends
+on the challenge, Bazel sends Basic from the URL, and a Bearer token is still accepted everywhere;
+the challenge just names the scheme every client can use. Both statuses fail a Gradle build, which
+is what a misconfigured credential should do.
 
 ### Transport
 

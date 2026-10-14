@@ -1,15 +1,16 @@
 # Overview
 
-mammoth-cache is a remote build cache node for Gradle and Maven, written in Rust. It is meant as a
-drop-in replacement for the Gradle Build Cache Node, which Gradle stops distributing and supporting
-after December 31, 2026. Point your builds at it the way you pointed them at the Build Cache Node,
-and they reuse task and module outputs that other builds have already produced.
+mammoth-cache is a remote build cache node for Gradle, Maven and Bazel, written in Rust. It is meant
+as a drop-in replacement for the Gradle Build Cache Node, which Gradle stops distributing and
+supporting after December 31, 2026. Point your builds at it the way you pointed them at the Build
+Cache Node, and they reuse task and module outputs that other builds have already produced.
 
 > [!WARNING]
-> mammoth-cache is pre-alpha. The Gradle and Maven protocols work today with memory, disk and
-> bucket tiers set in `mammoth.toml`, and an `edge` image is published from `main`, but there is no
-> release yet. TLS and most metrics are still being built. Each page says what works now
-> and what is planned. Don't run it in production yet.
+> mammoth-cache is pre-alpha. The Gradle, Maven and Bazel protocols work today with memory, disk
+> and bucket tiers set in `mammoth.toml`, with authentication, graceful shutdown and optional TLS,
+> and an `edge` image is published from `main`. There is no release yet, and part of the metrics
+> catalog is still being built. Each page says what works now and what is planned. Don't run it in
+> production yet.
 
 ## What it does
 
@@ -37,32 +38,32 @@ refills from the bucket as it serves. Without one, a single node works like the 
 | [Apache Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/) | 1.2.0 and later, on Maven 3.9.x | Available |
 | Bazel's [HTTP remote cache](https://bazel.build/remote/caching#http-caching), off by default           | SHA-256 digests                 | Available |
 
-Develocity's own Gradle plugin connector and Maven extension are not supported. Bazel's remote
-execution and gRPC cache (REAPI) are out of scope: mammoth-cache is a cache, not a remote build
-system, and [bazel-remote](https://github.com/buchgr/bazel-remote) already serves REAPI well.
+Develocity's own Gradle plugin connector and Maven extension are not supported. The cache side of
+Bazel's gRPC Remote Execution API (Capabilities, ActionCache, CAS and ByteStream) is in progress;
+remote execution itself is out of scope: mammoth-cache is a cache, not a remote build system.
 
 ## Feature status
 
-| Feature                                                                     | Status    | Page                                      |
-| --------------------------------------------------------------------------- | --------- | ----------------------------------------- |
-| Gradle `GET`, `HEAD`, `PUT` on `/cache/{key}`                               | Available | [Gradle](gradle.md)                       |
-| Entry size limit, oversized stores accepted and dropped                     | Available | [Gradle](gradle.md#entry-size-limit)      |
-| In-memory tier, 1 GiB with S3-FIFO eviction                                 | Available | [Configuration](configuration.md)         |
-| `/ping`, `/livez`, `/readyz`                                                | Available | [Health checks](health.md)                |
-| Admin status, `/v1/serverStatus`                                            | Available | [Health checks](health.md)                |
-| Maven routes, `/maven/{path}`                                               | Available | [Maven](maven.md)                         |
-| Bazel HTTP cache, `/bazel/ac/` and `/bazel/cas/`, off by default            | Available | [Bazel](bazel.md)                         |
-| Turning each protocol on or off                                             | Available | [Configuration](configuration.md)         |
-| `mammoth.toml` config file                                                  | Available | [Configuration](configuration.md)         |
-| Disk and bucket tiers, in the library and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |
-| Disk and bucket tiers in the `mammoth` binary                               | Available | [Configuration](configuration.md#disk-l2) |
-| Users, tokens and scopes                                                    | Available | [Authentication](authentication.md)       |
-| TLS                                                                         | Planned   | [Deployment](deployment.md#tls)           |
-| Graceful shutdown, readiness storage checks, timeouts                       | Planned   | [Deployment](deployment.md)               |
-| Request metrics at `/metrics`                                               | Available | [Metrics](metrics.md)                     |
-| `edge` container image from `main`                                          | Available | [Quickstart](quickstart.md)               |
-| Full metrics catalog                                                        | Planned   | [Metrics](metrics.md)                     |
-| Release binaries and versioned images                                       | Planned   | [Quickstart](quickstart.md)               |
+| Feature                                                                              | Status    | Page                                      |
+| ------------------------------------------------------------------------------------ | --------- | ----------------------------------------- |
+| Gradle `GET`, `HEAD`, `PUT` on `/cache/{key}`                                        | Available | [Gradle](gradle.md)                       |
+| Entry size limit, oversized stores accepted and dropped                              | Available | [Gradle](gradle.md#entry-size-limit)      |
+| In-memory tier, 1 GiB with S3-FIFO eviction                                          | Available | [Configuration](configuration.md)         |
+| `/ping`, `/livez`, `/readyz`                                                         | Available | [Health checks](health.md)                |
+| Admin status, `/v1/serverStatus`                                                     | Available | [Health checks](health.md)                |
+| Maven routes, `/maven/{path}`                                                        | Available | [Maven](maven.md)                         |
+| Bazel HTTP cache, `/bazel/ac/` and `/bazel/cas/`, off by default                     | Available | [Bazel](bazel.md)                         |
+| Turning each protocol on or off                                                      | Available | [Configuration](configuration.md)         |
+| `mammoth.toml` config file                                                           | Available | [Configuration](configuration.md)         |
+| Disk and bucket tiers, in the `mammoth` binary and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |
+| Users, tokens and scopes                                                             | Available | [Authentication](authentication.md)       |
+| Optional TLS on the node, with certificate reload                                    | Available | [Deployment](deployment.md#tls)           |
+| Graceful shutdown, readiness storage checks, timeouts                                | Available | [Deployment](deployment.md)               |
+| Request, tier and bucket metrics at `/metrics`                                       | Available | [Metrics](metrics.md)                     |
+| `edge` container image from `main`                                                   | Available | [Quickstart](quickstart.md)               |
+| Full metrics catalog                                                                 | Planned   | [Metrics](metrics.md)                     |
+| Access log with client addresses                                                     | Planned   | [Deployment](deployment.md)               |
+| Release binaries and versioned images                                                | Planned   | [Quickstart](quickstart.md)               |
 
 ## Where to go next
 

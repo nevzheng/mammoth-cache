@@ -49,8 +49,8 @@ network, add:
 isAllowInsecureProtocol = true
 ```
 
-Use HTTPS anywhere credentials are sent. mammoth-cache does not serve TLS itself yet, so for now put
-a TLS-terminating proxy or load balancer in front of it.
+Use HTTPS anywhere credentials are sent: a TLS-terminating proxy or load balancer in front of the
+node, or [`[tls]`](deployment.md#tls-on-the-node) on the node itself.
 
 ### Credentials
 
@@ -99,8 +99,9 @@ store, `413` included, whatever its user guide says. With `isUseExpectContinue =
 `Content-Length` over the limit, the node decides before it reads the body, so Gradle never sends it
 and no bytes are wasted. Without it, the body is read and thrown away.
 
-The limit will be set by `limits.max_entry_size` in the [config file](configuration.md). Design doc
-[0007](../design/0007-size-limits-and-admission.md) explains why a limit helps the hit rate.
+The limit is `limits.max_entry_size` in the [config file](configuration.md), 100 MiB by default.
+Design doc [0007](../design/0007-size-limits-and-admission.md) explains why a limit helps the hit
+rate.
 
 ## Check that hits happen
 

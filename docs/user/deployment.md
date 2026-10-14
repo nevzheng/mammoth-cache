@@ -1,10 +1,10 @@
 # Deployment
 
 mammoth-cache is built to run as a few stateless nodes behind a load balancer, often on Kubernetes.
-Each node serves plain HTTP on one port. The proxy in front terminates TLS and routes requests, and
-an optional bucket shares entries between nodes. This page covers what to set up around the nodes.
-Design doc [0013](../design/0013-deployment.md) has the reasoning. The project ships no Helm chart
-or manifests: the snippets below are what to put in your own.
+Each node serves one port, plain HTTP by default. The proxy in front terminates TLS and routes
+requests, and an optional bucket shares entries between nodes. This page covers what to set up
+around the nodes. Design doc [0013](../design/0013-deployment.md) has the reasoning. The project
+ships no Helm chart or manifests: the snippets below are what to put in your own.
 
 ```mermaid
 flowchart LR
@@ -21,6 +21,7 @@ What a node needs to run well on Kubernetes, and where each part is covered:
 
 | Need                                     | How                                                     | Status   |
 | ---------------------------------------- | ------------------------------------------------------- | -------- |
+| Keep serving when the bucket is down     | Local tiers answer; [Bucket outages](#bucket-outages)   | Done     |
 | Exit cleanly on `SIGTERM`                | Built in                                                | Done     |
 | Drain before exiting                     | [Shutdown and timeouts](#shutdown-and-timeouts)         | Done     |
 | Liveness, readiness and startup probes   | [Health checks](health.md#kubernetes)                   | Done     |
@@ -139,7 +140,9 @@ key = "/etc/mammoth/tls/tls.key"
 
 ## Config and credentials
 
-Mount `mammoth.toml` from a Secret, since it holds token hashes, and point `MAMMOTH_CONFIG` at it.
+Every setting is in the [configuration reference](configuration.md), which ends with a full
+example. Mount `mammoth.toml` from a Secret, since it holds token hashes, and point `MAMMOTH_CONFIG`
+at it.
 A change to the file needs a rollout. Bucket credentials never go in the file; see
 [Bucket access](#bucket-access). The image runs as the nonroot user (UID and GID 65532), so give the
 pod `fsGroup: 65532`, or a fresh PersistentVolumeClaim is owned by root and the node can't write
@@ -211,6 +214,12 @@ allow_http = true
 Not supported: AWS profiles and SSO from `~/.aws/config`, and GCP federation from outside Google
 Cloud (external-account files). Use keys from a Secret there. Entries are never deleted from the
 bucket, so set a lifecycle rule to expire them, for example after 30 days.
+
+## Bucket outages
+
+A bucket outage degrades a node to its local tiers: bucket reads that fail or pass `bucket.timeout`
+are misses, the bucket is skipped for `bucket.cooldown`, and `/readyz` stays ready, so builds keep
+their cache. Details and the alert to set are on [Health checks](health.md#bucket-outages).
 
 ## Metrics
 
