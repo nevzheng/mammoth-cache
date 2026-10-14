@@ -1,0 +1,6 @@
+# Only what the Rust build needs goes into the build context. rust-toolchain.toml is left out:
+# the builder image already pins the same Rust version, without the extra components.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/

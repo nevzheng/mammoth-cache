@@ -87,6 +87,14 @@ cargo build
 cargo run --bin mammoth   # listens on 0.0.0.0:5071; override with MAMMOTH_ADDR
 ```
 
+A container image is built from the `Dockerfile`; pushing a `v*` tag publishes it to
+`ghcr.io/nevzheng/mammoth-cache`.
+
+```sh
+docker build -t mammoth-cache:dev .
+docker run --rm -p 5071:5071 mammoth-cache:dev
+```
+
 ## Local checks
 
 Git hooks run the formatters and linters before each commit. Install
