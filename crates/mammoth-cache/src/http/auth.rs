@@ -21,7 +21,7 @@ use crate::auth::{Authenticator, Credentials, Scope};
 /// The scope a request needs, or `None` for open routes (health checks, unknown paths).
 fn required_scope(method: &Method, path: &str, auth: &Authenticator) -> Option<Scope> {
     let reads = matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
-    if path.starts_with("/cache/") || path.starts_with("/maven/") {
+    if path.starts_with("/cache/") || path.starts_with("/maven/") || path.starts_with("/bazel/") {
         Some(if reads {
             Scope::CacheRead
         } else {

@@ -35,10 +35,11 @@ refills from the bucket as it serves. Without one, a single node works like the 
 | ------------------------------------------------------------------------------------------------------ | ------------------------------- | --------- |
 | Gradle's built-in [HTTP build cache](https://docs.gradle.org/current/userguide/build_cache.html)       | 7.6 to 9.x                      | Available |
 | [Apache Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/) | 1.2.0 and later, on Maven 3.9.x | Available |
+| Bazel's [HTTP remote cache](https://bazel.build/remote/caching#http-caching), off by default           | SHA-256 digests                 | Available |
 
-Develocity's own Gradle plugin connector and Maven extension are not supported. Bazel remote
-caching is out of scope; [bazel-remote](https://github.com/buchgr/bazel-remote) already serves it
-well.
+Develocity's own Gradle plugin connector and Maven extension are not supported. Bazel's remote
+execution and gRPC cache (REAPI) are out of scope: mammoth-cache is a cache, not a remote build
+system, and [bazel-remote](https://github.com/buchgr/bazel-remote) already serves REAPI well.
 
 ## Feature status
 
@@ -50,6 +51,8 @@ well.
 | `/ping`, `/livez`, `/readyz`                                                | Available | [Health checks](health.md)                |
 | Admin status, `/v1/serverStatus`                                            | Available | [Health checks](health.md)                |
 | Maven routes, `/maven/{path}`                                               | Available | [Maven](maven.md)                         |
+| Bazel HTTP cache, `/bazel/ac/` and `/bazel/cas/`, off by default            | Available | [Bazel](bazel.md)                         |
+| Turning each protocol on or off                                             | Available | [Configuration](configuration.md)         |
 | `mammoth.toml` config file                                                  | Available | [Configuration](configuration.md)         |
 | Disk and bucket tiers, in the library and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |
 | Disk and bucket tiers in the `mammoth` binary                               | Available | [Configuration](configuration.md#disk-l2) |
@@ -63,7 +66,7 @@ well.
 ## Where to go next
 
 - [Quickstart](quickstart.md): run a node with Docker or from source.
-- [Gradle](gradle.md) and [Maven](maven.md): point your builds at it.
+- [Gradle](gradle.md), [Maven](maven.md) and [Bazel](bazel.md): point your builds at it.
 - [Migrating from the Build Cache Node](migrating.md): what maps to what.
 - [Configuration reference](configuration.md): every setting.
 - [Custom builds](custom-builds.md): build your own distribution with your own storage backend.

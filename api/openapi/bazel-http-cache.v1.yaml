@@ -1,0 +1,303 @@
+openapi: 3.1.0
+info:
+  title: mammoth-cache Bazel HTTP cache
+  version: 1.0.0
+  summary: Bazel's HTTP remote cache protocol, as served by mammoth-cache.
+  description: |
+    Bazel (https://bazel.build/remote/caching#http-caching) owns this contract; this document
+    describes it. Source: `HttpCacheClient` in bazelbuild/bazel.
+
+    Bazel keeps two stores under the base URL it is given:
+
+    ```text
+    /bazel/ac/{digest}   action cache: an ActionResult proto, keyed by the action's digest
+    /bazel/cas/{digest}  content-addressed store: a blob, keyed by its own digest
+    ```
+
+    The server treats both as opaque bytes, each in a namespace of its own. Digests are SHA-256,
+    Bazel's default `--digest_function`; other digest functions are not supported.
+
+    Only the plain HTTP cache is served. Bazel's gRPC Remote Execution API (REAPI), which covers
+    remote execution and a gRPC cache, is out of scope.
+
+    Rules that come from the client and override API style guides:
+
+    - `404` is a miss. A failed store is logged as a warning and never fails the build, so an
+      oversized store gets an honest `413`.
+    - A CAS upload must hash to its digest. One that does not gets `400` and is not stored.
+    - An action cache store replaces any entry already there, as in bazel-remote.
+
+    The routes exist only when `protocols.bazel = true` in `mammoth.toml`; otherwise every request
+    gets `404 ROUTE_NOT_FOUND`. Configure Bazel with `--remote_cache=https://<host>/bazel`.
+  contact:
+    name: mammoth-cache
+    url: https://github.com/nevzheng/mammoth-cache
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+servers:
+  - url: https://localhost:5071
+    description: Local, with TLS enabled. Without TLS the scheme is `http`.
+    x-internal: false
+security:
+  - basicAuth: []
+  - bearerAuth: []
+  - {}
+tags:
+  - name: bazel
+    description: Bazel HTTP remote cache protocol
+paths:
+  /bazel/ac/{digest}:
+    parameters:
+      - $ref: "#/components/parameters/Digest"
+    get:
+      operationId: loadActionResult
+      summary: Load an action result
+      description: A hit returns the entry exactly as it was stored.
+      tags: [bazel]
+      responses:
+        "200":
+          $ref: "#/components/responses/Hit"
+        "400":
+          $ref: "#/components/responses/InvalidDigest"
+        "404":
+          $ref: "#/components/responses/Miss"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+    head:
+      operationId: checkActionResult
+      summary: Check whether an action result exists
+      description: Same statuses as `GET`, no body.
+      tags: [bazel]
+      responses:
+        "200":
+          $ref: "#/components/responses/Exists"
+        "400":
+          description: The digest is not valid.
+        "404":
+          description: The entry does not exist.
+        "401":
+          description: Credentials are missing or wrong.
+        "403":
+          description: The user may not read the cache.
+        "500":
+          description: An unexpected server error.
+        "503":
+          description: The server cannot serve the request right now.
+    put:
+      operationId: storeActionResult
+      summary: Store an action result
+      description: |
+        The body is stored as sent, replacing any entry already there. The server honours
+        `Expect: 100-continue`.
+      tags: [bazel]
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/Expect"
+      requestBody:
+        $ref: "#/components/requestBodies/Entry"
+      responses:
+        "201":
+          description: Stored.
+        "400":
+          $ref: "#/components/responses/InvalidDigest"
+        "413":
+          $ref: "#/components/responses/EntryTooLarge"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+  /bazel/cas/{digest}:
+    parameters:
+      - $ref: "#/components/parameters/Digest"
+    get:
+      operationId: loadBlob
+      summary: Load a blob
+      description: A hit returns the blob, whose SHA-256 is its digest.
+      tags: [bazel]
+      responses:
+        "200":
+          $ref: "#/components/responses/Hit"
+        "400":
+          $ref: "#/components/responses/InvalidDigest"
+        "404":
+          $ref: "#/components/responses/Miss"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+    head:
+      operationId: checkBlob
+      summary: Check whether a blob exists
+      description: Same statuses as `GET`, no body.
+      tags: [bazel]
+      responses:
+        "200":
+          $ref: "#/components/responses/Exists"
+        "400":
+          description: The digest is not valid.
+        "404":
+          description: The blob does not exist.
+        "401":
+          description: Credentials are missing or wrong.
+        "403":
+          description: The user may not read the cache.
+        "500":
+          description: An unexpected server error.
+        "503":
+          description: The server cannot serve the request right now.
+    put:
+      operationId: storeBlob
+      summary: Store a blob
+      description: |
+        The body must hash to the digest; this is checked as it streams, and a mismatch stores
+        nothing. Blobs are immutable: storing one that already exists answers `200` and writes
+        nothing. The server honours `Expect: 100-continue`.
+      tags: [bazel]
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/Expect"
+      requestBody:
+        $ref: "#/components/requestBodies/Entry"
+      responses:
+        "200":
+          description: The blob already exists; nothing was written.
+        "201":
+          description: Stored.
+        "400":
+          description: The digest is not valid, or the body does not hash to it.
+          content:
+            application/json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: 400
+                  message: The uploaded content does not hash to its digest.
+                  status: INVALID_ARGUMENT
+                  details:
+                    - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                      reason: DIGEST_MISMATCH
+                      domain: mammoth-cache.dev
+                      metadata:
+                        digest: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        "413":
+          $ref: "#/components/responses/EntryTooLarge"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+components:
+  securitySchemes:
+    basicAuth:
+      $ref: "./common.yaml#/components/securitySchemes/basicAuth"
+    bearerAuth:
+      $ref: "./common.yaml#/components/securitySchemes/bearerAuth"
+  parameters:
+    Digest:
+      name: digest
+      in: path
+      required: true
+      description: A SHA-256 hash in lowercase hex.
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{64}$"
+        minLength: 64
+        maxLength: 64
+        examples: [e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855]
+  requestBodies:
+    Entry:
+      required: true
+      content:
+        "*/*":
+          schema:
+            type: string
+            format: binary
+            contentMediaType: application/octet-stream
+  responses:
+    Hit:
+      description: Hit.
+      content:
+        application/octet-stream:
+          schema:
+            type: string
+            format: binary
+            contentMediaType: application/octet-stream
+    Exists:
+      description: The entry exists.
+      headers:
+        Content-Length:
+          description: Size of the entry in bytes.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 9223372036854775807
+    InvalidDigest:
+      description: The digest is not 64 lowercase hex characters.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 400
+              message: "Digest must be a SHA-256 hash: 64 lowercase hex characters."
+              status: INVALID_ARGUMENT
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: INVALID_DIGEST
+                  domain: mammoth-cache.dev
+    Miss:
+      description: Miss. Not an error for Bazel; it runs the action.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 404
+              message: Cache entry not found.
+              status: NOT_FOUND
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: ENTRY_NOT_FOUND
+                  domain: mammoth-cache.dev
+                  metadata:
+                    digest: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    EntryTooLarge:
+      description: |
+        The entry is larger than the configured limit. Bazel warns about the failed upload and
+        carries on.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 413
+              message: Cache entry is 157286400 bytes; the limit is 104857600.
+              status: OUT_OF_RANGE
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: ENTRY_TOO_LARGE
+                  domain: mammoth-cache.dev
+                  metadata:
+                    entryBytes: "157286400"
+                    maxEntryBytes: "104857600"

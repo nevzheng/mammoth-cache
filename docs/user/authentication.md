@@ -5,12 +5,12 @@ mammoth-cache has one kind of credential: a generated token that belongs to a us
 
 ## Scopes
 
-| Scope          | Allows                                          |
-| -------------- | ----------------------------------------------- |
-| `cache:read`   | `GET` and `HEAD` on `/cache/` and `/maven/`     |
-| `cache:write`  | `PUT` on `/cache/` and `/maven/`                |
-| `metrics:read` | `/metrics`, when metrics require authentication |
-| `admin:read`   | The admin API, `/v1/...`                        |
+| Scope          | Allows                                                 |
+| -------------- | ------------------------------------------------------ |
+| `cache:read`   | `GET` and `HEAD` on `/cache/`, `/maven/` and `/bazel/` |
+| `cache:write`  | `PUT` on `/cache/`, `/maven/` and `/bazel/`            |
+| `metrics:read` | `/metrics`, when metrics require authentication        |
+| `admin:read`   | The admin API, `/v1/...`                               |
 
 The Build Cache Node's `read` level is `cache:read`, and `readwrite` is `cache:read` plus
 `cache:write`. `auth.anonymous` sets the scopes for requests without credentials, and defaults to

@@ -12,6 +12,10 @@ apis:
     root: openapi/maven-build-cache.v1.yaml
     rules:
       no-server-example.com: off
+  bazel-http-cache@v1:
+    root: openapi/bazel-http-cache.v1.yaml
+    rules:
+      no-server-example.com: off
   ops@v1:
     root: openapi/ops.v1.yaml
     rules:

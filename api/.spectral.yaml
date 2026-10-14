@@ -28,9 +28,13 @@ overrides:
       openapi-tags: off
       # Gradle's HTTP build cache client only supports HTTP Basic.
       owasp:api2:2023-no-http-basic: off
-  - files: ["openapi/gradle-build-cache.v1.yaml", "openapi/maven-build-cache.v1.yaml"]
+  - files:
+      - "openapi/gradle-build-cache.v1.yaml"
+      - "openapi/maven-build-cache.v1.yaml"
+      - "openapi/bazel-http-cache.v1.yaml"
     rules:
-      # Gradle's HTTP build cache client only supports HTTP Basic, and Maven's resolver uses it.
+      # Gradle's HTTP build cache client only supports HTTP Basic, Maven's resolver uses it, and
+      # Bazel sends it from credentials in the cache URL.
       owasp:api2:2023-no-http-basic: off
   # Cache entries are opaque bytes whose size limit is set in configuration.
   - files:
@@ -43,10 +47,17 @@ overrides:
       - "openapi/maven-build-cache.v1.yaml#/paths/~1maven~1%7Bpath%7D/put/requestBody"
     rules:
       owasp:api4:2023-string-limit: off
+  - files:
+      - "openapi/bazel-http-cache.v1.yaml#/components/responses/Hit"
+      - "openapi/bazel-http-cache.v1.yaml#/components/requestBodies/Entry"
+    rules:
+      owasp:api4:2023-string-limit: off
   # HEAD responses have no body, so their errors cannot carry content.
   - files:
       - "openapi/gradle-build-cache.v1.yaml#/paths/~1cache~1%7Bkey%7D/head"
       - "openapi/maven-build-cache.v1.yaml#/paths/~1maven~1%7Bpath%7D/head"
+      - "openapi/bazel-http-cache.v1.yaml#/paths/~1bazel~1ac~1%7Bdigest%7D/head"
+      - "openapi/bazel-http-cache.v1.yaml#/paths/~1bazel~1cas~1%7Bdigest%7D/head"
     rules:
       owasp:api8:2023-define-error-responses-401: off
       owasp:api8:2023-define-error-responses-500: off
