@@ -22,6 +22,10 @@ The background a reader needs, why this is needed, and what the doc covers.
 
 -
 
+## Design objectives and constraints
+
+What the design optimises for, in priority order, and the limits it must work within.
+
 ## Design
 
 How it works, in enough detail to implement and review.

@@ -40,6 +40,39 @@ auth and metrics are in their own docs.
 - Consistency guarantees beyond those immutable entries already give.
 - Deleting from the bucket. Expiry there is left to the bucket's lifecycle rules.
 
+## Design objectives and constraints
+
+### Objectives, in priority order
+
+When two objectives conflict, the earlier one wins.
+
+1. **Hit rate.** The largest effect on build time. Set by capacity, eviction and admission, and
+   measured as hits over lookups (design doc 0004).
+2. **Tail latency of hits and misses.** A build performs hundreds to thousands of lookups on its
+   critical path, so p99 matters more than the mean. Misses count too: with a bucket, every miss
+   pays an object-store round trip, often tens of milliseconds.
+3. **Throughput.** Large entries and many concurrent CI agents, bounded by disk and network.
+4. **Simplicity.** Only as complex as the objectives above require.
+
+Network round trips usually outweigh server time, so the aim for 2 and 3 is server overhead small
+enough not to matter.
+
+### Constraints
+
+From Gradle's HTTP build cache client:
+
+- Entries are opaque, immutable bytes under keys Gradle computes from task inputs.
+- Gradle reads only status codes. Some fail the build; most other errors turn the remote cache off
+  for the rest of the build ([0001](0001-api-contracts.md)).
+- No backoff: `Retry-After` is ignored, so `429` and `503` cannot be used to pace clients.
+- `413` on store is the only refusal Gradle skips without consequence.
+- HTTP Basic is the only authentication ([0002](0002-authentication.md)).
+
+From the environment:
+
+- Object stores have tens of milliseconds of latency per request and charge per request.
+- Nodes may be replaced at any time; local memory and disk are not durable.
+
 ## Design
 
 ### Overview
@@ -164,16 +197,8 @@ is handled inside instead:
 
 ### Performance
 
-What matters, in order:
-
-1. **Hit rate.** The largest effect on build time, set by capacity and eviction.
-2. **Tail latency of hits and misses.** A build performs hundreds to thousands of lookups on its
-   critical path. With a bucket, every miss pays an object-store round trip, often tens of
-   milliseconds.
-3. **Throughput.** Large entries and many concurrent CI agents, bounded by disk and network.
-
-Network round trips usually outweigh server time, so the aim is server overhead small enough not
-to matter. Initial targets, to be checked by benchmarks before they are relied on:
+The priorities are in [Design objectives and constraints](#design-objectives-and-constraints).
+Initial targets, to be checked by benchmarks before they are relied on:
 
 | Measure                                         | Target                          |
 | ----------------------------------------------- | ------------------------------- |
