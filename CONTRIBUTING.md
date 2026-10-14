@@ -89,7 +89,7 @@ Bazel build.
 ```sh
 bazel build //...
 bazel test //...
-bazel run //crates/mammoth-cache:mammoth   # listens on 0.0.0.0:5071; override with MAMMOTH_ADDR
+bazel run //crates/mammoth-cache:mammoth   # listens on 0.0.0.0:5071; pass -- --config <file>
 bazel build --config=lint //...            # clippy and rustfmt over every Rust target
 ```
 
