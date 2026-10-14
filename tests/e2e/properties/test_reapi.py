@@ -92,13 +92,14 @@ def _evict(stack: Stack, bucket: BucketInspector, blob: str, action: str) -> Non
     [
         "file",
         "tree",
+        "tree file",
     ],
 )
 def test_evicted_output_is_a_miss(
     target: Target, controlled: Stack, bucket: BucketInspector, output: str
 ) -> None:
-    """A result whose output (a file or a tree) was evicted from every tier is a miss, so build
-    without the bytes never trusts it (doc 0016)."""
+    """A result whose output (a file, a tree, or a file in a tree) was evicted from every tier is
+    a miss, so build without the bytes never trusts it (doc 0016)."""
     assert target.reapi_address is not None
     writer = writer_credentials(target) if target.has(Feature.AUTH) else None
     client = Reapi(target.reapi_address, basic(writer) if writer is not None else None)

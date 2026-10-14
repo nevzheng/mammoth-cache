@@ -17,13 +17,15 @@ use mammoth_cache::{
     auth::{Authenticator, Scope, Scopes, hash_token},
     cache::Cache,
     config::Protocols,
+    key::{CacheKey, Namespace},
     reapi::{
         self,
         proto::{
             build::bazel::remote::execution::v2::{
-                ActionResult, BatchReadBlobsRequest, BatchUpdateBlobsRequest, Digest,
-                ExecuteRequest, FindMissingBlobsRequest, GetActionResultRequest,
-                GetCapabilitiesRequest, GetTreeRequest, OutputFile, UpdateActionResultRequest,
+                ActionResult, BatchReadBlobsRequest, BatchUpdateBlobsRequest,
+                BatchUpdateBlobsResponse, Digest, Directory, ExecuteRequest, FileNode,
+                FindMissingBlobsRequest, GetActionResultRequest, GetCapabilitiesRequest,
+                GetTreeRequest, OutputDirectory, OutputFile, Tree, UpdateActionResultRequest,
                 action_cache_client::ActionCacheClient, batch_update_blobs_request,
                 capabilities_client::CapabilitiesClient,
                 content_addressable_storage_client::ContentAddressableStorageClient,
@@ -70,26 +72,37 @@ impl Node {
 
     /// Serves on `listener`, with clients connecting to `addr`.
     async fn serve(auth: Authenticator, listener: TcpListener, addr: SocketAddr) -> Self {
+        Self::serve_with(auth, listener, addr, LIMIT, settings()).await
+    }
+
+    /// An open node with entries up to `limit` bytes and the given timeouts.
+    async fn with(limit: u64, settings: ServerSettings) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        Self::serve_with(Authenticator::open(), listener, addr, limit, settings).await
+    }
+
+    async fn serve_with(
+        auth: Authenticator,
+        listener: TcpListener,
+        addr: SocketAddr,
+        limit: u64,
+        settings: ServerSettings,
+    ) -> Self {
         let cache = Arc::new(
             Cache::builder()
                 .bounded_tier(Arc::new(
                     MemoryStore::<FoyerBackend>::with_config(MemoryConfig {
-                        max_entry_bytes: LIMIT,
+                        max_entry_bytes: limit,
                         ..MemoryConfig::new(64 << 20)
                     })
                     .unwrap(),
                 ))
-                .max_entry_size(LIMIT)
+                .max_entry_size(limit)
                 .build(),
         );
-        let routes = reapi::routes(cache.clone(), Arc::new(auth), Duration::from_secs(5));
+        let routes = reapi::routes(cache.clone(), Arc::new(auth), settings);
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let settings = ServerSettings {
-            shutdown_delay: Duration::ZERO,
-            shutdown_timeout: Duration::from_secs(5),
-            idle_timeout: Duration::from_secs(5),
-            ..ServerSettings::default()
-        };
         let server = tokio::spawn(reapi::serve(listener, None, routes, settings, async {
             let _ = stopped.await;
         }));
@@ -120,6 +133,16 @@ impl Node {
 
     fn bytestream(&self) -> ByteStreamClient<Channel> {
         ByteStreamClient::new(self.channel.clone())
+    }
+}
+
+fn settings() -> ServerSettings {
+    ServerSettings {
+        shutdown_delay: Duration::ZERO,
+        shutdown_timeout: Duration::from_secs(5),
+        idle_timeout: Duration::from_secs(5),
+        body_read_timeout: Duration::from_secs(5),
+        send_timeout: Duration::from_secs(5),
     }
 }
 
@@ -186,7 +209,8 @@ async fn capabilities_describe_a_cache_without_execution() {
             .unwrap()
             .update_enabled
     );
-    assert_eq!(cache.max_batch_total_size_bytes, 4 << 20);
+    // Room for each blob's digest and status under a client's 4 MiB message limit.
+    assert_eq!(cache.max_batch_total_size_bytes, (4 << 20) - (256 << 10));
     assert_eq!(cache.max_cas_blob_size_bytes, i64::try_from(LIMIT).unwrap());
     assert!(cache.supported_compressors.is_empty());
     assert!(!caps.execution_capabilities.unwrap().exec_enabled);
@@ -977,17 +1001,8 @@ async fn serves_grpcs_with_the_node_certificate() {
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let routes = reapi::routes(
-        cache,
-        Arc::new(Authenticator::open()),
-        Duration::from_secs(5),
-    );
-    let settings = ServerSettings {
-        shutdown_delay: Duration::ZERO,
-        shutdown_timeout: Duration::from_secs(5),
-        idle_timeout: Duration::from_secs(5),
-        ..ServerSettings::default()
-    };
+    let settings = settings();
+    let routes = reapi::routes(cache, Arc::new(Authenticator::open()), settings);
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(reapi::serve(listener, Some(tls), routes, settings, async {
         let _ = stopped.await;
@@ -1033,4 +1048,303 @@ async fn serves_grpcs_with_the_node_certificate() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn find_missing_blobs_is_capped() {
+    let node = Node::open().await;
+    let digests = |n: usize| -> Vec<Digest> {
+        (0..n)
+            .map(|i| Digest {
+                hash: format!("{i:064x}"),
+                size_bytes: 1,
+            })
+            .collect()
+    };
+    let find = |digests| {
+        let mut cas = node.cas();
+        async move {
+            cas.find_missing_blobs(FindMissingBlobsRequest {
+                blob_digests: digests,
+                ..Default::default()
+            })
+            .await
+        }
+    };
+    let missing = find(digests(10_000)).await.unwrap().into_inner();
+    assert_eq!(missing.missing_blob_digests.len(), 10_000);
+    let err = find(digests(10_001)).await.unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(reason(&err), "TOO_MANY_DIGESTS");
+}
+
+/// Thousands of small blobs: a batch that fits the advertised data limit is accepted whole,
+/// and a read whose response could pass a client's 4 MiB message limit is refused up front
+/// rather than failing as it is encoded or decoded.
+#[tokio::test]
+async fn batches_of_many_small_blobs() {
+    let node = Node::open().await;
+    let blobs: Vec<Vec<u8>> = (0..20_000_u32)
+        .map(|i| format!("small blob {i:08} {}", "x".repeat(40)).into_bytes())
+        .collect();
+    let refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+    // About 1.2 MB of data in 20,000 entries: well past 4 MiB with framing.
+    upload(&node, &refs).await;
+
+    let read = |n: usize| {
+        let mut cas = node.cas();
+        let digests = refs[..n].iter().map(|b| digest_of(b)).collect();
+        async move {
+            cas.batch_read_blobs(BatchReadBlobsRequest {
+                digests,
+                ..Default::default()
+            })
+            .await
+        }
+    };
+    let err = read(20_000).await.unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(reason(&err), "BATCH_TOO_LARGE");
+    // A default tonic client, with its 4 MiB limit, takes the largest batch that is allowed.
+    let fits = usize::try_from((4 << 20) / (64 + 256)).unwrap();
+    let response = read(fits).await.unwrap().into_inner();
+    assert_eq!(response.responses.len(), fits);
+    assert!(
+        response
+            .responses
+            .iter()
+            .all(|r| r.status.as_ref().unwrap().code == 0)
+    );
+}
+
+#[tokio::test]
+async fn batch_sizes_from_the_client_cannot_overflow() {
+    let node = Node::open().await;
+    let huge = |c: char| Digest {
+        hash: c.to_string().repeat(64),
+        size_bytes: i64::MAX,
+    };
+    let err = node
+        .cas()
+        .batch_read_blobs(BatchReadBlobsRequest {
+            digests: vec![huge('a'), huge('b'), huge('c')],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(reason(&err), "BATCH_TOO_LARGE");
+}
+
+/// An action result with a directory output is a hit only while every file in its tree is
+/// present, and a miss is counted as one.
+#[tokio::test]
+async fn action_results_need_the_files_in_their_trees() {
+    let node = Node::open().await;
+    let file = |data: &[u8]| FileNode {
+        name: "f".to_owned(),
+        digest: Some(digest_of(data)),
+        ..Default::default()
+    };
+    let tree = Tree {
+        root: Some(Directory {
+            files: vec![file(b"top file")],
+            ..Default::default()
+        }),
+        children: vec![Directory {
+            files: vec![file(b"nested file")],
+            ..Default::default()
+        }],
+    }
+    .encode_to_vec();
+    let result = ActionResult {
+        output_directories: vec![OutputDirectory {
+            path: "out".to_owned(),
+            tree_digest: Some(digest_of(&tree)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let action = digest_of(b"tree action");
+    node.ac()
+        .update_action_result(UpdateActionResultRequest {
+            action_digest: Some(action.clone()),
+            action_result: Some(result.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let get = || {
+        let mut client = node.ac();
+        let action = action.clone();
+        async move {
+            client
+                .get_action_result(GetActionResultRequest {
+                    action_digest: Some(action),
+                    ..Default::default()
+                })
+                .await
+        }
+    };
+
+    // The tree is there but a file inside it is not, as after an eviction.
+    upload(&node, &[&tree, b"top file"]).await;
+    let before = node.cache.status();
+    assert_eq!(get().await.unwrap_err().code(), Code::NotFound);
+    let after = node.cache.status();
+    assert_eq!(after.hits - before.hits, 0, "a stale result is not a hit");
+    assert_eq!(after.misses - before.misses, 1);
+
+    upload(&node, &[b"nested file"]).await;
+    assert_eq!(get().await.unwrap().into_inner(), result);
+    assert_eq!(node.cache.status().hits - after.hits, 1);
+}
+
+/// A stored action result too large to send is a miss, refused before it is read.
+#[tokio::test]
+async fn oversized_action_results_are_misses() {
+    let node = Node::with(16 << 20, settings()).await;
+    let action = digest_of(b"huge result");
+    let key = CacheKey::bazel(Namespace::BazelAc, &action.hash).unwrap();
+    let data = Bytes::from(vec![0_u8; 5 << 20]);
+    node.cache
+        .put(
+            &key,
+            Some(5 << 20),
+            futures_util::stream::once(async move { Ok(data) }).boxed(),
+        )
+        .await
+        .unwrap();
+    let err = node
+        .ac()
+        .get_action_result(GetActionResultRequest {
+            action_digest: Some(action),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+}
+
+/// A download whose client stops taking data ends with `DEADLINE_EXCEEDED` after `send_timeout`,
+/// rather than holding the entry open.
+#[tokio::test]
+async fn a_stalled_read_is_ended() {
+    let node = Node::with(
+        16 << 20,
+        ServerSettings {
+            send_timeout: Duration::from_millis(300),
+            ..settings()
+        },
+    )
+    .await;
+    // More than the client's HTTP/2 windows and the server's buffers hold.
+    let data = vec![3_u8; 12 << 20];
+    let digest = digest_of(&data);
+    node.bytestream()
+        .write(futures_util::stream::iter(write_requests(
+            &upload_name(&digest),
+            &data,
+            1 << 20,
+        )))
+        .await
+        .unwrap();
+
+    let mut stream = node
+        .bytestream()
+        .read(ReadRequest {
+            resource_name: format!("instance/blobs/{}/{}", digest.hash, digest.size_bytes),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut received = stream.message().await.unwrap().unwrap().data.len();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let err = loop {
+        match stream.message().await {
+            Ok(Some(message)) => received += message.data.len(),
+            Ok(None) => panic!("the stalled read finished"),
+            Err(err) => break err,
+        }
+    };
+    assert!(received < data.len());
+    assert_eq!(err.code(), Code::DeadlineExceeded);
+    assert_eq!(reason(&err), "DOWNLOAD_STALLED");
+}
+
+/// A unary call whose request body stops arriving fails after `body_read_timeout`, freeing its
+/// place among the buffered calls.
+#[tokio::test]
+async fn a_stalled_unary_request_fails() {
+    let node = Node::with(
+        LIMIT,
+        ServerSettings {
+            body_read_timeout: Duration::from_millis(300),
+            ..settings()
+        },
+    )
+    .await;
+    let mut grpc = tonic::client::Grpc::new(node.channel.clone());
+    grpc.ready().await.unwrap();
+    let path = tonic::codegen::http::uri::PathAndQuery::from_static(
+        "/build.bazel.remote.execution.v2.ContentAddressableStorage/BatchUpdateBlobs",
+    );
+    // Headers only; the message never comes.
+    let call = grpc.client_streaming::<_, BatchUpdateBlobsRequest, BatchUpdateBlobsResponse, _>(
+        Request::new(futures_util::stream::pending()),
+        path,
+        tonic_prost::ProstCodec::default(),
+    );
+    let result = tokio::time::timeout(Duration::from_secs(3), call)
+        .await
+        .expect("the stalled request was never failed");
+    assert!(result.is_err());
+}
+
+/// A batch upload over `max_batch_total_size_bytes` is refused whole, as a batch read is, and one
+/// past the message limit gets `RESOURCE_EXHAUSTED`, never `OUT_OF_RANGE`.
+#[tokio::test]
+async fn oversized_batch_uploads_are_refused_whole() {
+    let node = Node::with(16 << 20, settings()).await;
+    let update = |blobs: Vec<Vec<u8>>| {
+        let mut cas = node.cas();
+        async move {
+            cas.batch_update_blobs(BatchUpdateBlobsRequest {
+                requests: blobs
+                    .iter()
+                    .map(|b| batch_update_blobs_request::Request {
+                        digest: Some(digest_of(b)),
+                        data: Bytes::copy_from_slice(b),
+                        compressor: 0,
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .await
+        }
+    };
+    let half = (2 << 20) + (64 << 10);
+    let blobs = vec![vec![1_u8; half], vec![2_u8; half]];
+    let err = update(blobs.clone()).await.unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(reason(&err), "BATCH_TOO_LARGE");
+    let missing = node
+        .cas()
+        .find_missing_blobs(FindMissingBlobsRequest {
+            blob_digests: blobs.iter().map(|b| digest_of(b)).collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        missing.missing_blob_digests.len(),
+        2,
+        "a refused batch stored a blob"
+    );
+
+    let err = update(vec![vec![3_u8; 9 << 20]]).await.unwrap_err();
+    assert_eq!(err.code(), Code::ResourceExhausted);
+    assert_eq!(reason(&err), "MESSAGE_TOO_LARGE");
 }

@@ -25,7 +25,8 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.requires("reapi")
 
 ACTIONS = 2  # //lib and //app, one genrule each
-BATCH_LIMIT = 4 * 1024 * 1024  # max_batch_total_size_bytes; bigger blobs go over ByteStream
+# max_batch_total_size_bytes; bigger blobs go over ByteStream
+BATCH_LIMIT = 4 * 1024 * 1024 - 256 * 1024
 
 
 def _grpc_url(address: str | None) -> str:
@@ -145,6 +146,16 @@ def test_wrong_credentials(project: BazelProject, target: Target) -> None:
     assert not result.ok, result.describe()
     assert "UNAUTHENTICATED: The credentials are not valid." in result.output, result.describe()
     assert "mmc_wrong" not in result.output
+
+
+@pytest.mark.requires("auth")
+def test_refusals_counted(project: BazelProject, target: Target) -> None:
+    project.credentials = target.user("ci").model_copy(update={"token": SecretStr("mmc_wrong")})
+    before = scrape(target)
+    project.build()
+    after = scrape(target)
+    assert _grpc(before, after, "GetCapabilities", "UNAUTHENTICATED") >= 1
+    assert delta(before, after, "mammoth_auth_failures_total") >= 1
 
 
 @pytest.mark.requires("auth")

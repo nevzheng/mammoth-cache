@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.requires("reapi"), pytest.mark.requires("bazel")]
 
-BATCH_LIMIT = 4 * 1024 * 1024
+BATCH_LIMIT = 4 * 1024 * 1024 - 256 * 1024
 SIZES = st.sampled_from([0, 1, 4096, 65_536, BATCH_LIMIT - 4096, BATCH_LIMIT + 1, 6 * 1024 * 1024])
 EXAMPLES = int(os.environ.get("MAMMOTH_E2E_BAZEL_EXAMPLES", "4"))
 

@@ -58,11 +58,7 @@ async fn start(cache: Cache, settings: ServerSettings) -> Node {
             let _ = stopped.wait_for(|stop| *stop).await;
         }
     };
-    let routes = reapi::routes(
-        cache.clone(),
-        Arc::new(Authenticator::open()),
-        settings.body_read_timeout,
-    );
+    let routes = reapi::routes(cache.clone(), Arc::new(Authenticator::open()), settings);
     let servers = vec![
         (
             "gRPC",

@@ -286,7 +286,19 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_grpc_requests_total",
         kind: Kind::Counter,
         labels: &[Label("method", None), Label("code", None)],
-        live: false,
+        live: true,
+    },
+    Metric {
+        name: "mammoth_grpc_request_duration_seconds",
+        kind: Kind::Histogram,
+        labels: &[Label("method", None)],
+        live: true,
+    },
+    Metric {
+        name: "mammoth_grpc_requests_in_flight",
+        kind: Kind::Gauge,
+        labels: &[Label("method", None)],
+        live: true,
     },
     Metric {
         name: "mammoth_http_request_duration_seconds",
@@ -476,8 +488,51 @@ async fn three_tier_app(dir: &std::path::Path, auth: Authenticator) -> Router {
         .max_entry_size(MAX_ENTRY)
         .oversize(OversizePolicy::Drop)
         .build();
-    router_with_auth(Arc::new(cache), Some(handle), Arc::new(auth))
+    let (cache, auth) = (Arc::new(cache), Arc::new(auth));
+    let settings = mammoth_cache::server::ServerSettings::default();
+    let grpc =
+        mammoth_cache::reapi::routes(cache.clone(), auth.clone(), settings).into_axum_router();
+    let http = router_with_auth(cache, Some(handle), auth);
+    // One app for both ports, as the tests send requests rather than open connections: gRPC
+    // calls by their content type, everything else to the HTTP routes.
+    Router::new().fallback_service(tower::service_fn(move |request: Request<Body>| {
+        let grpc_call = request
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .is_some_and(|t| t.as_bytes().starts_with(b"application/grpc"));
+        let app = if grpc_call {
+            grpc.clone()
+        } else {
+            http.clone()
+        };
+        app.oneshot(request)
+    }))
 }
+
+/// A gRPC call of `method` with an empty message, and its trailers' `grpc-status`.
+async fn grpc_call(app: &Router, method: &str, authorization: Option<&str>) -> String {
+    let mut request = Request::post(method)
+        .header(header::CONTENT_TYPE, "application/grpc")
+        .header("te", "trailers");
+    if let Some(value) = authorization {
+        request = request.header(header::AUTHORIZATION, value);
+    }
+    // One uncompressed, empty message.
+    let response = send(app, request.body(Body::from(vec![0_u8; 5])).unwrap()).await;
+    if let Some(status) = response.headers().get("grpc-status") {
+        let status = status.to_str().unwrap().to_owned();
+        drop(response.into_body().collect().await.unwrap());
+        return status;
+    }
+    let collected = response.into_body().collect().await.unwrap();
+    collected.trailers().unwrap()["grpc-status"]
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+const FIND_MISSING: &str =
+    "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs";
 
 fn authenticator() -> Authenticator {
     Authenticator::new(
@@ -593,6 +648,21 @@ async fn workload(app: &Router, before: &Scrape) {
         .body(Body::empty())
         .unwrap();
     assert_eq!(send(app, request).await.status(), StatusCode::UNAUTHORIZED);
+    // gRPC: a call, one with a rejected credential, and a method the node does not serve.
+    assert_eq!(grpc_call(app, FIND_MISSING, None).await, "0");
+    assert_eq!(
+        grpc_call(app, FIND_MISSING, Some("Bearer wrong")).await,
+        "16"
+    );
+    assert_eq!(
+        grpc_call(
+            app,
+            "/build.bazel.remote.execution.v2.Execution/Execute",
+            None
+        )
+        .await,
+        "12"
+    );
     // Maven and other clients.
     let request = Request::get("/maven/v1/org/example/lib/1.0/lib.jar")
         .header(header::USER_AGENT, MAVEN_AGENT)
@@ -824,13 +894,15 @@ async fn workload_moves_the_live_counters() {
         ),
         0
     );
+    // One rejected credential on each port.
     assert_eq!(
         delta(
             "mammoth_auth_failures_total",
             &[("reason", "CREDENTIALS_INVALID")]
         ),
-        1
+        2
     );
+    grpc_counted(&delta, &after);
     assert_cache_outcomes(&delta);
     tier_counters_moved(&before, &after);
     tier_population(&after);
@@ -838,6 +910,34 @@ async fn workload_moves_the_live_counters() {
 
 /// How much a series moved across [`workload`], by name and labels.
 type Delta<'a> = dyn Fn(&str, &[(&str, &str)]) -> i64 + 'a;
+
+/// The gRPC calls in [`workload`], counted outside authentication: the refused one by its code,
+/// and the unserved method as `other`.
+fn grpc_counted(delta: &Delta<'_>, after: &Scrape) {
+    let calls = |method, code| {
+        delta(
+            "mammoth_grpc_requests_total",
+            &[("method", method), ("code", code)],
+        )
+    };
+    assert_eq!(calls("FindMissingBlobs", "OK"), 1);
+    assert_eq!(calls("FindMissingBlobs", "UNAUTHENTICATED"), 1);
+    assert_eq!(calls("other", "UNIMPLEMENTED"), 1);
+    assert_eq!(
+        delta(
+            "mammoth_grpc_request_duration_seconds_count",
+            &[("method", "FindMissingBlobs")]
+        ),
+        2
+    );
+    assert_eq!(
+        after.count(
+            "mammoth_grpc_requests_in_flight",
+            &[("method", "FindMissingBlobs")]
+        ),
+        0
+    );
+}
 
 /// The cache outcome counters after [`workload`]: store results, entry sizes and
 /// lookups by tier.

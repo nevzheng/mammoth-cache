@@ -45,13 +45,13 @@ const LIMIT: u64 = 16;
 async fn serve(cache: Cache, auth: Authenticator) -> Channel {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let routes = reapi::routes(Arc::new(cache), Arc::new(auth), Duration::from_secs(5));
     let settings = ServerSettings {
         shutdown_delay: Duration::ZERO,
         shutdown_timeout: Duration::from_secs(5),
         idle_timeout: Duration::from_secs(5),
         ..ServerSettings::default()
     };
+    let routes = reapi::routes(Arc::new(cache), Arc::new(auth), settings);
     tokio::spawn(reapi::serve(
         listener,
         None,

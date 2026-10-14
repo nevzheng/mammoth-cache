@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.requires("reapi")
 
 ACTIONS = 2  # //:lib and //:app
-BATCH_LIMIT = 4 * 1024 * 1024
+BATCH_LIMIT = 4 * 1024 * 1024 - 256 * 1024
 
 
 def _address(address: str | None) -> str:
