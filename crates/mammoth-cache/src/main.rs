@@ -19,7 +19,6 @@ use mammoth_cache::{
     telemetry,
     tls::{self, Certificates},
 };
-use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 // The global allocator is chosen at build time (see the features in Cargo.toml).
@@ -200,9 +199,9 @@ async fn serve(config: Config) -> io::Result<()> {
         reapi = protocols.reapi,
         "protocols"
     );
-    let listener = TcpListener::bind(config.listen).await?;
+    let listener = server::bind(config.listen)?;
     let grpc_listener = if protocols.reapi {
-        let listener = TcpListener::bind(config.reapi.listen).await?;
+        let listener = server::bind(config.reapi.listen)?;
         tracing::info!(
             addr = %listener.local_addr()?,
             scheme = if certificates.is_some() { "grpcs" } else { "grpc" },

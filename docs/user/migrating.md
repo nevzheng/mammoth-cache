@@ -71,7 +71,7 @@ becomes:
 
 ```toml
 version = 1
-listen = "0.0.0.0:5071"
+listen = "[::]:5071"
 
 [limits]
 max_entry_size = "100MiB"

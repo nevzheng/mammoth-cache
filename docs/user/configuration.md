@@ -55,10 +55,10 @@ is missing here or from the [full example](#full-example), so this page is compl
 
 ### Top level
 
-| Key       | Type    | Default        | Example        | Status    | Meaning                                                                        |
-| --------- | ------- | -------------- | -------------- | --------- | ------------------------------------------------------------------------------ |
-| `version` | integer | required       | `1`            | Available | Schema version of the file; `1`                                                |
-| `listen`  | string  | `0.0.0.0:5071` | `"[::]:5071"`  | Available | Address and port; 5071 is the Build Cache Node's port. Use `[::]:5071` on IPv6 |
+| Key       | Type    | Default     | Example          | Status    | Meaning                                                                                                                 |
+| --------- | ------- | ----------- | ---------------- | --------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `version` | integer | required    | `1`              | Available | Schema version of the file; `1`                                                                                         |
+| `listen`  | string  | `[::]:5071` | `"0.0.0.0:5071"` | Available | Address and port; 5071 is the Build Cache Node's port. `[::]` takes IPv4 and IPv6, or IPv4 alone on a host without IPv6 |
 
 ### `[protocols]`
 
@@ -78,9 +78,9 @@ protocol must be on.
 The gRPC listener for the REAPI cache, used only when `protocols.reapi` is on. It serves HTTP/2
 (gRPC) on its own port, with the same `[tls]` certificate, users and scopes as the HTTP port.
 
-| Key      | Type   | Default        | Example         | Status    | Meaning                                                          |
-| -------- | ------ | -------------- | --------------- | --------- | ---------------------------------------------------------------- |
-| `listen` | string | `0.0.0.0:6011` | `"[::]:6011"`   | Available | Address and port; 6011 is the Build Cache Node's Bazel gRPC port |
+| Key      | Type   | Default     | Example          | Status    | Meaning                                                                                  |
+| -------- | ------ | ----------- | ---------------- | --------- | ---------------------------------------------------------------------------------------- |
+| `listen` | string | `[::]:6011` | `"0.0.0.0:6011"` | Available | Address and port; 6011 is the Build Cache Node's Bazel gRPC port. `[::]` as for `listen` |
 
 ### `[server]`
 

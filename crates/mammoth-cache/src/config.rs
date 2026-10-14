@@ -6,7 +6,7 @@
 use std::{
     collections::BTreeMap,
     env, fmt, fs,
-    net::SocketAddr,
+    net::{Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
@@ -140,7 +140,7 @@ pub struct Reapi {
 impl Default for Reapi {
     fn default() -> Self {
         Self {
-            listen: SocketAddr::from(([0, 0, 0, 0], 6011)),
+            listen: SocketAddr::from((Ipv6Addr::UNSPECIFIED, 6011)),
         }
     }
 }
@@ -442,7 +442,7 @@ where
 }
 
 fn default_listen() -> SocketAddr {
-    SocketAddr::from(([0, 0, 0, 0], 5071))
+    SocketAddr::from((Ipv6Addr::UNSPECIFIED, 5071))
 }
 
 fn default_disk_size() -> ByteSize {
@@ -760,7 +760,20 @@ mod tests {
         assert_eq!(config.protocols, Protocols::default());
         assert!(config.protocols.gradle && config.protocols.maven && !config.protocols.bazel);
         assert!(!config.protocols.reapi);
-        assert_eq!(config.reapi.listen, SocketAddr::from(([0, 0, 0, 0], 6011)));
+        assert_eq!(
+            config.reapi.listen,
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, 6011))
+        );
+    }
+
+    #[test]
+    fn listen_takes_bracketed_ipv6_addresses() {
+        let config = parse(&format!(
+            "listen = \"[::1]:5071\"\n{MINIMAL}[reapi]\nlisten = \"[fd00::1]:6011\"\n"
+        ))
+        .unwrap();
+        assert_eq!(config.listen, SocketAddr::from((Ipv6Addr::LOCALHOST, 5071)));
+        assert_eq!(config.reapi.listen.to_string(), "[fd00::1]:6011");
     }
 
     #[test]

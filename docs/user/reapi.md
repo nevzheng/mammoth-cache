@@ -19,7 +19,7 @@ client's machine. mammoth-cache is a cache, not a remote build system. Design do
 reapi = true
 
 [reapi]
-listen = "0.0.0.0:6011" # the default; 6011 is the Build Cache Node's Bazel gRPC port
+listen = "[::]:6011" # the default; 6011 is the Build Cache Node's Bazel gRPC port
 ```
 
 gRPC gets its own port, next to the HTTP port (5071), so turning it on changes nothing for Gradle

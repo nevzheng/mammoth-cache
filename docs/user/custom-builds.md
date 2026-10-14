@@ -80,7 +80,8 @@ impl BlobStore for MyStore {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let cache = Cache::builder().tier(Arc::new(MyStore {})).build();
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:5071").await?;
+    // IPv4 and IPv6, or IPv4 alone on a host without IPv6.
+    let listener = mammoth_cache::server::bind("[::]:5071".parse().unwrap())?;
     axum::serve(listener, mammoth_cache::router(Arc::new(cache), None)).await
 }
 ```

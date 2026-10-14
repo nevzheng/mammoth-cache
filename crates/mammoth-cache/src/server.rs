@@ -7,6 +7,7 @@
 use std::{
     future::Future,
     io,
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     pin::{Pin, pin},
     sync::Arc,
     task::{Context, Poll},
@@ -29,7 +30,7 @@ use hyper_util::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpSocket, TcpStream},
     time::{Instant, Sleep},
 };
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
@@ -64,6 +65,51 @@ impl Default for ServerSettings {
             send_timeout: Duration::from_secs(60),
         }
     }
+}
+
+/// Pending connections the kernel queues for the accept loop, as `TcpListener::bind` uses.
+const BACKLOG: u32 = 1024;
+
+/// Binds a listener on `addr`. On the unspecified IPv6 address (`[::]`, the default) it accepts
+/// IPv4 too, whatever the host's `bindv6only` default; on a host without IPv6 it falls back to
+/// `0.0.0.0` on the same port. Any other address is bound as given.
+pub fn bind(addr: SocketAddr) -> io::Result<TcpListener> {
+    match listen_on(addr) {
+        Err(error) if addr.ip() == Ipv6Addr::UNSPECIFIED && no_ipv6(&error) => {
+            let fallback = SocketAddr::from((Ipv4Addr::UNSPECIFIED, addr.port()));
+            tracing::info!(%addr, %fallback, %error, "no IPv6 on this host; listening on IPv4 only");
+            listen_on(fallback)
+        }
+        result => result,
+    }
+}
+
+fn listen_on(addr: SocketAddr) -> io::Result<TcpListener> {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    if addr.ip() == Ipv6Addr::UNSPECIFIED {
+        // IPv4 clients arrive as IPv4-mapped addresses.
+        socket2::SockRef::from(&socket).set_only_v6(false)?;
+    }
+    #[cfg(unix)]
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(BACKLOG)
+}
+
+/// Whether binding failed because the host has no IPv6: the kernel lacks it, or it is turned off.
+fn no_ipv6(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::AddrNotAvailable {
+        return true;
+    }
+    #[cfg(unix)]
+    if rustix::io::Errno::from_io_error(error) == Some(rustix::io::Errno::AFNOSUPPORT) {
+        return true;
+    }
+    false
 }
 
 /// TLS for [`serve_tls`] (design doc 0014).
