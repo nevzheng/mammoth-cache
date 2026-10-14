@@ -1,0 +1,133 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+load("@tests_pypi//:requirements.bzl", "all_requirements")
+
+# The Python suites (doc 0011). uv.lock is the source of truth for their packages: MODULE.bazel reads
+# it, so `uv add` in this directory is all a new dependency needs.
+exports_files(["uv.lock"])
+
+# `mammoth_e2e`, the typed harness every suite imports.
+py_library(
+    name = "harness",
+    srcs = glob(["src/mammoth_e2e/**/*.py"]),
+    imports = ["src"],
+    deps = all_requirements,
+)
+
+# Lint and type checks over every Python file here. Hermetic and cached: they run in `bazel test //...`
+# with the rest of the build.
+filegroup(
+    name = "python_sources",
+    srcs = glob(["**/*.py"]),
+)
+
+[
+    py_test(
+        name = check.replace("-", "_"),
+        size = "small",
+        srcs = ["bazel/check.py"],
+        args = [
+            check,
+            "$(rootpaths @tests_pypi//%s:data)" % tool,
+            "--",
+            "$(rootpaths :python_sources)",
+        ],
+        data = [
+            "pyproject.toml",
+            ":python_sources",
+            "@tests_pypi//%s:data" % tool,
+        ],
+        main = "bazel/check.py",
+        deps = [":harness"] if tool == "pyrefly" else [],
+    )
+    for check, tool in [
+        ("ruff-format", "ruff"),
+        ("ruff-check", "ruff"),
+        ("pyrefly", "pyrefly"),
+    ]
+]
+
+# The suites themselves drive Docker, Java and the network on the host, against the Compose stack
+# in deploy/compose. They run only when named (`manual`), outside the sandbox (`local`), one at a
+# time because they share the stack's ports (`exclusive`), and never from cache (`external`).
+# Run them with --config=e2e (.bazelrc), for example:
+#
+#   bazel test --config=e2e //tests:e2e
+#   bazel test --config=e2e //tests:acceptance_gradle --test_arg=--gradle=8.14
+SUITE_TAGS = [
+    "exclusive",
+    "external",
+    "local",
+    "manual",
+]
+
+SUITE_DATA = glob(
+    [
+        "acceptance/**",
+        "e2e/**",
+        "targets/**",
+    ],
+    exclude = ["**/__pycache__/**"],
+) + [
+    "conftest.py",
+    "pyproject.toml",
+]
+
+[
+    py_test(
+        name = name,
+        size = "enormous",
+        srcs = ["bazel/suite.py"],
+        args = ["pytest"] + paths,
+        data = SUITE_DATA,
+        main = "bazel/suite.py",
+        tags = SUITE_TAGS,
+        deps = [":harness"],
+    )
+    for name, paths in [
+        (
+            "e2e",
+            ["e2e"],
+        ),
+        (
+            "acceptance",
+            ["acceptance"],
+        ),
+        (
+            "acceptance_gradle",
+            ["acceptance/test_gradle.py"],
+        ),
+        (
+            "acceptance_maven",
+            ["acceptance/test_maven.py"],
+        ),
+        (
+            "acceptance_bazel",
+            ["acceptance/test_bazel.py"],
+        ),
+        (
+            "acceptance_bazel_grpc",
+            [
+                "acceptance/test_bazel_grpc.py",
+                "acceptance/test_bazel_grpc_properties.py",
+            ],
+        ),
+        (
+            "acceptance_buck2",
+            ["acceptance/test_buck2.py"],
+        ),
+        (
+            "acceptance_tls",
+            ["acceptance/test_tls.py"],
+        ),
+    ]
+]
+
+# Locust load runs (tests/README.md): `bazel run //tests:locust -- -f load/locustfile.py ...`.
+py_binary(
+    name = "locust",
+    srcs = ["bazel/suite.py"],
+    args = ["locust"],
+    data = glob(["load/**"]) + ["targets/compose.toml"],
+    main = "bazel/suite.py",
+    deps = [":harness"],
+)

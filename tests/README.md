@@ -16,13 +16,29 @@ acceptance suite are [0008](../docs/design/0008-supported-clients.md), and for R
 
 ## Running locally
 
-You need Docker, [uv](https://docs.astral.sh/uv/), git, and Java 17 for the acceptance suite. The
-harness downloads Gradle, Maven, Bazel and Buck2 itself, into `~/.cache/mammoth-e2e`.
+You need Docker, Bazel (via [Bazelisk](https://github.com/bazelbuild/bazelisk)), git, and Java 17
+for the acceptance suite. Bazel brings Python 3.14 and the packages in `uv.lock`; the harness
+downloads Gradle, Maven, Bazel and Buck2 itself, into `~/.cache/mammoth-e2e`.
+
+Each suite is a Bazel test target in [BUILD.bazel](BUILD.bazel). They run only when named, on the
+host and never from cache; `--config=e2e` passes Docker, Java and proxy settings through. Arguments
+after the target's own paths go to pytest with `--test_arg`, and the JUnit report is Bazel's
+`bazel-testlogs/tests/<target>/test.xml`.
 
 ```sh
 docker build -t mammoth-cache:e2e .        # the image under test
-cd tests
-uv run pytest e2e                          # starts and stops deploy/compose for you
+bazel test --config=e2e //tests:e2e        # starts and stops deploy/compose for you
+bazel test --config=e2e //tests:e2e --test_arg=-k --test_arg=test_ops
+bazel test --config=e2e //tests:acceptance_gradle --test_arg=--gradle=8.14
+bazel test --config=e2e //tests:acceptance_bazel_grpc --test_arg=--bazel=9
+```
+
+The targets are `e2e`, `acceptance` (every client) and `acceptance_gradle`, `_maven`, `_bazel`,
+`_bazel_grpc`, `_buck2` and `_tls`. Without Bazel, [uv](https://docs.astral.sh/uv/) runs the same
+suites from this directory:
+
+```sh
+uv run pytest e2e
 uv run pytest acceptance --gradle 8.14     # one Gradle line; default is 7.6,8.14,9
 uv run pytest acceptance/test_maven.py --maven-extension latest
 uv run pytest acceptance/test_bazel.py --bazel 8
@@ -37,9 +53,11 @@ uv run pytest acceptance/test_buck2.py --buck2 latest  # or a dated release, e.g
 ## Load
 
 ```sh
-uv run locust -f load/locustfile.py --headless --target targets/compose.toml --up --run smoke
-uv run locust -f load/locustfile.py --target targets/compose.toml   # web UI on :8089
+bazel run //tests:locust -- -f load/locustfile.py --headless --target targets/compose.toml --up --run smoke
+bazel run //tests:locust -- -f load/locustfile.py --target targets/compose.toml   # web UI on :8089
 ```
+
+Paths are relative to `tests/`; `uv run locust ...` from this directory does the same.
 
 `--run` picks the shape (`smoke`, `steady`, `ramp`, `spike`, or `warm`, which stores 100k entries
 first), `--rate` the peak lookups a second
@@ -52,10 +70,11 @@ down -v` stops it.
 ## Checks
 
 ```sh
-uv run ruff format && uv run ruff check && uv run pyrefly check
+bazel test //tests:ruff_format //tests:ruff_check //tests:pyrefly
 ```
 
-CI runs these, plus `uv lock --check`, in the `e2e` workflow.
+They are part of `bazel test //...`, so the `bazel` workflow runs them, cached, with the Rust
+checks; it also runs `uv lock --check`. `uv run ruff format` fixes formatting in place.
 
 ## Targets and features
 

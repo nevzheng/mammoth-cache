@@ -15,7 +15,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Builds and tests every target with clippy and rustfmt applied, warnings as errors.
+  # Builds and tests every target with clippy and rustfmt applied, warnings as errors. That includes
+  # ruff and pyrefly over the Python suites; the suites themselves run in e2e.yml and acceptance.yml.
   bazel-test:
     strategy:
       fail-fast: false
@@ -28,19 +29,21 @@ jobs:
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.os }}
-          # Key the repository and disk caches on Cargo.lock as well as MODULE.bazel (the disk cache
-          # adds the BUILD files), so a crate bump saves fresh caches instead of downloading and
-          # compiling the new crates on every run.
+          # Key the repository and disk caches on the lockfiles as well as MODULE.bazel (the disk
+          # cache adds the BUILD files), so a crate or Python package bump saves fresh caches
+          # instead of downloading and compiling the new ones on every run.
           repository-cache: |
             - MODULE.bazel
             - Cargo.lock
+            - tests/uv.lock
           # Pull requests restore main's caches but don't save their own: caches saved on a pull
           # request are visible to that pull request only, and would push main's out of the
           # repository's cache quota.
           cache-save: ${{ github.event_name != 'pull_request' }}
       - run: bazel test --config=ci --config=lint //...
 
-  # BUILD/MODULE formatting and the Rust version shared with rust-toolchain.toml.
+  # BUILD/MODULE formatting, the Rust version shared with rust-toolchain.toml, and tests/uv.lock
+  # matching tests/pyproject.toml (Bazel reads the lock, so a stale one would go unnoticed).
   bazel-lint:
     runs-on: ubuntu-latest
     steps:
@@ -50,5 +53,55 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
           cache-save: ${{ github.event_name != 'pull_request' }}
+      - uses: astral-sh/setup-uv@v7
+      - run: uv lock --check --directory tests
       - run: scripts/check-toolchain-sync.sh
       - run: bazel run @buildifier_prebuilt//:buildifier -- -mode=check -lint=warn -r "$PWD"
+
+  # The main ruleset requires checks named fmt, clippy and test, from when rust.yml ran them with
+  # Cargo. These run the same checks with Bazel under those names; they go once the ruleset requires
+  # bazel-test and bazel-lint instead. They restore bazel-test's Linux cache and never save one.
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          cache-save: false
+      - run: >-
+          bazel build --config=ci //...
+          --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect --output_groups=rustfmt_checks
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-ubuntu-latest
+          repository-cache: |
+            - MODULE.bazel
+            - Cargo.lock
+            - tests/uv.lock
+          cache-save: false
+      - run: >-
+          bazel build --config=ci //...
+          --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect --output_groups=clippy_checks
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-ubuntu-latest
+          repository-cache: |
+            - MODULE.bazel
+            - Cargo.lock
+            - tests/uv.lock
+          cache-save: false
+      - run: bazel test --config=ci //...

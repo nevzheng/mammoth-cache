@@ -1,5 +1,5 @@
 //! The error catalogue (`api::error::Reason`) matches its documentation: the table in design doc
-//! 0017 and the reason enum in `api/openapi/common.yaml`.
+//! 0017, the reason enum in `api/openapi/common.yaml` and the table in the user guide.
 
 // Helpers panic on a malformed doc, like the tests that call them.
 #![allow(clippy::expect_used)]
@@ -13,6 +13,7 @@ use mammoth_cache::{
 
 const DESIGN: &str = include_str!("../../../docs/design/0017-errors.md");
 const COMMON: &str = include_str!("../../../api/openapi/common.yaml");
+const USER: &str = include_str!("../../../docs/user/errors.md");
 
 /// The rows of the catalogue table: reason, code, and the HTTP column as written.
 fn table() -> Vec<(String, String, String)> {
@@ -21,6 +22,17 @@ fn table() -> Vec<(String, String, String)> {
         .nth(1)
         .and_then(|rest| rest.split("\n## ").next())
         .expect("a Catalogue section");
+    rows(section)
+}
+
+/// The rows of the user guide's table, in the same shape.
+fn user_table() -> Vec<(String, String, String)> {
+    let section = USER.split("## Reasons").nth(1).expect("a Reasons section");
+    rows(section)
+}
+
+/// Table rows whose first cell is a reason in backticks: reason, code, and the third column.
+fn rows(section: &str) -> Vec<(String, String, String)> {
     section
         .lines()
         .filter_map(|line| {
@@ -81,8 +93,25 @@ fn every_reason_is_documented_once() {
 }
 
 #[test]
-fn the_table_gives_each_reason_its_code_and_status() {
-    for (name, code, http) in table() {
+fn the_user_guide_lists_every_reason_once() {
+    let names: BTreeSet<String> = Reason::ALL.iter().map(|r| r.as_str().to_owned()).collect();
+    let rows = user_table();
+    let documented: BTreeSet<String> = rows.iter().map(|(name, _, _)| name.clone()).collect();
+    assert_eq!(
+        rows.len(),
+        documented.len(),
+        "a reason has two rows in errors.md"
+    );
+    assert_eq!(documented, names, "docs/user/errors.md and Reason differ");
+}
+
+#[test]
+fn the_tables_give_each_reason_its_code_and_status() {
+    // The user guide leaves HTTP blank for a reason only gRPC sends.
+    let user = user_table()
+        .into_iter()
+        .filter(|(_, _, http)| !http.is_empty());
+    for (name, code, http) in table().into_iter().chain(user) {
         let reason = *Reason::ALL
             .iter()
             .find(|r| r.as_str() == name)
