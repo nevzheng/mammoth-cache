@@ -1,1 +1,5 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/nevzheng/mammoth-cache/discussions
+    about: Ask questions and discuss bigger proposals in GitHub Discussions.

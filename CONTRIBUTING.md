@@ -4,8 +4,10 @@ Thanks for your interest in mammoth-cache. This guide covers how changes get in.
 
 ## Before you start
 
-For anything larger than a small fix, open an issue (or a Discussion, once enabled) first so we can
-agree on the direction before you write code.
+Questions and bigger proposals belong in
+[GitHub Discussions](https://github.com/nevzheng/mammoth-cache/discussions). For anything larger
+than a small fix, start a Discussion or open an issue first so we can agree on the direction before
+you write code.
 
 ## Workflow
 
