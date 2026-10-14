@@ -39,6 +39,7 @@ class Credentials(BaseModel):
 
     username: str
     token: SecretStr
+    scopes: frozenset[str] = frozenset()  # what the node grants this user (doc 0002)
 
 
 class Compose(BaseModel):
@@ -79,6 +80,7 @@ class Target(BaseSettings):
     bucket: Bucket | None = None
     users: dict[str, Credentials] = Field(default_factory=dict)
     default_user: str | None = None  # sent by clients unless a test says otherwise
+    anonymous_scopes: frozenset[str] = frozenset()  # [auth] anonymous on the node
     compose: Compose | None = None
 
     @classmethod
