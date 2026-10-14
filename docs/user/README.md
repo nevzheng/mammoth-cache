@@ -6,11 +6,10 @@ after December 31, 2026. Point your builds at it the way you pointed them at the
 and they reuse task and module outputs that other builds have already produced.
 
 > [!WARNING]
-> mammoth-cache is pre-alpha. The Gradle and Maven protocols work today with an in-memory cache, and
-> an `edge` image is published from `main`, but there is no release yet. The disk and bucket tiers
-> exist as library code but aren't in the `mammoth` binary yet, and the config file, authentication
-> and most metrics are still being built. Each page says what works
-> now and what is planned. Don't run it in production yet.
+> mammoth-cache is pre-alpha. The Gradle and Maven protocols work today with memory, disk and
+> bucket tiers set in `mammoth.toml`, and an `edge` image is published from `main`, but there is no
+> release yet. Authentication and most metrics are still being built. Each page says what works now
+> and what is planned. Don't run it in production yet.
 
 ## What it does
 
@@ -23,8 +22,8 @@ mammoth-cache keeps entries in up to three tiers:
 | Tier      | Holds                                 | Status                                 |
 | --------- | ------------------------------------- | -------------------------------------- |
 | L1 memory | Small, hot entries                    | Available                              |
-| L2 disk   | Recently used entries, one file each  | Built; not yet in the `mammoth` binary |
-| L3 bucket | Every entry, in S3, GCS or Azure Blob | Built; not yet in the `mammoth` binary |
+| L2 disk   | Recently used entries, one file each  | Available                              |
+| L3 bucket | Every entry, in S3, GCS or Azure Blob | Available                              |
 
 A lookup tries memory, then disk, then the bucket, and copies a hit up into the faster tiers. With
 a bucket, nodes are stateless: you can run several behind a load balancer, and a replacement node
@@ -51,9 +50,9 @@ well.
 | `/ping`, `/livez`, `/readyz`                                                | Available | [Health checks](health.md)                |
 | Admin status, `/v1/serverStatus`                                            | Available | [Health checks](health.md)                |
 | Maven routes, `/maven/{path}`                                               | Available | [Maven](maven.md)                         |
-| `mammoth.toml` config file                                                  | Planned   | [Configuration](configuration.md)         |
+| `mammoth.toml` config file                                                  | Available | [Configuration](configuration.md)         |
 | Disk and bucket tiers, in the library and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |
-| Disk and bucket tiers in the `mammoth` binary                               | Planned   | [Configuration](configuration.md#disk-l2) |
+| Disk and bucket tiers in the `mammoth` binary                               | Available | [Configuration](configuration.md#disk-l2) |
 | Users, tokens and scopes                                                    | Planned   | [Authentication](authentication.md)       |
 | TLS                                                                         | Planned   | [Configuration](configuration.md)         |
 | Request metrics at `/metrics`                                               | Available | [Metrics](metrics.md)                     |

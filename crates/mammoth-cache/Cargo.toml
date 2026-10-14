@@ -39,8 +39,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tikv-jemallocator = { version = "0.7.0", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "io-util"] }
+toml = "1.1.8"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
 
 [dev-dependencies]

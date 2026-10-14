@@ -1,6 +1,14 @@
-use std::{env, io, sync::Arc};
+use std::{env, io, path::PathBuf, process::ExitCode, sync::Arc};
 
-use mammoth_cache::{cache::Cache, store::memory::MemoryStore};
+use mammoth_cache::{
+    cache::Cache,
+    config::{Config, DEFAULT_PATH, LogFormat, PATH_ENV},
+    store::{
+        bucket::{BucketConfig, BucketStore},
+        disk::{DiskConfig, DiskStore},
+        memory::{MemoryConfig, MemoryStore},
+    },
+};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -14,23 +22,114 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const DEFAULT_ADDR: &str = "0.0.0.0:5071";
-// Until the config file (design doc 0005) lands, the memory tier is the only tier.
-const DEFAULT_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
+const USAGE: &str = "\
+usage: mammoth [--config <path>]
+       mammoth config check [--config <path>]
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+The config file is --config, else $MAMMOTH_CONFIG, else ./mammoth.toml.";
 
-    let addr = env::var("MAMMOTH_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_owned());
-    let listener = TcpListener::bind(&addr).await?;
+enum Command {
+    Serve,
+    Check,
+}
+
+fn main() -> ExitCode {
+    let (command, explicit) = match parse_args(env::args().skip(1)) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let (config, source) = match load_config(explicit) {
+        Ok(loaded) => loaded,
+        Err(message) => {
+            eprintln!("mammoth: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if matches!(command, Command::Check) {
+        eprintln!("config ok");
+        return ExitCode::SUCCESS;
+    }
+
+    init_logging(&config);
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("mammoth: cannot start the runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Some(path) = source {
+        tracing::info!(path = %path.display(), "config loaded");
+    } else {
+        tracing::info!("no {DEFAULT_PATH} found; using the defaults");
+    }
+    match runtime.block_on(serve(config)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!(%error, "mammoth-cache stopped");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn parse_args(
+    mut args: impl Iterator<Item = String>,
+) -> Result<(Command, Option<PathBuf>), String> {
+    let mut command = Command::Serve;
+    let mut config = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--config" => {
+                let path = args.next().ok_or("--config needs a path")?;
+                config = Some(PathBuf::from(path));
+            }
+            "config" if matches!(command, Command::Serve) => match args.next().as_deref() {
+                Some("check") => command = Command::Check,
+                _ => return Err("expected `config check`".to_owned()),
+            },
+            "-h" | "--help" => return Err("mammoth-cache, a remote build cache node".to_owned()),
+            other => return Err(format!("unexpected argument {other:?}")),
+        }
+    }
+    Ok((command, config))
+}
+
+/// Loads the config file. With no `--config` or `$MAMMOTH_CONFIG` and no `./mammoth.toml`, the
+/// node runs on the defaults, memory only, so `docker run` works without a file.
+/// Returns the config and the file it came from, if any.
+fn load_config(explicit: Option<PathBuf>) -> Result<(Config, Option<PathBuf>), String> {
+    let chosen = explicit.is_some() || env::var_os(PATH_ENV).is_some();
+    let path = Config::locate(explicit);
+    if !chosen && !path.exists() {
+        return Ok((Config::fallback(), None));
+    }
+    let config = Config::load(&path).map_err(|e| e.to_string())?;
+    Ok((config, Some(path)))
+}
+
+fn init_logging(config: &Config) {
+    // RUST_LOG still wins, for debugging one module.
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| config.log.level.as_str().into());
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    match config.log.format {
+        LogFormat::Json => builder.json().init(),
+        LogFormat::Text => builder.init(),
+    }
+}
+
+async fn serve(config: Config) -> io::Result<()> {
+    warn_unenforced(&config);
+    let cache = build_cache(&config).await?;
+    let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(addr = %listener.local_addr()?, "mammoth-cache listening");
 
-    let cache = Cache::builder()
-        .bounded_tier(Arc::new(MemoryStore::new(DEFAULT_MEMORY_BYTES)))
-        .build();
     let metrics = PrometheusBuilder::new()
         .install_recorder()
         .map_err(io::Error::other)?;
@@ -40,6 +139,49 @@ async fn main() -> io::Result<()> {
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
+}
+
+/// Builds the tiers in lookup order: memory, then disk, then the bucket.
+async fn build_cache(config: &Config) -> io::Result<Cache> {
+    let memory: MemoryStore = MemoryStore::with_config(MemoryConfig {
+        capacity_bytes: config.memory.size.bytes(),
+        max_entry_bytes: config.memory.max_entry_size.bytes(),
+        eviction: config.memory.eviction,
+    })
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut builder = Cache::builder()
+        .max_entry_size(config.limits.max_entry_size.bytes())
+        .bounded_tier(Arc::new(memory));
+    if let Some(disk) = &config.disk {
+        let store = DiskStore::open(DiskConfig {
+            path: disk.path.clone(),
+            capacity_bytes: disk.size.bytes(),
+            max_entry_age: disk.max_entry_age.map(|age| age.0),
+        })
+        .await?;
+        builder = builder.bounded_tier(Arc::new(store));
+    } else {
+        tracing::warn!("no [disk] configured: running memory only, entries are lost on restart");
+    }
+    if let Some(bucket) = &config.bucket {
+        let store = BucketStore::open(&BucketConfig {
+            region: bucket.region.clone(),
+            endpoint: bucket.endpoint.clone(),
+            ..BucketConfig::new(bucket.url.clone())
+        })?;
+        builder = builder.tier(Arc::new(store));
+    }
+    Ok(builder.build())
+}
+
+/// Settings that parse but are not acted on yet, so nobody relies on them unknowingly.
+fn warn_unenforced(config: &Config) {
+    if !config.auth.users.is_empty()
+        || !config.auth.anonymous.is_empty()
+        || config.metrics.require_auth
+    {
+        tracing::warn!("[auth] is not enforced yet: every request is allowed");
+    }
 }
 
 async fn shutdown_signal() {
