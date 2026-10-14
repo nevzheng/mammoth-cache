@@ -2,12 +2,13 @@
 
 Non-hermetic suites that run the real `mammoth` image against real infrastructure. The design is
 [0011](../docs/design/0011-end-to-end-and-load-testing.md); the client matrix and scenarios for the
-acceptance suite are [0008](../docs/design/0008-supported-clients.md).
+acceptance suite are [0008](../docs/design/0008-supported-clients.md), and for REAPI clients
+[0016](../docs/design/0016-reapi-cache.md).
 
 | Directory         | What it tests                                                                 |
 | ----------------- | ----------------------------------------------------------------------------- |
 | `e2e/`            | The image's HTTP surface, metrics and storage tiers, on the Compose stack     |
-| `acceptance/`     | Real Gradle, Maven (Build Cache Extension) and Bazel builds against the image |
+| `acceptance/`     | Real Gradle, Maven, Bazel (HTTP and gRPC) and Buck2 builds against the image  |
 | `e2e/properties/` | Property tests: the node against a model and the OpenAPI contracts            |
 | `load/`           | Locust load runs: simulated Gradle, Maven and Bazel clients                   |
 | `src/`            | `mammoth_e2e`, the typed harness both suites import                           |
@@ -16,7 +17,7 @@ acceptance suite are [0008](../docs/design/0008-supported-clients.md).
 ## Running locally
 
 You need Docker, [uv](https://docs.astral.sh/uv/), git, and Java 17 for the acceptance suite. The
-harness downloads Gradle, Maven and Bazel itself, into `~/.cache/mammoth-e2e`.
+harness downloads Gradle, Maven, Bazel and Buck2 itself, into `~/.cache/mammoth-e2e`.
 
 ```sh
 docker build -t mammoth-cache:e2e .        # the image under test
@@ -25,6 +26,8 @@ uv run pytest e2e                          # starts and stops deploy/compose for
 uv run pytest acceptance --gradle 8.14     # one Gradle line; default is 7.6,8.14,9
 uv run pytest acceptance/test_maven.py --maven-extension latest
 uv run pytest acceptance/test_bazel.py --bazel 8
+uv run pytest acceptance/test_bazel_grpc*.py --bazel 9   # Bazel over grpc:// (REAPI)
+uv run pytest acceptance/test_buck2.py --buck2 latest  # or a dated release, e.g. 2026-10-01
 ```
 
 `MAMMOTH_IMAGE=ghcr.io/nevzheng/mammoth-cache:edge` tests a published image instead.
@@ -62,6 +65,17 @@ that builds a feature turns it on in `targets/compose.toml` and its tests start 
 marked `control` stop or restart services and skip on targets the harness does not own.
 `MAMMOTH_E2E_*` environment variables override profile values, for example `MAMMOTH_E2E_BASE_URL`.
 
+## REAPI clients
+
+`test_bazel_grpc.py` runs the Bazel scenarios over `grpc://` against `reapi_address`, plus what only
+gRPC has: blobs past the 4 MiB batch limit (ByteStream), every `--remote_download_*` mode, and
+entries shared with the HTTP cache in both directions. `test_bazel_grpc_properties.py` has
+Hypothesis draw genrule graphs (outputs from empty to 6 MiB) and a run of clean builds, each over
+gRPC or HTTP with any download mode: after the first, every build must be all remote hits with the
+same bytes. Each example is real Bazel, so `MAMMOTH_E2E_BAZEL_EXAMPLES` (default 4) keeps it short.
+`test_buck2.py` does the same for Buck2, with a fixture that brings its own rules and no prelude.
+Unlike over HTTP, Bazel fails a build whose gRPC cache is unreachable or refuses its token.
+
 ## Users
 
 `deploy/compose/config/mammoth.toml` has four test users, whose tokens are in
@@ -97,7 +111,11 @@ with one whole body) and breaks uploads part way (never served, and the next sto
 succeeds); `MAMMOTH_E2E_RACE_EXAMPLES` sets its examples (default 12). With `reapi`, `test_reapi.py`
 mixes HTTP `/bazel/` calls with gRPC `BatchUpdateBlobs`, `BatchReadBlobs`, ByteStream reads at
 random offsets, `FindMissingBlobs` and action-result calls, and checks both protocols always see one
-cache; its gRPC stubs are generated from `third_party/proto` into the harness cache on first use.
+cache. It also sends batches of up to eight blobs (some corrupt) and batches past the size limit,
+asks `FindMissingBlobs` about thousands of digests, checks `QueryWriteStatus`, stores results with
+output directories (`Tree` blobs), and switches instance names. On a stack the harness controls,
+`test_evicted_output_is_a_miss` removes an output from every tier and checks the result becomes a
+miss. Its gRPC stubs are generated from `third_party/proto` into the harness cache on first use.
 `test_edges.py` pins contract edge cases; known bugs there are strict xfails.
 
 `MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40), and

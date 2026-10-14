@@ -78,6 +78,7 @@ class Target(BaseSettings):
     prometheus_url: HttpUrl | None = None
     # host:port of the REAPI gRPC listener ([reapi] listen), in plain gRPC.
     reapi_address: str | None = None
+    open_reapi_address: str | None = None  # the same on the anonymous-read node
     features: frozenset[Feature] = frozenset()
     max_entry_size: int = 100 * 1024 * 1024  # [limits] max_entry_size
     memory_max_entry_size: int = 1024 * 1024  # [memory] max_entry_size

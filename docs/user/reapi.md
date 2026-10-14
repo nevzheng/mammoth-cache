@@ -44,6 +44,10 @@ build --remote_header=Authorization=Bearer <token>
 A `--credential_helper` works as well. `--remote_download_minimal` (build without the bytes) is
 safe: the node answers an action result as a miss when any output it lists has been evicted.
 
+Unlike the HTTP cache, Bazel fails the build when it cannot reach a gRPC cache or its token is
+refused ("Failed to query remote execution capabilities"), so keep the node behind a load balancer
+with more than one replica. A token without `cache:write` only warns on each upload.
+
 **Buck2**, in `.buckconfig`, with the execution platform set to run locally and use the remote
 cache:
 

@@ -80,3 +80,27 @@ def _bazel_releases() -> list[str]:
 
 def bazel(line: str) -> str:
     return line if line.count(".") >= 2 else _newest_in_line(_bazel_releases(), line)
+
+
+BUCK2_REPOSITORY = "https://github.com/facebook/buck2"
+_BUCK2_RELEASE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@cache
+def _buck2_releases() -> list[str]:
+    out = subprocess.run(
+        ["git", "ls-remote", "--tags", "--refs", BUCK2_REPOSITORY],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    tags = (line.rpartition("refs/tags/")[2] for line in out.splitlines())
+    return [t for t in tags if _BUCK2_RELEASE.match(t)]
+
+
+def buck2(line: str) -> str:
+    """Buck2 releases are dated (`2026-10-01`); `latest` is the newest, a date pins one."""
+    if line != "latest":
+        return line
+    return max(_buck2_releases())
