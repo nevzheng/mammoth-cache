@@ -50,7 +50,8 @@ checked-in `.bazelrc`; put them in a user `.bazelrc` or pass them on the command
   and a new result replaces the old one. The content-addressed store (`/cas/`) holds outputs keyed
   by their own SHA-256, and never changes.
 - **Uploads are verified.** A CAS upload that doesn't hash to its digest gets `400` and is not
-  stored.
+  stored. An upload to a digest that is already stored answers `200` without reading the body,
+  so the stored blob never changes.
 - **Oversized stores get `413`.** Bazel warns about a failed upload and keeps using the cache.
 - **Size for the CAS.** The node doesn't check that an action result's outputs are still cached.
   On a hit with a missing output, Bazel runs the action again. With `--remote_download_minimal`,
