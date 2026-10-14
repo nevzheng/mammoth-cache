@@ -158,8 +158,8 @@ pod when the certificate changes.
 
 - **YAML,** like the BCN's `config.yaml`: familiar to BCN users and Kubernetes manifests, but full
   of surprises (implicit types, the "Norway problem", significant indentation). TOML is the Rust
-  ecosystem's usual format, has one obvious way to write each value. The migration table covers the
-  change of format.
+  ecosystem's usual format and has one obvious way to write each value. The migration table covers
+  the change of format.
 - **BCN's file as is:** keys in bare MiB and hours, no place for the memory and bucket tiers, and
   password hashes. A translation table serves migrating users better.
 - **Environment variable overrides for every key** (bazel-remote, fosterstack/cache): convenient
