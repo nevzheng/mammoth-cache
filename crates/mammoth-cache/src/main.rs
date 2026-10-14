@@ -92,6 +92,7 @@ fn main() -> ExitCode {
 
     // Held to the end of main: dropping it flushes the lines still buffered.
     let _log = logging::init(&config.log);
+    mammoth_cache::access::configure(config.log.access_log, config.server.trusted_proxies.clone());
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

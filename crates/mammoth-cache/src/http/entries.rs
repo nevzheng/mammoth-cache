@@ -21,6 +21,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 
 use super::{AppState, error::ApiError};
 use crate::{
+    access,
     cache::{self, Admission, StoreOutcome, upload_error},
     key::CacheKey,
     store::ByteStream,
@@ -34,11 +35,11 @@ const OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-st
 
 /// `GET`: the entry as `application/octet-stream`, or `404`.
 pub(super) async fn load(state: &AppState, key: &CacheKey) -> Result<Response, ApiError> {
-    let hit = state
-        .cache
-        .get(key)
-        .await?
-        .ok_or_else(|| ApiError::entry_not_found(key))?;
+    let Some(hit) = state.cache.get(key).await? else {
+        access::outcome(key, "miss", None);
+        return Err(ApiError::entry_not_found(key));
+    };
+    access::outcome(key, "hit", Some(hit.tier));
     tracing::debug!(%key, tier = %hit.tier, size = hit.blob.size, "hit");
     let headers = [
         (header::CONTENT_TYPE, OCTET_STREAM),
@@ -49,11 +50,11 @@ pub(super) async fn load(state: &AppState, key: &CacheKey) -> Result<Response, A
 
 /// `HEAD`: the entry's size, or `404`.
 pub(super) async fn check(state: &AppState, key: &CacheKey) -> Result<Response, ApiError> {
-    let size = state
-        .cache
-        .head(key)
-        .await?
-        .ok_or_else(|| ApiError::entry_not_found(key))?;
+    let Some(size) = state.cache.head(key).await? else {
+        access::outcome(key, "miss", None);
+        return Err(ApiError::entry_not_found(key));
+    };
+    access::outcome(key, "hit", None);
     let headers = [
         (header::CONTENT_TYPE, OCTET_STREAM),
         (header::CONTENT_LENGTH, HeaderValue::from(size)),
@@ -107,13 +108,22 @@ pub(super) async fn store_through<E: From<cache::Error>>(
                 .put(key, declared_size, stream)
                 .await
                 .map_err(E::from)
-                .map(|outcome| match outcome {
-                    StoreOutcome::Stored => StatusCode::CREATED,
-                    StoreOutcome::Exists | StoreOutcome::Dropped => StatusCode::OK,
+                .map(|outcome| {
+                    access::stored(key, outcome);
+                    match outcome {
+                        StoreOutcome::Stored => StatusCode::CREATED,
+                        StoreOutcome::Exists | StoreOutcome::Dropped => StatusCode::OK,
+                    }
                 })
         }
-        Admission::Reject(e) => Err(e.into()),
-        Admission::Drop => Ok(StatusCode::OK),
+        Admission::Reject(e) => {
+            access::outcome(key, "too_large", None);
+            Err(e.into())
+        }
+        Admission::Drop => {
+            access::outcome(key, "too_large", None);
+            Ok(StatusCode::OK)
+        }
     };
     if in_flight || body.started() || decided_at.elapsed() >= CONTINUE_WAIT {
         body.drain().await;

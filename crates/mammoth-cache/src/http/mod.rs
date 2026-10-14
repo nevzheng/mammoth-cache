@@ -119,6 +119,7 @@ pub fn router_with(
         .layer(CatchPanicLayer::custom(error::panicked))
         .layer(middleware::from_fn(error::render))
         .layer(middleware::from_fn(metrics::record))
+        .layer(middleware::from_fn(crate::access::http))
         .with_state(AppState { cache, metrics })
 }
 

@@ -1481,6 +1481,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "ipnet",
  "metrics",
  "metrics-exporter-prometheus",
  "metrics-process",

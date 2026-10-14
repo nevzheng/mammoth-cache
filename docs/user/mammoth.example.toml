@@ -28,6 +28,7 @@ shutdown_timeout = "25s" # finish requests and queued uploads within this; below
 idle_timeout = "75s" # above the load balancer's idle timeout (600s on Google Cloud)
 body_read_timeout = "60s" # abandon an upload that sends nothing this long; per read
 send_timeout = "60s" # drop a client that stops reading a response this long; per write
+trusted_proxies = ["10.0.0.0/8"] # load balancers whose X-Forwarded-For names the client
 
 # Optional: serve HTTPS. Leave the section out to serve plain HTTP behind a proxy.
 [tls]
@@ -82,5 +83,5 @@ require_auth = false # require a token with metrics:read on /metrics
 [log]
 level = "info" # error, warn, info, debug or trace; RUST_LOG overrides it
 format = "json" # or "text"
-access_log = true # log each request (not enforced yet)
+access_log = true # a line per request on mammoth::access, whatever the level
 buffer_lines = 128000 # lines held for stdout; more are dropped, and counted, when it can't keep up
