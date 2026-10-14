@@ -1,0 +1,21 @@
+# The Docker Compose stack in deploy/compose, started and stopped by the harness.
+name = "compose"
+base_url = "http://localhost:5071"
+prometheus_url = "http://localhost:9090"
+
+# Server features this target has. Tests that need a missing one are skipped, so a feature is
+# switched on here in the same PR that builds it. Known: config, auth, disk, bucket, size-limit.
+features = []
+
+control = true # the harness may stop, restart and wipe services
+destructive = true # tests may delete what they find in the bucket
+
+[compose]
+file = "../../deploy/compose/compose.yaml"
+project = "mammoth-e2e"
+
+[bucket]
+name = "mammoth-e2e"
+endpoint = "http://localhost:8333"
+access_key_id = "mammoth-e2e"
+secret_access_key = "mammoth-e2e-secret"

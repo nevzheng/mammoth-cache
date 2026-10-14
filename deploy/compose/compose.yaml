@@ -1,0 +1,97 @@
+# mammoth with an S3-compatible bucket (SeaweedFS) and Prometheus. Used by the end-to-end and
+# acceptance suites (docs/design/0011-end-to-end-and-load-testing.md), and a working example for
+# trying mammoth locally:
+#
+#   docker compose -f deploy/compose/compose.yaml up --build
+#
+# Profiles: `multi` adds a second mammoth node on the same bucket; `observe` adds Grafana.
+# MAMMOTH_IMAGE picks the image under test, for example ghcr.io/nevzheng/mammoth-cache:edge.
+
+name: mammoth
+
+x-mammoth: &mammoth
+  image: ${MAMMOTH_IMAGE:-mammoth-cache:e2e}
+  build:
+    context: ../..
+  environment:
+    MAMMOTH_ADDR: 0.0.0.0:5071
+  restart: "no"
+  # The image is distroless, with no shell or curl for an in-container health check. The harness
+  # waits on /readyz from the host instead.
+
+services:
+  mammoth:
+    <<: *mammoth
+    ports:
+      - "${MAMMOTH_PORT:-5071}:5071"
+    depends_on:
+      bucket-init:
+        condition: service_completed_successfully
+
+  mammoth-2:
+    <<: *mammoth
+    profiles: [multi]
+    ports:
+      - "${MAMMOTH_2_PORT:-5072}:5071"
+    depends_on:
+      bucket-init:
+        condition: service_completed_successfully
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    command: >-
+      server -dir=/data -ip=seaweedfs -ip.bind=0.0.0.0 -volume.max=0 -s3
+      -s3.config=/etc/seaweedfs/s3.json -metricsPort=9324
+    ports:
+      - "${SEAWEEDFS_S3_PORT:-8333}:8333"
+    volumes:
+      - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  bucket-init:
+    image: chrislusf/seaweedfs:4.48
+    entrypoint: ["/bin/sh", "-c"]
+    # Idempotent, so `up` works on a stack that is already running.
+    command:
+      - >-
+        out=$$(echo 's3.bucket.create -name mammoth-e2e' | weed shell -master=seaweedfs:9333 2>&1);
+        echo "$$out"; echo "$$out" | grep -q -E 'created bucket|already exists'
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.13.4
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-remote-write-receiver # load generators push client-side metrics here
+      - --storage.tsdb.retention.time=1d
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  grafana:
+    image: grafana/grafana:13.0.11
+    profiles: [observe]
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy

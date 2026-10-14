@@ -1,0 +1,29 @@
+name: image
+
+# Builds the from-source image once and hands it to the e2e and acceptance jobs as an artifact
+# (`mammoth-image`, a `docker save` tarball tagged mammoth-cache:e2e). Called, never run alone.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: mammoth-cache:e2e
+          outputs: type=docker,dest=${{ runner.temp }}/mammoth-image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mammoth-image
+          path: ${{ runner.temp }}/mammoth-image.tar
+          retention-days: 1

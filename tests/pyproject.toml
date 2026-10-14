@@ -1,0 +1,80 @@
+[project]
+name = "mammoth-tests"
+version = "0.0.0"
+description = "End-to-end and acceptance suites for mammoth-cache (docs/design/0011)"
+license = "MIT OR Apache-2.0"
+requires-python = ">=3.14"
+dependencies = [
+  "boto3>=1.40",
+  "httpx>=0.28",
+  "prometheus-client>=0.23",
+  "pydantic>=2.12",
+  "pydantic-settings>=2.11",
+]
+
+[dependency-groups]
+dev = [
+  "hypothesis>=6.140",
+  "pyrefly>=0.40",
+  "pytest>=8.4",
+  "pytest-timeout>=2.4",
+  "ruff>=0.14",
+  "types-boto3[s3]>=1.40",
+]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+[tool.pytest]
+minversion = "9.0"
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+xfail_strict = true
+timeout = "900"
+testpaths = ["e2e", "acceptance"]
+markers = [
+  "requires(*features): runs only on targets that have every named server feature",
+  "control: needs to start, stop or wipe services on the target",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "COM812", # conflicts with the formatter
+  "CPY001", # licence is per repository (LICENSE-MIT, LICENSE-APACHE), not per file
+  "D",      # docstrings where they help, not on every test
+  "S101",   # assert is how pytest works
+  "S603",   # subprocess calls take fixed argv lists, never a shell
+  "S607",   # docker, gradle and mvn are found on PATH by design
+  "PLR2004", # status codes read better inline than as constants
+  "TRY003", # short messages in exceptions are fine
+  "EM101",
+  "EM102",
+]
+
+[tool.ruff.lint.flake8-type-checking]
+# Pydantic resolves field annotations at runtime.
+runtime-evaluated-base-classes = ["pydantic.BaseModel", "pydantic_settings.BaseSettings"]
+
+[tool.ruff.lint.per-file-ignores]
+"e2e/**" = ["INP001"]
+"acceptance/**" = ["INP001"]
+"conftest.py" = ["INP001"]
+
+[tool.pyrefly]
+project-includes = ["src", "e2e", "acceptance", "conftest.py"]
+python-version = "3.14"
+preset = "strict"
+
+[tool.pyrefly.errors]
+deprecated = "error"
+
+[tool.uv.build-backend]
+module-name = "mammoth_e2e"

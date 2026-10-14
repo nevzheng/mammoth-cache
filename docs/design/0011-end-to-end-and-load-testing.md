@@ -96,7 +96,7 @@ tests/
   src/mammoth_e2e/        the harness library
   e2e/                    end-to-end suite
   acceptance/             the 0008 suite and its Gradle and Maven fixture projects
-  load/                   k6 scripts (TypeScript) and traffic models
+  load/                   load scripts and traffic models (follow-up)
   targets/                target profiles: compose.toml, and later cloud ones
 ```
 
@@ -120,8 +120,9 @@ flowchart LR
 
 - **mammoth** runs the image named by `MAMMOTH_IMAGE`, defaulting to a local tag that CI builds
   from `Dockerfile`. Pointing it at `ghcr.io/nevzheng/mammoth-cache:edge` or a release tag tests
-  published images unchanged. Its `mammoth.toml` sets `[bucket] endpoint` to SeaweedFS and keeps
-  memory and disk small, so the tests can force evictions and fall through to the bucket.
+  published images unchanged. Once the config loader lands, its `mammoth.toml` sets `[bucket]
+  endpoint` to SeaweedFS and keeps memory and disk small, so the tests can force evictions and fall
+  through to the bucket.
 - **SeaweedFS** runs as one `weed server -s3` container with a static test key pair in its S3
   config. It is Apache-2.0, small, and exposes its own Prometheus metrics.
 - **bucket-init** is a one-shot container that creates the bucket and exits. mammoth depends on it
@@ -135,8 +136,9 @@ flowchart LR
   up` gives a provisioned dashboard for poking at the stack and watching load runs.
 - **mammoth-2** is under the `multi` profile, for the shared-bucket scenarios.
 
-Every service has a health check (`/readyz` for mammoth), and the harness waits on `docker compose
-up --wait`.
+SeaweedFS and Prometheus have health checks, and the harness runs `docker compose up --wait`. The
+mammoth image is distroless, with no shell or `curl` for an in-container check, so the harness then
+polls `/readyz` from the host.
 
 ### The harness
 
@@ -151,32 +153,35 @@ up --wait`.
 | `bucket`  | Lists, reads and deletes objects in the bucket, to assert what reached L3                   |
 | `prom`    | Queries the Prometheus HTTP API, for load assertions and scrape checks                      |
 | `blobs`   | Deterministic entry generators: keys, sizes, payloads from a seed                           |
+| `builds`  | Copies the Gradle and Maven fixtures, salts them for fresh keys, runs builds, parses output |
+| `versions`| Resolves a client line (`7.6`, `9`, `latest`) to its newest release at run time             |
+| `tools`   | Downloads and caches Gradle and Maven distributions, so runners need only Java and Docker   |
 
 pytest fixtures in `tests/conftest.py` expose these. The stack is session-scoped: it comes up once,
-and tests isolate themselves with unique keys rather than restarts. Tests that need a fresh or
-broken stack (restart, bucket down) carry a marker and get a function-scoped stack.
+and tests isolate themselves with unique keys rather than restarts. Tests that stop or restart a
+service carry the `control` marker and put the service back before they finish.
 
 Assertions use counter deltas from `/metrics` and objects in the bucket, never log wording. When a
-test fails, the harness attaches the logs of every service to the report.
+test fails, the harness attaches the recent logs of every service to the report.
 
 ### Python practice
 
 The harness follows current Python practice. Every tool below runs in CI and in the repository's
 prek hooks.
 
-| Concern          | Choice                                                                                  |
-| ---------------- | --------------------------------------------------------------------------------------- |
-| Python           | 3.14, pinned in `.python-version`; `requires-python = ">=3.14"`                         |
-| Project and lock | uv: `pyproject.toml` (PEP 621), `uv.lock`, dependency groups (PEP 735), `uv run`        |
-| Lint and format  | ruff, with a broad rule set (`select = ["ALL"]` minus a short, commented ignore list)   |
-| Type checking    | pyrefly in strict mode, configured in `[tool.pyrefly]`; no untyped defs, no `Any` leaks |
-| Tests            | pytest with `--strict-markers`, `--strict-config`, pytest-timeout and pytest-xdist      |
-| HTTP             | httpx, sync for tests; async only where a test needs concurrency                        |
-| Settings         | pydantic-settings: target profiles from TOML, overridable by `MAMMOTH_E2E_*` env vars   |
-| S3               | boto3 with `types-boto3` stubs, so pyrefly checks bucket calls                          |
-| Metrics parsing  | `prometheus_client.parser`                                                              |
-| Property tests   | Hypothesis, for key, path and size edge cases against the live server                   |
-| Layout           | `src/` layout, a `py.typed` marker, frozen dataclasses for values                       |
+| Concern          | Choice                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Python           | 3.14, pinned in `.python-version`; `requires-python = ">=3.14"`                                                        |
+| Project and lock | uv: `pyproject.toml` (PEP 621), `uv.lock`, dependency groups (PEP 735), `uv run`                                       |
+| Lint and format  | ruff, with a broad rule set (`select = ["ALL"]` minus a short, commented ignore list)                                  |
+| Type checking    | pyrefly in strict mode, configured in `[tool.pyrefly]`; no untyped defs, no `Any` leaks                                |
+| Tests            | pytest with `--strict-markers`, `--strict-config` and pytest-timeout; one stack per run, parallel across the CI matrix |
+| HTTP             | httpx, sync for tests; async only where a test needs concurrency                                                       |
+| Settings         | pydantic-settings: target profiles from TOML, overridable by `MAMMOTH_E2E_*` env vars                                  |
+| S3               | boto3 with `types-boto3` stubs, so pyrefly checks bucket calls                                                         |
+| Metrics parsing  | `prometheus_client.parser`                                                                                             |
+| Property tests   | Hypothesis, for key, path and size edge cases against the live server                                                  |
+| Layout           | `src/` layout, a `py.typed` marker, frozen dataclasses for values                                                      |
 
 CI checks that `uv.lock` is current with `uv lock --check`. Dependabot (or Renovate) updates it.
 
@@ -201,8 +206,11 @@ scenario table and moves onto the shared harness.
 | Oversize             | Gradle and Maven PUT over the limit                          | Gradle 200 and dropped; Maven 413; both counted                           |
 | Metrics contract     | Scrape `/metrics`                                            | `promtool check metrics` passes; every 0004 metric present                |
 
-Rows whose behaviour is not built yet are marked `xfail(strict=True)` with the issue they wait on,
-so they turn green, and fail loudly, the day the feature lands.
+Tests that need a server feature that is not built yet carry `@pytest.mark.requires(...)` naming
+it (`config`, `auth`, `disk`, `bucket`, `size-limit`). The target profile lists the features it
+has, and the tests for missing ones skip. The PR that builds a feature turns it on in
+`targets/compose.toml`, so its tests start running in that PR. Known bugs are `xfail(strict=True)`
+with the reason, so the fix turns them into a failure that asks for the marker to go.
 
 ### Load and traffic simulation
 
@@ -249,19 +257,22 @@ A target profile says where the system under test is and what the suites may do 
 # tests/targets/compose.toml
 name = "compose"
 base_url = "http://localhost:5071"
-base_urls = ["http://localhost:5071", "http://localhost:5072"] # multi profile
 prometheus_url = "http://localhost:9090"
+features = [] # server features this target has; tests needing others skip
+control = true # the harness may stop, restart and wipe services
+destructive = true # tests may delete what they find in the bucket
+
+[compose] # absent for targets the harness does not own
+file = "../../deploy/compose/compose.yaml"
+project = "mammoth-e2e"
 
 [bucket]
-url = "s3://mammoth-e2e/"
+name = "mammoth-e2e"
 endpoint = "http://localhost:8333"
+access_key_id = "mammoth-e2e"
+secret_access_key = "mammoth-e2e-secret"
 
-[credentials]
-# test-only tokens for the users in deploy/compose/mammoth.toml
-
-[capabilities]
-control = true # the harness may stop, restart and wipe services
-destructive = true # tests may delete bucket objects
+# [users.ci] test-only credentials, once auth lands
 ```
 
 `pytest --target targets/compose.toml` and `k6 run -e TARGET=...` read the same file. A later
@@ -271,19 +282,16 @@ targets come from environment variables, never from the profile.
 
 ### CI
 
-A new `e2e.yml` workflow:
-
-1. **image:** builds `Dockerfile` with Buildx and the GitHub Actions cache, and saves the image as
-   an artifact for the next jobs.
-2. **python:** `uv lock --check`, `ruff check`, `ruff format --check` and `pyrefly check`.
-3. **e2e:** loads the image, starts the stack, runs `pytest tests/e2e`, uploads the JUnit report and
-   service logs.
-4. **load-smoke:** runs the smoke run with k6, advisory.
-
-It runs on pull requests that touch `crates/`, `Dockerfile`, `deploy/compose/` or `tests/`, and
-nightly. `acceptance.yml` from 0008 reuses the image job. A nightly `load.yml` runs the full load
-runs and keeps the k6 summaries as artifacts; it also takes `workflow_dispatch` with a target and an
-image tag.
+- **`image.yml`** (reusable): builds `Dockerfile` with Buildx and the GitHub Actions cache, and
+  saves the image as an artifact for the jobs below.
+- **`e2e.yml`:** a `python` job (`uv lock --check`, `ruff format --check`, `ruff check`, `pyrefly
+  check`) and an `e2e` job that loads the image and runs `pytest e2e`. It runs on pull requests that
+  touch the server, the image, `deploy/compose/` or `tests/`, on main and nightly.
+- **`acceptance.yml`** (0008): one job per client line (Gradle 7.6, 8.14, 9; the Maven extension's
+  1.2 line and latest release on Maven 3.9), on Java 17, with downloaded distributions cached. It
+  runs on the same pull requests plus `api/`, and nightly, which picks up new patch releases.
+- **`load.yml`** (later): the smoke run on pull requests, advisory, and the full runs nightly and on
+  `workflow_dispatch` with a target and an image tag.
 
 ## Cross-cutting concerns
 
@@ -319,6 +327,9 @@ image tag.
 
 ## Open questions
 
+- k6 or aiolocust for load? This doc proposes k6 for its open-model executors; aiolocust (the
+  Locust team's asyncio rewrite) would keep everything in Python. The load framework is built after
+  this is settled.
 - Should k6 results be kept over time somewhere (a branch, an artifact store, a Prometheus with long
   retention) to plot trends, or are nightly artifacts enough for now?
 - Which deployed target comes first, and who pays for it?
