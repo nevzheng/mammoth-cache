@@ -1,0 +1,47 @@
+# rumdl: Markdown linter and formatter (https://rumdl.dev).
+# Lint: `rumdl check .`   Fix: `rumdl fmt .`
+
+[global]
+flavor = "gfm"
+line-length = 100
+respect-gitignore = true
+exclude = ["target/"]
+# Opt-in rules: MD060 aligns tables.
+extend-enable = ["MD060"]
+
+# Line length; `rumdl fmt` reflows paragraphs to fit.
+[MD013]
+line-length = 100
+reflow = true
+code-blocks = false # long commands and URLs stay on one line
+tables = false # aligned tables may run past 100 columns
+
+# Tables: pad cells so columns line up.
+[MD060]
+enabled = true
+style = "aligned"
+
+# One style per construct, fixed rather than "first one wins".
+[MD003]
+style = "atx" # `# Heading`
+
+[MD004]
+style = "dash" # `- item`
+
+[MD029]
+style = "ordered" # 1. 2. 3.
+
+[MD035]
+style = "---"
+
+[MD046]
+style = "fenced"
+
+[MD048]
+style = "backtick"
+
+[MD049]
+style = "underscore" # _emphasis_
+
+[MD050]
+style = "asterisk" # **strong**
