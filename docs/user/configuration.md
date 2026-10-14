@@ -116,15 +116,19 @@ HTTP/1.1). Without it, serve plain HTTP behind a proxy that terminates TLS; with
 the node then logs a warning at startup. Design doc [0014](../design/0014-tls.md) explains the
 choices.
 
-| Key    | Type | Default  | Example                      | Status    | Meaning                                                                     |
-| ------ | ---- | -------- | ---------------------------- | --------- | --------------------------------------------------------------------------- |
-| `cert` | path | required | `"/etc/mammoth/tls/tls.crt"` | Available | PEM certificate chain: the server certificate first, then any intermediates |
-| `key`  | path | required | `"/etc/mammoth/tls/tls.key"` | Available | PEM private key, unencrypted: PKCS#8, PKCS#1 (RSA) or SEC1 (EC)             |
+| Key         | Type            | Default  | Example                      | Status    | Meaning                                                                                                       |
+| ----------- | --------------- | -------- | ---------------------------- | --------- | ------------------------------------------------------------------------------------------------------------- |
+| `cert`      | path            | required | `"/etc/mammoth/tls/tls.crt"` | Available | PEM certificate chain: the server certificate first, then any intermediates                                   |
+| `key`       | path            | required | `"/etc/mammoth/tls/tls.key"` | Available | PEM private key, unencrypted: PKCS#8, PKCS#1 (RSA) or SEC1 (EC)                                               |
+| `generate`  | bool            | `false`  | `true`                       | Available | Write a self-signed certificate and key to `cert` and `key` at startup when neither file exists               |
+| `hostnames` | list of strings | `[]`     | `["cache.lan", "10.0.0.5"]`  | Available | Names and IP addresses a generated certificate is valid for; empty for the hostname, `localhost` and loopback |
 
 Startup, and `mammoth config check`, fail if either file can't be read or the key doesn't match the
-certificate. The node re-reads both files every minute and picks up a renewed pair without a
-restart; see [TLS on the node](deployment.md#tls-on-the-node). The handshake timeout (10 s) and
-protocol versions are fixed, not settings.
+certificate. With `generate = true`, a missing pair is written instead (see
+[A self-signed certificate](deployment.md#a-self-signed-certificate)); only one of the two files
+existing is still an error. The node re-reads both files every minute and picks up a renewed pair
+without a restart; see [TLS on the node](deployment.md#tls-on-the-node). The handshake timeout (10
+s) and protocol versions are fixed, not settings.
 
 ### `[limits]`
 
