@@ -16,12 +16,32 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 use super::error::ApiError;
-use crate::auth::{Authenticator, Credentials, Scope};
+use crate::{
+    auth::{Authenticator, Credentials, Scope},
+    config::Protocols,
+};
 
-/// The scope a request needs, or `None` for open routes (health checks, unknown paths).
-fn required_scope(method: &Method, path: &str, auth: &Authenticator) -> Option<Scope> {
-    let reads = matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
-    if path.starts_with("/cache/") || path.starts_with("/maven/") || path.starts_with("/bazel/") {
+/// What the middleware checks requests against.
+#[derive(Clone)]
+pub(crate) struct Guard {
+    pub(crate) auth: Arc<Authenticator>,
+    pub(crate) protocols: Protocols,
+}
+
+/// The scope a request needs, or `None` for open routes: health checks, Maven's `OPTIONS`, and
+/// unknown paths, which include those of a protocol that is off, so it answers like any other
+/// unknown path.
+fn required_scope(method: &Method, path: &str, guard: &Guard) -> Option<Scope> {
+    let protocols = guard.protocols;
+    let entries = (protocols.gradle && path.starts_with("/cache/"))
+        || (protocols.maven && path.starts_with("/maven/"))
+        || (protocols.bazel && path.starts_with("/bazel/"));
+    if entries {
+        if *method == Method::OPTIONS && path.starts_with("/maven/") {
+            // Lists the methods; the contract asks no credentials for it.
+            return None;
+        }
+        let reads = matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
         Some(if reads {
             Scope::CacheRead
         } else {
@@ -29,7 +49,7 @@ fn required_scope(method: &Method, path: &str, auth: &Authenticator) -> Option<S
         })
     } else if path.starts_with("/v1/") {
         Some(Scope::AdminRead)
-    } else if path == "/metrics" && auth.protects_metrics() {
+    } else if path == "/metrics" && guard.auth.protects_metrics() {
         Some(Scope::MetricsRead)
     } else {
         None
@@ -58,11 +78,12 @@ fn credentials(headers: &HeaderMap) -> Result<Option<(String, String)>, ()> {
 
 /// Checks the request's credentials against the scope its route needs.
 pub(crate) async fn require(
-    State(auth): State<Arc<Authenticator>>,
+    State(guard): State<Guard>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(scope) = required_scope(request.method(), request.uri().path(), &auth) else {
+    let auth = &guard.auth;
+    let Some(scope) = required_scope(request.method(), request.uri().path(), &guard) else {
         return next.run(request).await;
     };
     let Ok(presented) = credentials(request.headers()) else {

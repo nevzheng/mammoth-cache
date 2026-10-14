@@ -683,7 +683,7 @@ fn scan_file(path: &Path) -> io::Result<(Scanned, std::time::SystemTime)> {
     let mut key = vec![0_u8; key_len];
     file.read_exact(&mut key)?;
     let key = String::from_utf8(key).map_err(|_| invalid("key is not UTF-8"))?;
-    let key = parse_stored_key(&key).ok_or_else(|| invalid("unknown key"))?;
+    let key = CacheKey::from_stored(&key).ok_or_else(|| invalid("unknown key"))?;
 
     let file_len = (FIXED_HEADER_LEN + key_len) as u64 + size + TRAILER_LEN;
     if metadata.len() != file_len {
@@ -709,15 +709,6 @@ fn scan_file(path: &Path) -> io::Result<(Scanned, std::time::SystemTime)> {
         },
         accessed,
     ))
-}
-
-fn parse_stored_key(stored: &str) -> Option<CacheKey> {
-    let (namespace, name) = stored.split_once('/')?;
-    match namespace {
-        "gradle" => CacheKey::gradle(name).ok(),
-        "maven" => CacheKey::maven(name).ok(),
-        _ => None,
-    }
 }
 
 impl BlobStore for DiskStore {
@@ -795,6 +786,7 @@ mod tests {
     use futures_util::TryStreamExt;
 
     use super::*;
+    use crate::key::Namespace;
 
     fn config(dir: &Path, capacity_bytes: u64) -> DiskConfig {
         DiskConfig {
@@ -840,6 +832,39 @@ mod tests {
         let bytes = read_all(&store, &key).await.unwrap();
         assert_eq!(bytes.as_deref(), Some(&b"hello disk"[..]));
         assert_eq!(store.head(&gradle("ffff")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn every_namespace_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let keys = [
+            gradle("abc123"),
+            CacheKey::maven("v1.1/g/a/cs/buildinfo.xml").unwrap(),
+            CacheKey::bazel(Namespace::BazelAc, digest).unwrap(),
+            CacheKey::bazel(Namespace::BazelCas, digest).unwrap(),
+        ];
+        {
+            let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+            for key in &keys {
+                let outcome = store
+                    .put(
+                        key,
+                        None,
+                        Box::pin(stream::iter([Ok(Bytes::copy_from_slice(
+                            key.as_str().as_bytes(),
+                        ))])),
+                    )
+                    .await;
+                assert_eq!(outcome.unwrap(), PutOutcome::Stored, "{key}");
+            }
+        }
+        let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+        assert_eq!(store.usage().entries, keys.len() as u64);
+        for key in &keys {
+            let bytes = read_all(&store, key).await.unwrap();
+            assert_eq!(bytes.as_deref(), Some(key.as_str().as_bytes()), "{key}");
+        }
     }
 
     #[tokio::test]

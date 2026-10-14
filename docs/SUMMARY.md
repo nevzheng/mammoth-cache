@@ -36,4 +36,6 @@
   - [0011: End-to-end and load testing](design/0011-end-to-end-and-load-testing.md)
   - [0012: Bazel HTTP cache and protocol switches](design/0012-bazel-http-cache-and-protocol-switches.md)
   - [0013: Running behind load balancers and on Kubernetes](design/0013-deployment.md)
+  - [0014: Optional built-in TLS](design/0014-tls.md)
+  - [0015: Metrics rollout and testing](design/0015-metrics-rollout-and-testing.md)
   - [Investigations](design/investigations.md)

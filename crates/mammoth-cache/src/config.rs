@@ -94,7 +94,8 @@ impl Default for Server {
     }
 }
 
-/// `[tls]`.
+/// `[tls]`: serve HTTPS with this certificate (design doc 0014). The files are read and checked
+/// at startup, and re-read while serving, so a renewed certificate is picked up without a restart.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tls {
@@ -193,6 +194,9 @@ pub struct Bucket {
     pub region: Option<String>,
     /// An S3-compatible endpoint such as `MinIO` or Cloudflare R2.
     pub endpoint: Option<String>,
+    /// Allows an `http://` endpoint, such as a local `MinIO`, `SeaweedFS` or Azurite.
+    #[serde(default)]
+    pub allow_http: bool,
     /// When a `PUT` is answered relative to the upload.
     #[serde(default)]
     pub write: BucketWrite,
@@ -502,9 +506,6 @@ impl Config {
                 server.shutdown_delay, server.shutdown_timeout
             ));
         }
-        if self.tls.is_some() {
-            return Err("[tls] is not supported yet; terminate TLS in a proxy for now".to_owned());
-        }
         for (name, user) in &self.auth.users {
             if user.token_hashes.is_empty() {
                 return Err(format!("auth.users.{name} has no token_hashes"));
@@ -708,6 +709,7 @@ mod tests {
             [bucket]
             url = "s3://acme-build-cache/mammoth/"
             region = "us-east-1"
+            allow_http = true
             write = "async"
             upload_queue = 1000
 
@@ -735,6 +737,7 @@ mod tests {
         assert_eq!(age, Duration::from_hours(30 * 24));
         let bucket = config.bucket.unwrap();
         assert_eq!(bucket.region.as_deref(), Some("us-east-1"));
+        assert!(bucket.allow_http);
         let ci = &config.auth.users["ci"];
         assert_eq!(ci.scopes, [Scope::CacheRead, Scope::CacheWrite]);
         assert_eq!(ci.token_hashes[0].0[0], 0x9f);
@@ -816,8 +819,12 @@ mod tests {
                 "must be \"sha256:\" and 64",
             ),
             (
-                &format!("{MINIMAL}[tls]\ncert = \"c\"\nkey = \"k\"\n"),
-                "[tls] is not supported yet",
+                &format!("{MINIMAL}[tls]\ncert = \"c\"\n"),
+                "missing field `key`",
+            ),
+            (
+                &format!("{MINIMAL}[tls]\ncert = \"c\"\nkey = \"k\"\nclient_ca = \"ca\"\n"),
+                "unknown field `client_ca`",
             ),
             (
                 &format!("{MINIMAL}[protocols]\ngradle = false\nmaven = false\n"),

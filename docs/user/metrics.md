@@ -4,7 +4,8 @@
 > Exported today: `mammoth_http_requests_total`, `mammoth_gradle_requests_total`,
 > `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total` (memory tier),
 > `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
-> `mammoth_bucket_uploads_total` and `mammoth_bucket_uploads_dropped_total`. The rest of the catalog
+> `mammoth_bucket_uploads_total`, `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`,
+> `mammoth_disk_free_bytes` and the `mammoth_tls_*` metrics. The rest of the catalog
 > below is the contract from design doc [0004](../design/0004-metrics.md) and arrives with the
 > features it measures. Names and labels
 > won't change without a breaking release.
@@ -48,20 +49,21 @@ cache key, a token or a user name.
 
 ### Per tier
 
-| Metric                                 | Type      | Labels                                    | Meaning                                |
-| -------------------------------------- | --------- | ----------------------------------------- | -------------------------------------- |
-| `mammoth_tier_reads_total`             | counter   | `tier`, `result` (`hit`, `miss`, `error`) | Reads against a tier                   |
-| `mammoth_tier_read_duration_seconds`   | histogram | `tier`                                    | Time to first byte from a tier         |
-| `mammoth_tier_writes_total`            | counter   | `tier`, `result` (`ok`, `error`)          | Writes to a tier                       |
-| `mammoth_tier_write_duration_seconds`  | histogram | `tier`                                    | Time to write an entry to a tier       |
-| `mammoth_tier_read_bytes_total`        | counter   | `tier`                                    | Bytes read from a tier                 |
-| `mammoth_tier_written_bytes_total`     | counter   | `tier`                                    | Bytes written to a tier                |
-| `mammoth_tier_promotions_total`        | counter   | `from`, `to`                              | Entries copied up a tier after a hit   |
-| `mammoth_tier_evictions_total`         | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits  |
-| `mammoth_bucket_upload_queue_entries`  | gauge     |                                           | Stores waiting to upload to the bucket |
-| `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)       | Background uploads to the bucket       |
-| `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`)       | Uploads skipped; the entry stays local |
-| `mammoth_shutting_down`                | gauge     |                                           | `1` while the node drains              |
+| Metric                                 | Type      | Labels                                    | Meaning                                   |
+| -------------------------------------- | --------- | ----------------------------------------- | ----------------------------------------- |
+| `mammoth_tier_reads_total`             | counter   | `tier`, `result` (`hit`, `miss`, `error`) | Reads against a tier                      |
+| `mammoth_tier_read_duration_seconds`   | histogram | `tier`                                    | Time to first byte from a tier            |
+| `mammoth_tier_writes_total`            | counter   | `tier`, `result` (`ok`, `error`)          | Writes to a tier                          |
+| `mammoth_tier_write_duration_seconds`  | histogram | `tier`                                    | Time to write an entry to a tier          |
+| `mammoth_tier_read_bytes_total`        | counter   | `tier`                                    | Bytes read from a tier                    |
+| `mammoth_tier_written_bytes_total`     | counter   | `tier`                                    | Bytes written to a tier                   |
+| `mammoth_tier_promotions_total`        | counter   | `from`, `to`                              | Entries copied up a tier after a hit      |
+| `mammoth_tier_evictions_total`         | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits     |
+| `mammoth_bucket_upload_queue_entries`  | gauge     |                                           | Stores waiting to upload to the bucket    |
+| `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)       | Uploads to the bucket, sync or background |
+| `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`)       | Uploads skipped; the entry stays local    |
+| `mammoth_shutting_down`                | gauge     |                                           | `1` while the node drains                 |
+| `mammoth_tier_up`                      | gauge     | `tier`                                    | 1 if the tier's last call succeeded       |
 
 ### Current population
 
@@ -91,6 +93,23 @@ cloud provider's metrics.
 from the `User-Agent`. The standard `process_*` metrics (memory, CPU, file descriptors) are planned
 too.
 
+### TLS
+
+Only with [`[tls]`](configuration.md#tls) set.
+
+| Metric                                   | Type    | Labels                          | Meaning                                       |
+| ---------------------------------------- | ------- | ------------------------------- | --------------------------------------------- |
+| `mammoth_tls_certificate_expiry_seconds` | gauge   |                                 | When the serving certificate expires, Unix s  |
+| `mammoth_tls_reloads_total`              | counter | `result` (`ok`, `error`)        | Renewed certificates swapped in, or refused   |
+| `mammoth_tls_handshake_failures_total`   | counter | `reason` (`error`, `timeout`)   | Handshakes that failed, such as plain HTTP    |
+
+## Alerting
+
+mammoth-cache does not send alerts; Prometheus and Alertmanager do. A bucket outage does not fail
+`/readyz`, because the node keeps serving from memory and disk, so alert on
+`mammoth_tier_up{tier="bucket"} == 0` and on `result="error"` for the bucket's reads and writes.
+Recommended rules will be listed here as the metrics they need land.
+
 ## Useful queries
 
 ```promql
@@ -107,6 +126,9 @@ sum(rate(mammoth_cache_stores_total{result="too_large"}[5m]))
 
 # p99 time to first byte from the bucket
 histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bucket{tier="bucket"}[5m])))
+
+# Days until the TLS certificate expires; alert below 14
+(mammoth_tls_certificate_expiry_seconds - time()) / 86400
 ```
 
 If `mammoth_tier_oldest_entry_age_seconds` for the disk is shorter than the life of a typical

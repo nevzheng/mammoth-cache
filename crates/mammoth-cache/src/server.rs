@@ -17,10 +17,15 @@ use futures_util::{StreamExt, stream};
 use hyper::server::conn::http1;
 use hyper_util::{
     rt::{TokioIo, TokioTimer},
-    server::graceful::GracefulShutdown,
+    server::graceful::{GracefulShutdown, Watcher},
     service::TowerToHyperService,
 };
-use tokio::{net::TcpListener, time::Instant};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::{TcpListener, TcpStream},
+    time::Instant,
+};
+use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 
 use crate::cache::Cache;
 
@@ -50,7 +55,16 @@ impl Default for ServerSettings {
     }
 }
 
-/// Serves `app` on `listener` until `signal` resolves, then drains:
+/// TLS for [`serve_tls`] (design doc 0014).
+#[derive(Debug, Clone)]
+pub struct TlsSettings {
+    /// The rustls config, usually from [`crate::tls::Certificates::server_config`].
+    pub config: Arc<ServerConfig>,
+    /// How long a client may take to complete the handshake.
+    pub handshake_timeout: Duration,
+}
+
+/// Serves `app` over plain HTTP on `listener` until `signal` resolves, then drains:
 ///
 /// 1. `/readyz` starts failing, through [`Cache::begin_shutdown`].
 /// 2. New connections are still accepted for `shutdown_delay`, while load balancers notice.
@@ -65,6 +79,39 @@ pub async fn serve(
     settings: ServerSettings,
     signal: impl Future<Output = ()>,
 ) -> io::Result<()> {
+    run(listener, None, app, cache, settings, signal).await
+}
+
+/// Like [`serve`], but over TLS: each connection completes a handshake, within
+/// `handshake_timeout`, before hyper serves it. Timeouts and the drain are the same.
+pub async fn serve_tls(
+    listener: TcpListener,
+    tls: TlsSettings,
+    app: Router,
+    cache: Arc<Cache>,
+    settings: ServerSettings,
+    signal: impl Future<Output = ()>,
+) -> io::Result<()> {
+    let tls = Tls {
+        acceptor: TlsAcceptor::from(tls.config),
+        handshake_timeout: tls.handshake_timeout,
+    };
+    run(listener, Some(tls), app, cache, settings, signal).await
+}
+
+struct Tls {
+    acceptor: TlsAcceptor,
+    handshake_timeout: Duration,
+}
+
+async fn run(
+    listener: TcpListener,
+    tls: Option<Tls>,
+    app: Router,
+    cache: Arc<Cache>,
+    settings: ServerSettings,
+    signal: impl Future<Output = ()>,
+) -> io::Result<()> {
     let app = app.layer(middleware::from_fn_with_state(
         settings.body_read_timeout,
         body_read_timeout,
@@ -73,7 +120,7 @@ pub async fn serve(
     let mut signal = pin!(signal);
     loop {
         tokio::select! {
-            accepted = listener.accept() => accept(accepted, &app, &graceful, settings),
+            accepted = listener.accept() => accept(accepted, &app, &graceful, settings, tls.as_ref()),
             () = &mut signal => break,
         }
     }
@@ -89,7 +136,7 @@ pub async fn serve(
     let mut stop_accepting = pin!(stop_accepting);
     loop {
         tokio::select! {
-            accepted = listener.accept() => accept(accepted, &app, &graceful, settings),
+            accepted = listener.accept() => accept(accepted, &app, &graceful, settings, tls.as_ref()),
             () = &mut stop_accepting => break,
         }
     }
@@ -118,12 +165,14 @@ pub async fn serve(
     Ok(())
 }
 
-/// Starts serving one accepted connection.
+/// Starts serving one accepted connection, after a TLS handshake if `tls` is set. The handshake
+/// runs in the connection's own task, so a slow client cannot hold up the accept loop.
 fn accept(
-    accepted: io::Result<(tokio::net::TcpStream, std::net::SocketAddr)>,
+    accepted: io::Result<(TcpStream, std::net::SocketAddr)>,
     app: &Router,
     graceful: &GracefulShutdown,
     settings: ServerSettings,
+    tls: Option<&Tls>,
 ) {
     let stream = match accepted {
         Ok((stream, _)) => stream,
@@ -137,17 +186,44 @@ fn accept(
     if let Err(error) = stream.set_nodelay(true) {
         tracing::debug!(%error, "could not set TCP_NODELAY");
     }
+    // Taken now, so the drain also waits for connections still in their handshake.
+    let watcher = graceful.watcher();
+    let app = app.clone();
+    let Some(tls) = tls else {
+        tokio::spawn(serve_connection(stream, app, watcher, settings));
+        return;
+    };
+    let acceptor = tls.acceptor.clone();
+    let handshake_timeout = tls.handshake_timeout;
+    tokio::spawn(async move {
+        let reason = match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
+            Ok(Ok(stream)) => return serve_connection(stream, app, watcher, settings).await,
+            // Scanners and plain-HTTP clients do this all day: not worth more than debug.
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "TLS handshake failed");
+                "error"
+            }
+            Err(_) => {
+                tracing::debug!("TLS handshake timed out");
+                "timeout"
+            }
+        };
+        metrics::counter!("mammoth_tls_handshake_failures_total", "reason" => reason).increment(1);
+    });
+}
+
+async fn serve_connection<S>(stream: S, app: Router, watcher: Watcher, settings: ServerSettings)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())
         .header_read_timeout(settings.idle_timeout)
         .keep_alive(true)
-        .serve_connection(TokioIo::new(stream), TowerToHyperService::new(app.clone()));
-    let connection = graceful.watch(connection);
-    tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::debug!(%error, "connection ended with an error");
-        }
-    });
+        .serve_connection(TokioIo::new(stream), TowerToHyperService::new(app));
+    if let Err(error) = watcher.watch(connection).await {
+        tracing::debug!(%error, "connection ended with an error");
+    }
 }
 
 /// Fails a request whose body sends nothing for the timeout. Per read, not in total, so a large
