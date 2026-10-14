@@ -131,7 +131,8 @@ paths:
         `413` would turn the remote cache off for the rest of the build, costing every later hit
         for the sake of one entry. With `Expect: 100-continue` the server answers `200` instead of
         `100 Continue`, so the body is never sent; without it, the server reads and discards the
-        body, because closing the connection early would also count as an error.
+        body, because closing the connection early would also count as an error. A server set to
+        the `Reject` oversize policy answers `413` instead, as the Build Cache Node does.
       tags: [gradle]
       parameters:
         - $ref: "#/components/parameters/GradleVersion"
@@ -154,6 +155,8 @@ paths:
             was dropped.
         "400":
           $ref: "#/components/responses/InvalidKey"
+        "413":
+          $ref: "#/components/responses/EntryTooLarge"
         "401":
           $ref: "./common.yaml#/components/responses/Unauthenticated"
         "403":
@@ -231,3 +234,26 @@ components:
                   domain: mammoth-cache.dev
                   metadata:
                     key: a3f5e1c09b2d4e7f8a1b6c3d5e9f0a2b
+    EntryTooLarge:
+      description: |
+        The entry is larger than the configured limit, and the server is set to the `Reject`
+        oversize policy; by default it answers `200` and drops the entry. Gradle does not fail the
+        build on `413`, but turns the remote cache off for the rest of it. AIP-193 alone would
+        suggest `400 INVALID_ARGUMENT`, which would fail the build, so the protocol status `413`
+        wins and the body keeps the canonical name `OUT_OF_RANGE`.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 413
+              message: Cache entry is 157286400 bytes; the limit is 104857600.
+              status: OUT_OF_RANGE
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: ENTRY_TOO_LARGE
+                  domain: mammoth-cache.dev
+                  metadata:
+                    entryBytes: "157286400"
+                    maxEntryBytes: "104857600"

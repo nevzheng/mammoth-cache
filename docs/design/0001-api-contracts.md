@@ -76,7 +76,7 @@ code follows Gradle; the body still follows AIP-193 with the canonical name that
 | ----------------------- | ---------------------- | ---------------------------------- | -------------------------------------- |
 | Cache miss              | `404 NOT_FOUND`        | `404 NOT_FOUND`                    | Same                                   |
 | Entry over size limit   | `400 INVALID_ARGUMENT` | `200`; entry dropped and counted   | 400 fails the build; 413 turns the     |
-|                         |                        |                                    | cache off for the rest of the build    |
+|                         |                        | (`413` under the `Reject` policy)  | cache off for the rest of the build    |
 | Unexpected content type | `400 INVALID_ARGUMENT` | Accepted; stored as bytes          | 400 and 415 fail the build             |
 | Key already stored      | `409 ALREADY_EXISTS`   | `200`, nothing written             | Entries are immutable; any 2xx is OK   |
 | Hit                     | n/a                    | `200` + `application/octet-stream` | Gradle accepts `*/*`                   |
