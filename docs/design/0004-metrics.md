@@ -11,6 +11,10 @@ type, labels and meaning. The catalog is a contract like the APIs: renaming or r
 or changing its labels, is a breaking change. The admin API's `serverStatus` returns the same
 current-population numbers as a snapshot.
 
+The node's metrics are deliberately dumb: it exposes raw counters, gauges and histograms and
+nothing else. Rates, ratios, rollups, history and reporting are the job of an external
+aggregator such as Prometheus.
+
 ## Context and scope
 
 Operators need to know whether the cache is helping (hit rate), where time goes (which tier), and
@@ -21,12 +25,16 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 
 ### Goals
 
-- Answer "is the cache working?" from one dashboard: hit rate, latency per tier, population.
+- Give an aggregator what it needs to answer "is the cache working?": hit rate, latency per tier,
+  population.
+- Keep the node's part trivial: increment, set, observe.
 - Follow Prometheus naming: `snake_case`, base units (seconds, bytes), `_total` on counters.
 - Bounded label cardinality.
 
 ### Non-goals
 
+- Aggregation, rollups, rates, time windows, history, dashboards or reports in the node. External
+  aggregators do this better, and keeping it out keeps the node stateless.
 - Per-key or per-build statistics. Build analytics belong to build tools, not the cache.
 - Tracing. Possible later with OpenTelemetry.
 
@@ -37,7 +45,10 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 - Every metric starts with `mammoth_`.
 - `tier` is one of `memory`, `disk`, `bucket`.
 - No label ever holds a cache key, a token or any other unbounded value.
-- Ratios such as hit rate are computed in PromQL, not exported.
+- Only raw values are exported: monotonic counters, current gauges and histograms. Hit rate,
+  request rates and averages are computed by the aggregator, never exported.
+- Histograms, never summaries: histogram buckets can be summed across nodes, while precomputed
+  quantiles cannot.
 - Histograms use base units; bucket boundaries are chosen per metric and listed in the user guide.
 
 ### Catalog
@@ -108,9 +119,9 @@ histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bu
 
 ### Admin snapshot
 
-`GET /v1/serverStatus` returns the current population per tier and lifetime hit and miss counts,
-for a UI or `mammoth status`. It reads the same values as the gauges and counters above, so the two
-never disagree.
+`GET /v1/serverStatus` returns the current population per tier and lifetime hit and miss counts, for
+a UI or `mammoth status`. Like the metrics, these are raw values with no rates or ratios. It reads
+the same values as the gauges and counters above, so the two never disagree.
 
 ### Verification
 
