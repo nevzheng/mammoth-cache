@@ -7,17 +7,23 @@ use std::collections::BTreeMap;
 
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
 
-use crate::{cache::CacheError, key::InvalidKey};
+use crate::{
+    cache::CacheError,
+    key::{CacheKey, InvalidKey, Namespace},
+};
 
 /// The `ErrorInfo.domain` of every error this server returns.
 pub const ERROR_DOMAIN: &str = "mammoth-cache.dev";
 
 const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+
+/// The challenge sent with every `401` (`api/openapi/common.yaml`).
+pub const CHALLENGE: HeaderValue = HeaderValue::from_static(r#"Basic realm="mammoth-cache""#);
 
 /// An error response in the shape of AIP-193.
 #[derive(Debug, Clone)]
@@ -27,6 +33,7 @@ pub struct ApiError {
     reason: &'static str,
     message: String,
     metadata: BTreeMap<&'static str, String>,
+    challenge: bool,
 }
 
 impl ApiError {
@@ -43,6 +50,7 @@ impl ApiError {
             reason,
             message: message.into(),
             metadata: BTreeMap::new(),
+            challenge: false,
         }
     }
 
@@ -65,16 +73,41 @@ impl ApiError {
         self.reason
     }
 
-    /// `404 NOT_FOUND` for a missing cache entry. Not an error for Gradle; it runs the task.
+    /// `404 NOT_FOUND` for a missing cache entry. Not an error for any client: it builds.
     #[must_use]
-    pub fn entry_not_found(key: &str) -> Self {
+    pub fn entry_not_found(key: &CacheKey) -> Self {
+        let field = match key.namespace() {
+            Namespace::Gradle => "key",
+            Namespace::Maven => "path",
+        };
         Self::new(
             StatusCode::NOT_FOUND,
             "NOT_FOUND",
             "ENTRY_NOT_FOUND",
             "Cache entry not found.",
         )
-        .with("key", key)
+        .with(field, key.name())
+    }
+
+    /// `401 UNAUTHENTICATED`, with the `WWW-Authenticate` challenge every `401` carries: Maven
+    /// sends credentials on `GET` only after it. `reason` is the AIP-193 reason, such as
+    /// `CREDENTIALS_MISSING`.
+    #[must_use]
+    pub fn unauthenticated(reason: &'static str, message: impl Into<String>) -> Self {
+        let mut error = Self::new(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", reason, message);
+        error.challenge = true;
+        error
+    }
+
+    /// `405` for a method the route does not support.
+    #[must_use]
+    pub fn method_not_allowed(method: &Method) -> Self {
+        Self::new(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "UNIMPLEMENTED",
+            "METHOD_NOT_ALLOWED",
+            format!("{method} is not supported on this route."),
+        )
     }
 
     /// `404 NOT_FOUND` for an unknown route.
@@ -102,10 +135,14 @@ impl ApiError {
 
 impl From<InvalidKey> for ApiError {
     fn from(e: InvalidKey) -> Self {
+        let reason = match e {
+            InvalidKey::Gradle => "INVALID_CACHE_KEY",
+            InvalidKey::Maven => "INVALID_CACHE_PATH",
+        };
         Self::new(
             StatusCode::BAD_REQUEST,
             "INVALID_ARGUMENT",
-            "INVALID_CACHE_KEY",
+            reason,
             sentence(&e),
         )
     }
@@ -114,8 +151,8 @@ impl From<InvalidKey> for ApiError {
 impl From<CacheError> for ApiError {
     fn from(e: CacheError) -> Self {
         match e {
-            // Only under `OversizePolicy::Reject`. Any non-2xx turns Gradle's remote cache off for
-            // the rest of the build; 413 at least keeps the Build Cache Node's meaning.
+            // Maven always; Gradle only under `OversizePolicy::Reject`, since any non-2xx turns
+            // Gradle's remote cache off for the rest of the build.
             CacheError::TooLarge { size, limit } => {
                 let error = Self::new(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -198,6 +235,28 @@ impl IntoResponse for ApiError {
                 }],
             },
         };
-        (self.status, Json(body)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        if self.challenge {
+            response
+                .headers_mut()
+                .insert(header::WWW_AUTHENTICATE, CHALLENGE);
+        }
+        response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_401_carries_a_challenge() {
+        let response =
+            ApiError::unauthenticated("CREDENTIALS_MISSING", "No credentials.").into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers()[header::WWW_AUTHENTICATE],
+            r#"Basic realm="mammoth-cache""#
+        );
     }
 }

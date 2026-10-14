@@ -1,6 +1,7 @@
 use std::{env, io, sync::Arc};
 
 use mammoth_cache::{cache::Cache, store::memory::MemoryStore};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -21,9 +22,15 @@ async fn main() -> io::Result<()> {
     let cache = Cache::builder()
         .bounded_tier(Arc::new(MemoryStore::new(DEFAULT_MEMORY_BYTES)))
         .build();
-    axum::serve(listener, mammoth_cache::router(Arc::new(cache)))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
+    let metrics = PrometheusBuilder::new()
+        .install_recorder()
+        .map_err(io::Error::other)?;
+    axum::serve(
+        listener,
+        mammoth_cache::router(Arc::new(cache), Some(metrics)),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
 }
 
 async fn shutdown_signal() {
