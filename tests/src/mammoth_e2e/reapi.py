@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import grpc
+from google.rpc import error_details_pb2, status_pb2
 
 from mammoth_e2e.tools import cache_dir
 
@@ -89,6 +90,31 @@ def attempt[T](call: Callable[[], T]) -> tuple[grpc.StatusCode, T | None]:
         return e.code(), None
 
 
+def outcome[T](call: Callable[[], T]) -> tuple[grpc.StatusCode, str | None, T | None]:
+    """Runs a call: its status code, the `ErrorInfo.reason` it failed with, and its result when it
+    succeeded."""
+    try:
+        return grpc.StatusCode.OK, None, call()
+    except grpc.RpcError as e:
+        return e.code(), _reason_of(e), None
+
+
+def reason(status: Message) -> str | None:
+    """The `ErrorInfo.reason` in a `google.rpc.Status`, such as one item's status in a batch."""
+    for detail in status.details:
+        info = error_details_pb2.ErrorInfo()
+        if detail.Unpack(info):
+            return info.reason
+    return None
+
+
+def _reason_of(error: grpc.RpcError) -> str | None:
+    for item in error.trailing_metadata() or ():
+        if item.key == "grpc-status-details-bin":
+            return reason(status_pb2.Status.FromString(item.value))
+    return None
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -147,6 +173,10 @@ class Reapi:
 
     def batch_update(self, items: list[tuple[Message, bytes]]) -> list[int]:
         """Uploads blobs in one call; the `grpc.StatusCode` value of each, in order."""
+        return [status.code for status in self.batch_update_statuses(items)]
+
+    def batch_update_statuses(self, items: list[tuple[Message, bytes]]) -> list[Message]:
+        """Uploads blobs in one call; the `google.rpc.Status` of each, in order."""
         request = self.s.re.BatchUpdateBlobsRequest(
             instance_name=self.instance,
             requests=[
@@ -154,13 +184,17 @@ class Reapi:
             ],
         )
         response = self._cas.BatchUpdateBlobs(request, metadata=self.metadata, timeout=30)
-        return [r.status.code for r in response.responses]
+        return [r.status for r in response.responses]
 
     def batch_read(self, digests: list[Message]) -> list[tuple[int, bytes]]:
         """Reads blobs in one call: each one's status code and data, in order."""
+        return [(status.code, data) for status, data in self.batch_read_statuses(digests)]
+
+    def batch_read_statuses(self, digests: list[Message]) -> list[tuple[Message, bytes]]:
+        """Reads blobs in one call: each one's `google.rpc.Status` and data, in order."""
         request = self.s.re.BatchReadBlobsRequest(instance_name=self.instance, digests=digests)
         response = self._cas.BatchReadBlobs(request, metadata=self.metadata, timeout=30)
-        return [(r.status.code, bytes(r.data)) for r in response.responses]
+        return [(r.status, bytes(r.data)) for r in response.responses]
 
     # ByteStream
 
