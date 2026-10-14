@@ -5,7 +5,8 @@
 #   docker compose -f deploy/compose/compose.yaml up --build
 #
 # Nodes: `mammoth` (port 5071) needs credentials for everything; `mammoth-open` (5073) lets
-# anonymous requests read. Profiles: `multi` adds `mammoth-2` (5072) on the same bucket; `observe`
+# anonymous requests read; `mammoth-proxied` sits behind nginx, on 8080 with the documented proxy
+# settings and on 8081 with nginx's defaults. Profiles: `multi` adds `mammoth-2` (5072) on the same bucket; `observe`
 # adds Grafana (3000). MAMMOTH_IMAGE picks the image under test, for example
 # ghcr.io/nevzheng/mammoth-cache:edge. MAMMOTH_CONFIG_DIR swaps in other config files.
 
@@ -45,6 +46,22 @@ services:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-open.toml:/etc/mammoth/mammoth.toml:ro
       - mammoth-open-disk:/var/lib/mammoth
 
+  mammoth-proxied:
+    <<: *mammoth
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-proxied.toml:/etc/mammoth/mammoth.toml:ro
+      - mammoth-proxied-disk:/var/lib/mammoth
+
+  nginx:
+    image: nginx:1.31.6-alpine
+    ports:
+      - "${NGINX_PORT:-8080}:8080"
+      - "${NGINX_DEFAULTS_PORT:-8081}:8081"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - mammoth-proxied
+
   mammoth-2:
     <<: *mammoth
     profiles: [multi]
@@ -83,6 +100,7 @@ services:
     volumes:
       - mammoth-disk:/disks/mammoth
       - mammoth-open-disk:/disks/mammoth-open
+      - mammoth-proxied-disk:/disks/mammoth-proxied
       - mammoth-2-disk:/disks/mammoth-2
     depends_on:
       seaweedfs:
@@ -123,4 +141,5 @@ services:
 volumes:
   mammoth-disk:
   mammoth-open-disk:
+  mammoth-proxied-disk:
   mammoth-2-disk:

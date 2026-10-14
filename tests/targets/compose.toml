@@ -3,6 +3,8 @@ name = "compose"
 base_url = "http://localhost:5071"
 open_base_url = "http://localhost:5073"
 prometheus_url = "http://localhost:9090"
+proxy_url = "http://localhost:8080" # nginx, set up as docs/user/deployment.md says
+proxy_defaults_url = "http://localhost:8081" # the same nginx on its defaults
 
 # Server features this target has. Tests that need a missing one are skipped, so a feature is
 # switched on here in the PR that builds it. Known: config, auth, disk, bucket, bazel.

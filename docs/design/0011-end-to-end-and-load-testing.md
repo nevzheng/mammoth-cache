@@ -135,6 +135,10 @@ flowchart LR
 - **Grafana** is under the `observe` profile, off in CI. Locally, `docker compose --profile observe
   up` gives a provisioned dashboard for poking at the stack and watching load runs.
 - **mammoth-2** is under the `multi` profile, for the shared-bucket scenarios.
+- **nginx** fronts `mammoth-proxied`, a node whose entry limit is 128 MiB, on two ports: 8080 with
+  the settings the deployment guide gives (`client_max_body_size 0`, no request buffering, 300 s
+  timeouts) and 8081 on nginx's defaults. It checks the proxy settings from
+  [0013](0013-deployment.md).
 
 SeaweedFS and Prometheus have health checks, and the harness runs `docker compose up --wait`. The
 mammoth image is distroless, with no shell or `curl` for an in-container check, so the harness then
@@ -200,6 +204,8 @@ scenario table, runs it for Gradle, Maven and Bazel (doc 0012), and moves onto t
 | Shared bucket        | Store on mammoth-1, GET from mammoth-2 (`multi` profile)                       | Hit on mammoth-2 via the bucket                                           |
 | Bucket down          | Stop SeaweedFS, GET and PUT                                                    | Memory and disk keep serving; bucket errors counted; no 5xx on Gradle PUT |
 | Bucket back          | Start SeaweedFS again                                                          | Queued or new uploads reach the bucket; the queue drains                  |
+| Drain on SIGTERM     | Stream a slow PUT, send `SIGTERM` to the node mid-upload                       | `/readyz` 503 and `/livez` 200; new requests served; PUT 201; exit 0      |
+| Large through proxy  | 100 MiB PUT through nginx with the documented settings, then on its defaults   | Stored and read back; on defaults nginx answers `413`, not mammoth        |
 | Gradle write-once    | PUT the same key twice with different bodies                                   | First body kept                                                           |
 | Maven overwrite      | PUT the same path twice                                                        | Second body served                                                        |
 | Auth                 | Each user and scope, wrong token, anonymous                                    | Status codes and `WWW-Authenticate` as in 0002                            |

@@ -1,0 +1,28 @@
+# The node behind nginx (`mammoth-proxied`). Its entry limit is above the proxy tests' 100 MiB
+# store. Anonymous requests may read and write, so the tests exercise the proxy, not auth.
+version = 1
+listen = "0.0.0.0:5071"
+
+[limits]
+max_entry_size = "128MiB"
+
+[memory]
+size = "256MiB"
+max_entry_size = "8MiB"
+
+[disk]
+path = "/var/lib/mammoth"
+size = "1GiB"
+free_space_buffer = "64MiB"
+
+[protocols]
+gradle = true
+maven = true
+bazel = true
+
+[auth]
+anonymous = ["cache:read", "cache:write"]
+
+[log]
+level = "info"
+format = "text"

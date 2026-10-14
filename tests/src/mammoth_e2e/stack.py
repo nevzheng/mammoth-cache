@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -58,6 +59,23 @@ class Stack:
         self._run("restart", *services)
         self.wait_ready()
 
+    def kill(self, service: str, signal: str = "SIGTERM") -> None:
+        """Send a signal to a service's container, as Kubernetes does when it stops a pod."""
+        self._run("kill", "--signal", signal, service)
+
+    def wait_exited(self, service: str, timeout: float = 60.0) -> int:
+        """Wait for a service's container to exit and return its exit code."""
+        deadline = time.monotonic() + timeout
+        while True:
+            out = self._run("ps", "--all", "--format", "json", service).stdout
+            for line in out.splitlines():
+                container = json.loads(line)
+                if container["State"] == "exited":
+                    return int(container["ExitCode"])
+            if time.monotonic() > deadline:
+                raise StackError(f"{service} still running after {timeout}s")
+            time.sleep(0.2)
+
     def wipe_disk(self, service: str) -> None:
         """Empty a stopped node's disk volume, as if it were a new node."""
         self._run(
@@ -72,7 +90,8 @@ class Stack:
     def wait_ready(self, timeout: float = 60.0) -> None:
         """Wait until every mammoth node answers /readyz with 200."""
         deadline = time.monotonic() + timeout
-        for base in self.target.base_urls():
+        proxies = [self.target.proxy_url, self.target.proxy_defaults_url]
+        for base in self.target.base_urls() + [str(p).rstrip("/") for p in proxies if p]:
             url = f"{base}/readyz"
             while True:
                 try:

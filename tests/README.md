@@ -51,7 +51,8 @@ marked `control` stop or restart services and skip on targets the harness does n
 `targets/compose.toml`: `ci` (read and write, the default for every client), `developer` (read
 only), `prometheus` (`metrics:read`) and `admin` (`admin:read`). The `mammoth-open` node on port
 5073 has the same users and lets anonymous requests read. The tokens protect nothing; never reuse
-them.
+them. The `mammoth-proxied` node lets anonymous requests read and write, and is reached only through
+nginx: port 8080 with the deployment guide's settings, 8081 on nginx's defaults.
 
 ## Behind a proxy
 
