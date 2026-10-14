@@ -4,11 +4,13 @@
 //! one `ErrorInfo` in domain `mammoth-cache.dev` (`api/openapi/common.yaml`). The reasons are the
 //! catalogue in [`crate::api::error`]; this module picks each one's HTTP status.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use axum::{
     Json,
+    extract::Request,
     http::{HeaderValue, Method, StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -97,6 +99,8 @@ pub struct ApiError {
     status: Status,
     http: StatusCode,
     challenge: bool,
+    /// The core error behind it, for the log line [`render`] writes.
+    source: Option<Arc<cache::Error>>,
 }
 
 impl ApiError {
@@ -200,6 +204,7 @@ impl From<Status> for ApiError {
             http: http_status(status.reason()),
             status,
             challenge: false,
+            source: None,
         }
     }
 }
@@ -217,19 +222,9 @@ impl From<InvalidKey> for ApiError {
 
 impl From<cache::Error> for ApiError {
     fn from(e: cache::Error) -> Self {
-        let status = Status::from(&e);
-        match status.code() {
-            // The client's fault, and usually the client is gone: not worth an error log.
-            Code::InvalidArgument | Code::Cancelled | Code::DeadlineExceeded
-                if status.reason() != Reason::EntryTooLarge =>
-            {
-                tracing::warn!(error = %e, "upload failed");
-            }
-            Code::Unavailable => tracing::warn!(error = %e, "storage unavailable"),
-            Code::Internal => tracing::error!(error = %e, "storage error"),
-            _ => {}
-        }
-        status.into()
+        let mut error = Self::from(Status::from(&e));
+        error.source = Some(Arc::new(e));
+        error
     }
 }
 
@@ -278,6 +273,10 @@ impl IntoResponse for ApiError {
             },
         };
         let mut response = (self.http, Json(body)).into_response();
+        response.extensions_mut().insert(Rendered {
+            reason: self.status.reason(),
+            source: self.source,
+        });
         if self.challenge {
             response
                 .headers_mut()
@@ -285,6 +284,40 @@ impl IntoResponse for ApiError {
         }
         response
     }
+}
+
+/// What [`render`] logs about an error response, left in its extensions by `into_response`.
+#[derive(Debug, Clone)]
+struct Rendered {
+    reason: Reason,
+    source: Option<Arc<cache::Error>>,
+}
+
+/// Middleware that logs each error response once, at a level chosen by its code: a server fault
+/// at `error` with the source chain, a storage outage at `warn`, and everything else, the client's
+/// doing or the node's state as `/readyz` reports it, at `debug`.
+pub(super) async fn render(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let Some(Rendered { reason, source }) = response.extensions_mut().remove::<Rendered>() else {
+        return response;
+    };
+    let status = response.status().as_u16();
+    let code = reason.code();
+    let reason = reason.as_str();
+    match (code, source) {
+        (Code::Internal | Code::Unknown | Code::DataLoss, Some(e)) => {
+            tracing::error!(reason, status, error = %e, "request failed");
+        }
+        (Code::Internal | Code::Unknown | Code::DataLoss, None) => {
+            tracing::error!(reason, status, "request failed");
+        }
+        (Code::Unavailable, Some(e)) => {
+            tracing::warn!(reason, status, error = %e, "storage unavailable");
+        }
+        (_, Some(e)) => tracing::debug!(reason, status, error = %e, "request refused"),
+        (_, None) => tracing::debug!(reason, status, "request refused"),
+    }
+    response
 }
 
 #[cfg(test)]
@@ -309,6 +342,68 @@ mod tests {
             assert_eq!(info["reason"], reason.as_str());
             assert_eq!(info["domain"], DOMAIN);
             assert_eq!(info["metadata"]["k"], "v");
+        }
+    }
+
+    /// The lines logged while a request runs through a router whose one route answers `error`.
+    async fn logged(error: ApiError) -> Vec<String> {
+        use std::{
+            io,
+            sync::{Arc, Mutex},
+        };
+
+        use axum::{Router, middleware, routing::get};
+        use tower::ServiceExt;
+
+        #[derive(Clone, Default)]
+        struct Lines(Arc<Mutex<Vec<u8>>>);
+        impl io::Write for Lines {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let lines = Lines::default();
+        let writer = lines.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let app = Router::new()
+            .route("/", get(move || async move { error }))
+            .layer(middleware::from_fn(render));
+        let request = axum::http::Request::new(axum::body::Body::empty());
+        app.oneshot(request).await.unwrap();
+        let text = String::from_utf8(lines.0.lock().unwrap().clone()).unwrap();
+        text.lines().map(str::to_owned).collect()
+    }
+
+    #[tokio::test]
+    async fn a_server_fault_is_logged_once_with_its_source() {
+        let error = ApiError::from(cache::Error::from(std::io::Error::other("disk on fire")));
+        let lines = logged(error).await;
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("ERROR"), "{lines:?}");
+        assert!(lines[0].contains("reason=\"INTERNAL\""), "{lines:?}");
+        assert!(lines[0].contains("disk on fire"), "{lines:?}");
+    }
+
+    #[tokio::test]
+    async fn client_errors_and_node_state_log_at_debug() {
+        for error in [
+            ApiError::new(Reason::InvalidCacheKey, "Bad key."),
+            ApiError::new(Reason::ShuttingDown, "Draining."),
+            ApiError::from(cache::Error::from(cache::upload_error("reset"))),
+        ] {
+            let lines = logged(error).await;
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].contains("DEBUG"), "{lines:?}");
         }
     }
 
