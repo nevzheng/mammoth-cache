@@ -6,8 +6,9 @@
 #
 # Nodes: `mammoth` (port 5071) needs credentials for everything; `mammoth-open` (5073) lets
 # anonymous requests read; `mammoth-proxied` sits behind nginx, on 8080 with the documented proxy
-# settings and on 8081 with nginx's defaults. Profiles: `multi` adds `mammoth-2` (5072) on the same bucket; `observe`
-# adds Grafana (3000). MAMMOTH_IMAGE picks the image under test, for example
+# settings and on 8081 with nginx's defaults. `mammoth-memory` (5074), `mammoth-memory-disk` (5075)
+# and `mammoth-memory-bucket` (5076) run the other tier topologies. Profiles: `multi` adds
+# `mammoth-2` (5072) on the same bucket; `observe` adds Grafana (3000). MAMMOTH_IMAGE picks the image under test, for example
 # ghcr.io/nevzheng/mammoth-cache:edge. MAMMOTH_CONFIG_DIR swaps in other config files.
 
 name: mammoth
@@ -51,6 +52,30 @@ services:
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-proxied.toml:/etc/mammoth/mammoth.toml:ro
       - mammoth-proxied-disk:/var/lib/mammoth
+
+  # Tier topologies other than the full one above: memory only, memory and disk, memory and the
+  # bucket. tests/e2e/test_topologies.py runs the same checks against each.
+  mammoth-memory:
+    <<: *mammoth
+    ports:
+      - "${MAMMOTH_MEMORY_PORT:-5074}:5071"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory.toml:/etc/mammoth/mammoth.toml:ro
+
+  mammoth-memory-disk:
+    <<: *mammoth
+    ports:
+      - "${MAMMOTH_MEMORY_DISK_PORT:-5075}:5071"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory-disk.toml:/etc/mammoth/mammoth.toml:ro
+      - mammoth-memory-disk-disk:/var/lib/mammoth
+
+  mammoth-memory-bucket:
+    <<: *mammoth
+    ports:
+      - "${MAMMOTH_MEMORY_BUCKET_PORT:-5076}:5071"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory-bucket.toml:/etc/mammoth/mammoth.toml:ro
 
   nginx:
     image: nginx:1.31.6-alpine
@@ -101,6 +126,7 @@ services:
       - mammoth-disk:/disks/mammoth
       - mammoth-open-disk:/disks/mammoth-open
       - mammoth-proxied-disk:/disks/mammoth-proxied
+      - mammoth-memory-disk-disk:/disks/mammoth-memory-disk
       - mammoth-2-disk:/disks/mammoth-2
     depends_on:
       seaweedfs:
@@ -143,4 +169,5 @@ volumes:
   mammoth-disk:
   mammoth-open-disk:
   mammoth-proxied-disk:
+  mammoth-memory-disk-disk:
   mammoth-2-disk:

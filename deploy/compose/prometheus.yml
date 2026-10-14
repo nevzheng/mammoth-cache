@@ -8,6 +8,7 @@ scrape_configs:
   - job_name: mammoth
     static_configs:
       - targets: ["mammoth:5071", "mammoth-open:5071", "mammoth-proxied:5071", "mammoth-2:5071"]
+      - targets: ["mammoth-memory:5071", "mammoth-memory-disk:5071", "mammoth-memory-bucket:5071"]
 
   - job_name: seaweedfs
     static_configs:

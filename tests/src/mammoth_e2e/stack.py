@@ -98,6 +98,7 @@ class Stack:
         """Wait until every mammoth node answers /readyz with 200."""
         deadline = time.monotonic() + timeout
         proxies = [self.target.proxy_url, self.target.proxy_defaults_url]
+        proxies += self.target.topologies.values()
         for base in self.target.base_urls() + [str(p).rstrip("/") for p in proxies if p]:
             url = f"{base}/readyz"
             while True:

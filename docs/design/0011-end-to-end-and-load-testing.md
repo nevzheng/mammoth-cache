@@ -135,6 +135,9 @@ flowchart LR
 - **Grafana** is under the `observe` profile, off in CI. Locally, `docker compose --profile observe
   up` gives a provisioned dashboard for poking at the stack and watching load runs.
 - **mammoth-2** is under the `multi` profile, for the shared-bucket scenarios.
+- **mammoth-memory**, **mammoth-memory-disk** and **mammoth-memory-bucket** run the tier topologies
+  other than the full one, so every topology the config allows gets the same round-trip, size-limit
+  and restart checks.
 - **nginx** fronts `mammoth-proxied`, a node whose entry limit is 128 MiB, on two ports: 8080 with
   the settings the deployment guide gives (`client_max_body_size 0`, no request buffering, 300 s
   timeouts) and 8081 on nginx's defaults. It checks the proxy settings from
