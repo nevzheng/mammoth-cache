@@ -89,11 +89,13 @@ sequenceDiagram
 2. **Keep serving for `shutdown_delay`** (default 5 s). Endpoint removal is asynchronous; requests
    still arrive for a few seconds after `SIGTERM`, and refusing them fails builds. This replaces the
    usual `preStop: sleep` hook, which the distroless image cannot run (it has no `sleep`).
-3. **Stop accepting and finish in-flight requests.** axum's graceful shutdown already does this.
+3. **Stop accepting and finish in-flight requests.** axum's graceful shutdown does this, but it
+   waits for connections without limit, so the server wraps it in the shutdown deadline.
 4. **Flush the bucket upload queue.** With `bucket.write = "async"`, entries waiting in the queue
    are uploaded before exit. Today they are dropped, so an `emptyDir` disk loses them for good.
-   Uploads still queued when the deadline hits are logged and counted
-   (`mammoth_bucket_uploads_dropped_total{reason="shutdown"}`).
+   Uploads still queued when the deadline hits are dropped, logged and counted
+   (`mammoth_bucket_uploads_dropped_total{reason="shutdown"}`). Those entries then live only on
+   that node's disk; operators who cannot lose any use `bucket.write = "sync"`.
 
 Steps 2 to 4 share one deadline, `shutdown_timeout` (default 25 s), kept below Kubernetes' 30 s so
 the node exits on its own. A second signal exits at once.
@@ -112,6 +114,9 @@ the node exits on its own. A second signal exits at once.
 The bucket is **not** a readiness check. A bucket outage should degrade every node to its local
 tiers, not take every node out of rotation at once. Bucket health shows in metrics instead.
 
+`disk.free_space_buffer` is parsed today but not enforced. The free-space check and refusing disk
+writes below the buffer land together, so the node never reports ready while it cannot store.
+
 Checks run in the background on an interval (for example 5 s) and the handler reads the cached
 result, so probes cost nothing and a slow disk cannot time a probe out.
 
@@ -123,13 +128,15 @@ operators need a `startupProbe` with a generous `failureThreshold`, documented i
 
 ### Timeouts
 
-Set on the hyper connection builder (it needs a timer, which `axum::serve` does not install):
+Set on the hyper connection builder. axum 0.8's `axum::serve` exposes neither a timer nor
+`header_read_timeout`, so the server accepts connections itself and serves each with
+`hyper_util::server::conn::auto::Builder` (`serve_connection_with_upgrades`):
 
 | Setting               | Default | Why                                                                   |
 | --------------------- | ------- | --------------------------------------------------------------------- |
 | `header_read_timeout` | 30 s    | Bounds slow or stuck clients holding a connection before a request    |
 | `idle_timeout`        | 75 s    | Closes idle keep-alive connections; must exceed the LB's idle timeout |
-| `body_idle_timeout`   | 60 s    | Aborts an upload that sends nothing for this long                     |
+| `body_read_timeout`   | 60 s    | Per read, not total: aborts an upload that sends nothing this long    |
 
 There is deliberately no total request timeout: a 100 MiB entry over a slow CI link is legitimate.
 `idle_timeout` must be longer than the load balancer's, or the LB reuses a connection the server
@@ -148,7 +155,8 @@ forwarded headers: the server builds no absolute URLs and sends no redirects.
 
 ### Configuration
 
-A new `[server]` table, added to [0005](0005-configuration.md) when it is built:
+A new `[server]` table for connection settings, added to [0005](0005-configuration.md) when it is
+built. `listen` stays a top-level key, as today, for compatibility:
 
 ```toml
 [server]
@@ -156,7 +164,7 @@ shutdown_delay = "5s"
 shutdown_timeout = "25s"
 header_read_timeout = "30s"
 idle_timeout = "75s"
-body_idle_timeout = "60s"
+body_read_timeout = "60s"
 trusted_proxies = [] # e.g. ["10.0.0.0/8"]
 ```
 
@@ -217,7 +225,7 @@ in the file.
 | ---- | ------------------------------------------------------------------ | ---------------- | --------------- |
 | 1    | Handle `SIGTERM`                                                   | Framework thread | PR #33          |
 | 2    | Drain: readiness `503`, `shutdown_delay`, deadline, flush uploads  | Framework thread | Proposed        |
-| 3    | Readiness checks: shutting down, disk writable, free space         | Framework thread | Proposed        |
+| 3    | Readiness checks, and enforce `free_space_buffer` on writes        | Framework thread | Proposed        |
 | 4    | Timeouts and `TCP_NODELAY`, `[server]` config, update 0005         | Framework thread | Proposed        |
 | 5    | `docs/user/deployment.md`: proxies, hit locality, DNS, TLS, sizing | Docs thread      | Proposed        |
 | 6    | Update `docs/user/health.md` probes (`startupProbe`, drain)        | Docs thread      | Proposed        |
