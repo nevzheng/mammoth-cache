@@ -1,4 +1,9 @@
-use std::{env, io, path::PathBuf, process::ExitCode, sync::Arc};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    sync::Arc,
+};
 
 use mammoth_cache::{
     auth,
@@ -57,10 +62,8 @@ fn main() -> ExitCode {
         }
     };
     if matches!(command, Command::Check) {
-        // Check the certificate too, without the startup log.
-        if let Some(tls) = &config.tls
-            && let Err(error) = Certificates::load(&tls.cert, &tls.key)
-        {
+        // Check what the file points at too, without the startup log.
+        if let Err(error) = check(&config) {
             eprintln!("mammoth: {error}");
             return ExitCode::FAILURE;
         }
@@ -173,7 +176,13 @@ async fn serve(config: Config) -> io::Result<()> {
     };
     if !config.auth.is_configured(&config.metrics) {
         tracing::warn!("no [auth] users configured: every request is allowed");
-    } else if certificates.is_none() {
+    } else if config.auth.grants_nothing() {
+        tracing::warn!(
+            "[auth] has no users and no anonymous scopes: every request except health checks \
+             is refused"
+        );
+    }
+    if config.auth.is_configured(&config.metrics) && certificates.is_none() {
         tracing::warn!(
             "authentication is on and this server speaks plain HTTP: set [tls] or serve it \
              behind a proxy that terminates TLS, or tokens cross the network in clear"
@@ -257,14 +266,7 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         tracing::warn!("no [disk] configured: running memory only, entries are lost on restart");
     }
     if let Some(bucket) = &config.bucket {
-        let store = BucketStore::open(&BucketConfig {
-            region: bucket.region.clone(),
-            endpoint: bucket.endpoint.clone(),
-            allow_http: bucket.allow_http,
-            timeout: bucket.timeout.0,
-            retries: bucket.retries,
-            ..BucketConfig::new(bucket.url.clone())
-        })?;
+        let store = BucketStore::open(&bucket_config(bucket))?;
         let write = match bucket.write {
             config::BucketWrite::Async => BucketWrite::Async {
                 queue: bucket.upload_queue,
@@ -279,6 +281,59 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
             });
     }
     Ok(builder.build())
+}
+
+fn bucket_config(bucket: &config::Bucket) -> BucketConfig {
+    BucketConfig {
+        region: bucket.region.clone(),
+        endpoint: bucket.endpoint.clone(),
+        allow_http: bucket.allow_http,
+        timeout: bucket.timeout.0,
+        retries: bucket.retries,
+        ..BucketConfig::new(bucket.url.clone())
+    }
+}
+
+/// What `config check` can find without starting the node: a certificate that doesn't load, a
+/// bucket URL no client accepts, or a disk path that can't be used. It contacts nothing and
+/// writes nothing.
+fn check(config: &Config) -> Result<(), String> {
+    if let Some(tls) = &config.tls {
+        Certificates::load(&tls.cert, &tls.key).map_err(|e| e.to_string())?;
+    }
+    if let Some(bucket) = &config.bucket {
+        BucketStore::open(&bucket_config(bucket)).map_err(|e| format!("bucket.url: {e}"))?;
+    }
+    if let Some(disk) = &config.disk {
+        check_disk_path(&disk.path)
+            .map_err(|e| format!("disk.path {}: {e}", disk.path.display()))?;
+    }
+    Ok(())
+}
+
+/// The disk path, or the nearest parent that exists if it doesn't yet, is a writable directory.
+fn check_disk_path(path: &Path) -> io::Result<()> {
+    let mut existing = path;
+    while !existing.exists() {
+        match existing.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => existing = parent,
+            _ => return Ok(()),
+        }
+    }
+    if !existing.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            format!("{} is not a directory", existing.display()),
+        ));
+    }
+    #[cfg(unix)]
+    rustix::fs::access(existing, rustix::fs::Access::WRITE_OK).map_err(|e| {
+        io::Error::new(
+            io::Error::from(e).kind(),
+            format!("{} is not writable", existing.display()),
+        )
+    })?;
+    Ok(())
 }
 
 /// Resolves on Ctrl-C or, on Unix, `SIGTERM`, which is how Kubernetes and Docker stop a container.
@@ -307,4 +362,56 @@ async fn shutdown_signal() {
         () = terminate => "SIGTERM",
     };
     tracing::info!(signal = name, "shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn config(dir: &Path, extra: &str) -> Config {
+        let file = dir.join("mammoth.toml");
+        std::fs::write(&file, format!("version = 1\n{extra}")).unwrap();
+        Config::load(&file).unwrap()
+    }
+
+    #[test]
+    fn check_finds_what_would_fail_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"").unwrap();
+
+        let cases = [
+            ("[bucket]\nurl = \"ftp://host/x\"\n", "bucket.url"),
+            (
+                &format!("[disk]\npath = \"{}\"\nsize = \"1GiB\"\n", file.display()),
+                "not a directory",
+            ),
+            (
+                &format!(
+                    "[disk]\npath = \"{}\"\nsize = \"1GiB\"\n",
+                    file.join("below").display()
+                ),
+                "not a directory",
+            ),
+        ];
+        for (extra, expected) in cases {
+            let err = check(&config(dir.path(), extra)).unwrap_err();
+            assert!(err.contains(expected), "{extra:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn check_accepts_a_disk_path_that_does_not_exist_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not/yet");
+        let extra = format!(
+            "[disk]\npath = \"{}\"\nsize = \"1GiB\"\n[bucket]\nurl = \"file://{}\"\n",
+            path.display(),
+            dir.path().display()
+        );
+        check(&config(dir.path(), &extra)).unwrap();
+        assert!(!path.exists(), "config check created the disk path");
+    }
 }

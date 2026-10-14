@@ -206,8 +206,8 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_shutting_down",
         kind: Kind::Gauge,
         labels: &[],
-        // Set when the node drains, which the workload does not do.
-        live: false,
+        // 0 from the start, 1 while the node drains.
+        live: true,
     },
     Metric {
         name: "mammoth_tier_up",

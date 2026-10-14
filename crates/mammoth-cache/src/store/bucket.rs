@@ -68,8 +68,9 @@ pub struct BucketConfig {
     pub region: Option<String>,
     /// An S3-compatible endpoint such as `MinIO` or Cloudflare R2, or a custom Azure endpoint.
     pub endpoint: Option<String>,
-    /// Allows `http://` endpoints, for a local S3-compatible store or Azurite. S3 and Azure only.
-    pub allow_http: bool,
+    /// Allows (`Some(true)`) or refuses (`Some(false)`) `http://` endpoints, for a local
+    /// S3-compatible store or Azurite. `None` leaves it to the environment. S3 and Azure only.
+    pub allow_http: Option<bool>,
     /// Uploads larger than this are multipart; also the part size. At least 5 MiB.
     pub multipart_threshold: usize,
     /// How long the client keeps retrying a failed request. The core also cuts reads off here.
@@ -86,7 +87,7 @@ impl BucketConfig {
             url: url.into(),
             region: None,
             endpoint: None,
-            allow_http: false,
+            allow_http: None,
             multipart_threshold: MIN_PART_SIZE,
             timeout: DEFAULT_TIMEOUT,
             retries: DEFAULT_RETRIES,
@@ -144,8 +145,8 @@ impl BucketStore {
                 if let Some(endpoint) = &config.endpoint {
                     builder = builder.with_endpoint(endpoint.clone());
                 }
-                if config.allow_http {
-                    builder = builder.with_allow_http(true);
+                if let Some(allow) = config.allow_http {
+                    builder = builder.with_allow_http(allow);
                 }
                 Arc::new(builder.build().map_err(|e| invalid(&e))?)
             }
@@ -263,9 +264,9 @@ fn s3_builder(config: &BucketConfig, url: &Url) -> AmazonS3Builder {
     if let Some(endpoint) = &config.endpoint {
         builder = builder.with_endpoint(endpoint);
     }
-    // Only when set, so `AWS_ALLOW_HTTP` in the environment still works.
-    if config.allow_http {
-        builder = builder.with_allow_http(true);
+    // Unset leaves `AWS_ALLOW_HTTP` from the environment in charge; set, the file wins.
+    if let Some(allow) = config.allow_http {
+        builder = builder.with_allow_http(allow);
     }
     builder
 }
@@ -462,7 +463,7 @@ mod tests {
         let mut config = BucketConfig::new("s3://outage/mammoth");
         config.region = Some("us-east-1".into());
         config.endpoint = Some(endpoint);
-        config.allow_http = true;
+        config.allow_http = Some(true);
         let url = Url::parse(&config.url).unwrap();
         let s3 = s3_builder(&config, &url)
             .with_access_key_id("test")

@@ -246,6 +246,9 @@ pub struct Hit {
 pub enum CacheError {
     /// The entry is over the size limit. `size` is the declared size, when known before reading.
     TooLarge { size: Option<u64>, limit: u64 },
+    /// The client's upload failed: it reset, ended before its `Content-Length` or stalled. The
+    /// body stream marked the error with [`upload_error`]. Nothing was stored.
+    Upload(io::Error),
     /// A tier failed in a way that may pass, such as a timeout.
     Unavailable(io::Error),
     /// Anything else.
@@ -264,6 +267,7 @@ impl fmt::Display for CacheError {
             Self::TooLarge { size: None, limit } => {
                 write!(f, "cache entry is over the limit of {limit} bytes")
             }
+            Self::Upload(e) => write!(f, "the upload failed: {e}"),
             Self::Unavailable(e) => write!(f, "storage unavailable: {e}"),
             Self::Internal(e) => write!(f, "storage error: {e}"),
         }
@@ -274,17 +278,47 @@ impl std::error::Error for CacheError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::TooLarge { .. } => None,
-            Self::Unavailable(e) | Self::Internal(e) => Some(e),
+            Self::Upload(e) | Self::Unavailable(e) | Self::Internal(e) => Some(e),
         }
     }
 }
 
 impl From<io::Error> for CacheError {
     fn from(e: io::Error) -> Self {
+        if is_upload_error(&e) {
+            return Self::Upload(e);
+        }
         match e.kind() {
             io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Self::Unavailable(e),
             _ => Self::Internal(e),
         }
+    }
+}
+
+/// Marks an error from the client's request body, such as a reset or a truncated upload, so a
+/// store that fails on it reports [`CacheError::Upload`] rather than a storage error. Adapters
+/// wrap their body stream's errors in it before handing the stream to [`Cache::put`].
+pub fn upload_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::other(UploadFailed(error.into()))
+}
+
+fn is_upload_error(e: &io::Error) -> bool {
+    e.get_ref()
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<UploadFailed>)
+}
+
+#[derive(Debug)]
+struct UploadFailed(Box<dyn std::error::Error + Send + Sync>);
+
+impl fmt::Display for UploadFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for UploadFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.0)
     }
 }
 
@@ -419,6 +453,8 @@ impl CacheBuilder {
     /// it must be called inside a Tokio runtime.
     #[must_use]
     pub fn build(self) -> Cache {
+        // Exported from the start, so a dashboard sees 0 rather than no data.
+        metrics::gauge!("mammoth_shutting_down").set(0.0);
         // The deepest local tier holds every stored entry, unless it caps entry size (memory).
         let source = self.tiers.last().map(|handle| handle.store.clone());
         let source_cap = source.as_ref().and_then(|store| store.max_entry_size());
@@ -453,8 +489,14 @@ impl CacheBuilder {
                         worker: Mutex::new(Some(worker)),
                     })
                 }
-                // Inline: asked for, or there is no whole local copy to upload from.
-                _ => None,
+                (BucketWrite::Async { .. }, _) => {
+                    tracing::warn!(
+                        "bucket writes are async, but no local tier keeps whole entries to \
+                         upload from (configure [disk]); writing to the bucket inline instead"
+                    );
+                    None
+                }
+                (BucketWrite::Sync, _) => None,
             };
             BucketHandle {
                 store,
@@ -741,10 +783,10 @@ impl Cache {
         }
         if primary == Tier::Bucket {
             // A failed primary write may be the client's fault, so only success is recorded.
-            if result.is_ok() {
-                self.record_bucket_write(key, result);
-            } else {
-                count_bucket("mammoth_tier_writes_total", "error");
+            match result {
+                Ok(_) => self.record_bucket_write(key, result),
+                Err(e) if is_upload_error(e) => {}
+                Err(_) => count_bucket("mammoth_tier_writes_total", "error"),
             }
         }
     }
