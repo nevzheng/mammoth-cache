@@ -1,0 +1,29 @@
+# A node for tests/e2e/test_disk_sizing.py: `disk.size = "max-available"` on a 64 MiB tmpfs, so
+# the disk tier holds 48 MiB. Memory is small, so entries land on disk. Anonymous requests may
+# read and write, so the tests exercise sizing, not auth.
+version = 1
+listen = "0.0.0.0:5071"
+
+[limits]
+max_entry_size = "8MiB"
+
+[memory]
+size = "4MiB"
+max_entry_size = "64KiB"
+
+[disk]
+path = "/var/lib/mammoth"
+size = "max-available"
+free_space_buffer = "16MiB"
+
+[protocols]
+gradle = true
+maven = true
+bazel = true
+
+[auth]
+anonymous = ["cache:read", "cache:write"]
+
+[log]
+level = "info"
+format = "text"

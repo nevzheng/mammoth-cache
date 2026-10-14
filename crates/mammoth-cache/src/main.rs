@@ -291,9 +291,12 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         .max_entry_size(config.limits.max_entry_size.bytes())
         .bounded_tier(Arc::new(memory));
     if let Some(disk) = &config.disk {
+        let capacity = config
+            .resolve_disk_size(disk)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let store = DiskStore::open(DiskConfig {
             path: disk.path.clone(),
-            capacity_bytes: disk.size.bytes(),
+            capacity_bytes: capacity.bytes(),
             max_entry_age: disk.max_entry_age.map(|age| age.0),
             free_space_buffer: disk.free_space_buffer.bytes(),
         })
@@ -344,6 +347,7 @@ fn check(config: &Config) -> Result<(), String> {
     if let Some(disk) = &config.disk {
         check_disk_path(&disk.path)
             .map_err(|e| format!("disk.path {}: {e}", disk.path.display()))?;
+        config.resolve_disk_size(disk)?;
     }
     Ok(())
 }
@@ -487,6 +491,14 @@ mod tests {
                 ),
                 "not a directory",
             ),
+            (
+                &format!(
+                    "[disk]\npath = \"{}\"\nsize = \"max-available\"\n\
+                     free_space_buffer = \"1000000TiB\"\n",
+                    dir.path().display()
+                ),
+                "not larger than disk.free_space_buffer (1000000TiB)",
+            ),
         ];
         for (extra, expected) in cases {
             let err = check(&config(dir.path(), extra)).unwrap_err();
@@ -504,6 +516,8 @@ mod tests {
             dir.path().display()
         );
         check(&config(dir.path(), &extra)).unwrap();
+        let max_available = extra.replace("\"1GiB\"", "\"max-available\"");
+        check(&config(dir.path(), &max_available)).unwrap();
         assert!(!path.exists(), "config check created the disk path");
     }
 }

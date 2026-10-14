@@ -408,6 +408,40 @@ fn available_bytes(path: &Path) -> io::Result<u64> {
     Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
 }
 
+/// The total size of the filesystem holding `path`, or its nearest existing parent when `path`
+/// doesn't exist yet. `disk.size = "max-available"` sizes the tier from it.
+///
+/// # Errors
+///
+/// If the filesystem can't be read.
+pub fn volume_bytes(path: &Path) -> io::Result<u64> {
+    let mut existing = path;
+    while !existing.exists() {
+        match existing.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => existing = parent,
+            _ => {
+                existing = Path::new(".");
+                break;
+            }
+        }
+    }
+    total_bytes(existing)
+}
+
+#[cfg(unix)]
+fn total_bytes(path: &Path) -> io::Result<u64> {
+    let stats = rustix::fs::statvfs(path)?;
+    Ok(stats.f_blocks.saturating_mul(stats.f_frsize))
+}
+
+#[cfg(not(unix))]
+fn total_bytes(_path: &Path) -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "disk.size = \"max-available\" is supported on Unix only",
+    ))
+}
+
 #[cfg(not(unix))]
 fn available_bytes(_path: &Path) -> io::Result<u64> {
     Err(io::ErrorKind::Unsupported.into())
