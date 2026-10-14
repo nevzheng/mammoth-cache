@@ -40,8 +40,8 @@ def parse(text: str) -> Scrape:
     return Scrape(text=text, samples=samples)
 
 
-def scrape(target: Target, *, node: int = 0) -> Scrape:
-    response = httpx.get(target.url("/metrics", node=node), timeout=10.0)
+def scrape(target: Target, *, base: str | None = None) -> Scrape:
+    response = httpx.get(target.url("/metrics", base=base), timeout=10.0)
     response.raise_for_status()
     return parse(response.text)
 

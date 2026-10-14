@@ -58,16 +58,22 @@ class Stack:
         self._run("restart", *services)
         self.wait_ready()
 
+    def wipe_disk(self, service: str) -> None:
+        """Empty a stopped node's disk volume, as if it were a new node."""
+        self._run(
+            "run", "--rm", "--no-deps", "--entrypoint", "/bin/sh", "init",
+            "-c", f"rm -rf /disks/{service}/* && chown 65532:65532 /disks/{service}",
+        )  # fmt: skip
+
     def logs(self, services: Sequence[str] = (), *, tail: int = 200) -> str:
         args = ("logs", "--no-color", "--timestamps", f"--tail={tail}", *services)
         return self._run(*args, check=False).stdout
 
     def wait_ready(self, timeout: float = 60.0) -> None:
         """Wait until every mammoth node answers /readyz with 200."""
-        nodes = range(1 + len(self.target.extra_base_urls))
         deadline = time.monotonic() + timeout
-        for node in nodes:
-            url = self.target.url("/readyz", node=node)
+        for base in self.target.base_urls():
+            url = f"{base}/readyz"
             while True:
                 try:
                     if httpx.get(url, timeout=2.0).status_code == 200:

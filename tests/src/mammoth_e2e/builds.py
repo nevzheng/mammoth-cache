@@ -115,7 +115,7 @@ class GradleProject:
         env["MAMMOTH_EXPECT_CONTINUE"] = str(self.expect_continue).lower()
         if self.credentials is not None:
             env["MAMMOTH_CACHE_USER"] = self.credentials.username
-            env["MAMMOTH_CACHE_PASSWORD"] = self.credentials.password.get_secret_value()
+            env["MAMMOTH_CACHE_PASSWORD"] = self.credentials.token.get_secret_value()
         if self.java_home:
             env["JAVA_HOME"] = self.java_home
         code, output = _run(argv, self.root, env, timeout)
@@ -123,15 +123,17 @@ class GradleProject:
 
 
 _SETTINGS = """<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
-  <servers>
+  <servers>{servers}</servers>
+</settings>
+"""
+
+_SERVER = """
     <server>
       <id>mammoth</id>
       <username>{username}</username>
       <password>{password}</password>
     </server>
-  </servers>
-</settings>
-"""
+  """
 
 _EXTENSIONS = """<extensions xmlns="http://maven.apache.org/EXTENSIONS/1.1.0">
   <extension>
@@ -180,11 +182,13 @@ class MavenProject:
         home = tools.maven_home(self.maven_version)
         local_cache = self.root / "target-build-cache" / uuid.uuid4().hex
         settings = self.root / "settings.xml"
-        username, password = ("anonymous", "")
+        servers = ""
         if self.credentials is not None:
-            username = self.credentials.username
-            password = self.credentials.password.get_secret_value()
-        settings.write_text(_SETTINGS.format(username=username, password=password))
+            servers = _SERVER.format(
+                username=self.credentials.username,
+                password=self.credentials.token.get_secret_value(),
+            )
+        settings.write_text(_SETTINGS.format(servers=servers))
         argv = [
             str(home / "bin" / "mvn"),
             "--batch-mode",
@@ -205,3 +209,98 @@ class MavenProject:
             env["JAVA_HOME"] = self.java_home
         code, output = _run(argv, self.root, env, timeout)
         return BuildResult(argv=tuple(argv), returncode=code, output=output)
+
+
+_PROCESSES = re.compile(r"INFO: \d+ process(?:es)?: (?P<kinds>[^.]*)\.")
+
+
+@dataclass(frozen=True, slots=True)
+class BazelResult(BuildResult):
+    def processes(self) -> dict[str, int]:
+        """The build's process summary, e.g. `{"remote cache hit": 2, "internal": 1}`."""
+        summaries = list(_PROCESSES.finditer(self.output))
+        if not summaries:
+            return {}
+        match = summaries[-1]  # the last summary is the build's
+        kinds: dict[str, int] = {}
+        for part in match["kinds"].split(","):
+            count, _, kind = part.strip().partition(" ")
+            kinds[kind] = int(count)
+        return kinds
+
+    def remote_hits(self) -> int:
+        return self.processes().get("remote cache hit", 0)
+
+    def executed(self) -> int:
+        return sum(
+            n for k, n in self.processes().items() if k not in {"internal", "remote cache hit"}
+        )
+
+
+@dataclass(slots=True)
+class BazelProject:
+    """A copy of the Bazel fixture (genrules only), built by one Bazel version.
+
+    Every build uses a fresh output base, so local caches are empty and any hit is remote.
+    """
+
+    root: Path
+    version: str
+    cache_url: str
+    credentials: Credentials | None = None
+    auth_in_header: bool = False  # Bearer via --remote_header instead of user:token in the URL
+    upload: bool = True
+
+    @classmethod
+    def create(cls, workdir: Path, version: str, cache_url: str) -> BazelProject:
+        root = workdir / "bazel"
+        shutil.copytree(FIXTURES / "bazel", root)
+        (root / "lib" / "salt.txt").write_text(uuid.uuid4().hex + "\n")
+        return cls(root=root, version=version, cache_url=cache_url)
+
+    def touch_app(self) -> None:
+        source = self.root / "app" / "app.txt"
+        source.write_text(source.read_text() + uuid.uuid4().hex + "\n")
+
+    def remote_cache_flags(self) -> list[str]:
+        url = self.cache_url
+        flags: list[str] = []
+        if self.credentials is not None:
+            token = self.credentials.token.get_secret_value()
+            if self.auth_in_header:
+                flags.append(f"--remote_header=Authorization=Bearer {token}")
+            else:
+                scheme, _, rest = url.partition("://")
+                url = f"{scheme}://{self.credentials.username}:{token}@{rest}"
+        flags += [
+            f"--remote_cache={url}",
+            f"--remote_upload_local_results={str(self.upload).lower()}",
+        ]
+        return flags
+
+    def build(self, *targets: str, timeout: float = 600.0) -> BazelResult:
+        binary = tools.bazel_binary(self.version)
+        output_base = self.root.parent / f"bazel-out-{uuid.uuid4().hex[:8]}"
+        cache = tools.cache_dir()
+        argv = [
+            str(binary),
+            "--ignore_all_rc_files",
+            f"--output_user_root={cache / 'bazel-user-root'}",
+            f"--output_base={output_base}",
+            "--max_idle_secs=5",
+            *tools.bazel_startup_args(),
+            "build",
+            f"--repository_cache={cache / 'bazel-repository-cache'}",
+            "--lockfile_mode=off",
+            "--noshow_progress",
+            "--color=no",
+            "--curses=no",
+            "--spawn_strategy=local",
+            *[f"--registry={r}" for r in tools.bazel_registries()],
+            *self.remote_cache_flags(),
+            *(targets or ("//...",)),
+        ]
+        env = os.environ.copy()
+        env["HOME"] = str(cache / "bazel-home")  # no ~/.bazelrc or credential helpers
+        code, output = _run(argv, self.root, env, timeout)
+        return BazelResult(argv=tuple(argv), returncode=code, output=output)

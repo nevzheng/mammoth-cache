@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import xml.etree.ElementTree as ET
 from functools import cache
 from typing import Any
@@ -59,3 +60,23 @@ def maven_extension(line: str) -> str:
     if line.count(".") >= 2:
         return line
     return _newest_in_line(_maven_metadata(MAVEN_EXTENSION), line)
+
+
+BAZEL_REPOSITORY = "https://github.com/bazelbuild/bazel"
+
+
+@cache
+def _bazel_releases() -> list[str]:
+    # git ls-remote has no API rate limit, unlike the GitHub REST API.
+    out = subprocess.run(
+        ["git", "ls-remote", "--tags", "--refs", BAZEL_REPOSITORY],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    return [line.rpartition("refs/tags/")[2] for line in out.splitlines()]
+
+
+def bazel(line: str) -> str:
+    return line if line.count(".") >= 2 else _newest_in_line(_bazel_releases(), line)

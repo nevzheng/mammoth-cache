@@ -1,0 +1,9 @@
+genrule(
+    name = "app",
+    srcs = [
+        "app.txt",
+        "//lib",
+    ],
+    outs = ["app.out"],
+    cmd = "cat $(location app.txt) $(location //lib) > $@",
+)

@@ -4,8 +4,10 @@
 #
 #   docker compose -f deploy/compose/compose.yaml up --build
 #
-# Profiles: `multi` adds a second mammoth node on the same bucket; `observe` adds Grafana.
-# MAMMOTH_IMAGE picks the image under test, for example ghcr.io/nevzheng/mammoth-cache:edge.
+# Nodes: `mammoth` (port 5071) needs credentials for everything; `mammoth-open` (5073) lets
+# anonymous requests read. Profiles: `multi` adds `mammoth-2` (5072) on the same bucket; `observe`
+# adds Grafana (3000). MAMMOTH_IMAGE picks the image under test, for example
+# ghcr.io/nevzheng/mammoth-cache:edge. MAMMOTH_CONFIG_DIR swaps in other config files.
 
 name: mammoth
 
@@ -14,8 +16,15 @@ x-mammoth: &mammoth
   build:
     context: ../..
   environment:
-    MAMMOTH_ADDR: 0.0.0.0:5071
+    MAMMOTH_CONFIG: /etc/mammoth/mammoth.toml
+    # The bucket tier reads credentials from the environment, never from mammoth.toml.
+    AWS_ACCESS_KEY_ID: mammoth-e2e
+    AWS_SECRET_ACCESS_KEY: mammoth-e2e-secret
+    AWS_ALLOW_HTTP: "true"
   restart: "no"
+  depends_on:
+    init:
+      condition: service_completed_successfully
   # The image is distroless, with no shell or curl for an in-container health check. The harness
   # waits on /readyz from the host instead.
 
@@ -24,18 +33,26 @@ services:
     <<: *mammoth
     ports:
       - "${MAMMOTH_PORT:-5071}:5071"
-    depends_on:
-      bucket-init:
-        condition: service_completed_successfully
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth.toml:/etc/mammoth/mammoth.toml:ro
+      - mammoth-disk:/var/lib/mammoth
+
+  mammoth-open:
+    <<: *mammoth
+    ports:
+      - "${MAMMOTH_OPEN_PORT:-5073}:5071"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-open.toml:/etc/mammoth/mammoth.toml:ro
+      - mammoth-open-disk:/var/lib/mammoth
 
   mammoth-2:
     <<: *mammoth
     profiles: [multi]
     ports:
       - "${MAMMOTH_2_PORT:-5072}:5071"
-    depends_on:
-      bucket-init:
-        condition: service_completed_successfully
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth.toml:/etc/mammoth/mammoth.toml:ro
+      - mammoth-2-disk:/var/lib/mammoth
 
   seaweedfs:
     image: chrislusf/seaweedfs:4.48
@@ -52,14 +69,21 @@ services:
       timeout: 2s
       retries: 30
 
-  bucket-init:
+  # One-shot: hands the disk volumes to the image's nonroot user (65532) and creates the bucket.
+  # Idempotent, so `up` works on a stack that is already running. The harness also runs it to
+  # wipe a node's disk.
+  init:
     image: chrislusf/seaweedfs:4.48
     entrypoint: ["/bin/sh", "-c"]
-    # Idempotent, so `up` works on a stack that is already running.
     command:
       - >-
+        chown 65532:65532 /disks/*;
         out=$$(echo 's3.bucket.create -name mammoth-e2e' | weed shell -master=seaweedfs:9333 2>&1);
         echo "$$out"; echo "$$out" | grep -q -E 'created bucket|already exists'
+    volumes:
+      - mammoth-disk:/disks/mammoth
+      - mammoth-open-disk:/disks/mammoth-open
+      - mammoth-2-disk:/disks/mammoth-2
     depends_on:
       seaweedfs:
         condition: service_healthy
@@ -95,3 +119,8 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
+
+volumes:
+  mammoth-disk:
+  mammoth-open-disk:
+  mammoth-2-disk:

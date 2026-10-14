@@ -188,26 +188,32 @@ CI checks that `uv.lock` is current with `uv lock --check`. Dependabot (or Renov
 ### Scenarios
 
 The end-to-end suite covers what 0008's acceptance suite does not. The acceptance suite keeps its
-scenario table and moves onto the shared harness.
+scenario table, runs it for Gradle, Maven and Bazel (doc 0012), and moves onto the shared harness.
 
-| Scenario             | Steps                                                        | Expect                                                                    |
-| -------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| Image boots          | Start the stack                                              | `/readyz` 200, `/ping` 200, Prometheus target up                          |
-| Round trip           | PUT then GET Gradle and Maven entries of several sizes       | Same bytes back; hit and store counters move                              |
-| Write-through        | PUT, wait for `mammoth_bucket_upload_queue_entries` to hit 0 | Object present in the bucket under the protocol's namespace               |
-| Tier fall-through    | Fill past memory and disk sizes, GET the oldest entries      | Served from the bucket; tier hit counters show L3                         |
-| Refill after restart | Store entries, stop the node, wipe its disk volume, start it | Entries served from the bucket; disk refilled                             |
-| Shared bucket        | Store on mammoth-1, GET from mammoth-2 (`multi` profile)     | Hit on mammoth-2 via the bucket                                           |
-| Bucket down          | Stop SeaweedFS, GET and PUT                                  | Memory and disk keep serving; bucket errors counted; no 5xx on Gradle PUT |
-| Bucket back          | Start SeaweedFS again                                        | Queued or new uploads reach the bucket; the queue drains                  |
-| Gradle write-once    | PUT the same key twice with different bodies                 | First body kept                                                           |
-| Maven overwrite      | PUT the same path twice                                      | Second body served                                                        |
-| Auth                 | Each user and scope, wrong token, anonymous                  | Status codes and `WWW-Authenticate` as in 0002                            |
-| Oversize             | Gradle and Maven PUT over the limit                          | Gradle 200 and dropped; Maven 413; both counted                           |
-| Metrics contract     | Scrape `/metrics`                                            | `promtool check metrics` passes; every 0004 metric present                |
+| Scenario             | Steps                                                                          | Expect                                                                    |
+| -------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| Image boots          | Start the stack                                                                | `/readyz` 200, `/ping` 200, Prometheus target up                          |
+| Round trip           | PUT then GET Gradle and Maven entries of several sizes                         | Same bytes back; hit and store counters move                              |
+| Write-through        | PUT, wait for `mammoth_bucket_upload_queue_entries` to hit 0                   | Object present in the bucket under the protocol's namespace               |
+| Tier fall-through    | Fill past memory and disk sizes, GET the oldest entries                        | Served from the bucket; tier hit counters show L3                         |
+| Refill after restart | Store entries, stop the node, wipe its disk volume, start it                   | Entries served from the bucket; disk refilled                             |
+| Shared bucket        | Store on mammoth-1, GET from mammoth-2 (`multi` profile)                       | Hit on mammoth-2 via the bucket                                           |
+| Bucket down          | Stop SeaweedFS, GET and PUT                                                    | Memory and disk keep serving; bucket errors counted; no 5xx on Gradle PUT |
+| Bucket back          | Start SeaweedFS again                                                          | Queued or new uploads reach the bucket; the queue drains                  |
+| Gradle write-once    | PUT the same key twice with different bodies                                   | First body kept                                                           |
+| Maven overwrite      | PUT the same path twice                                                        | Second body served                                                        |
+| Auth                 | Each user and scope, wrong token, anonymous                                    | Status codes and `WWW-Authenticate` as in 0002                            |
+| Oversize             | Gradle and Maven PUT over the limit                                            | Gradle 200 and dropped; Maven 413; both counted                           |
+| Metrics contract     | Scrape `/metrics`                                                              | `promtool check metrics` passes; every 0004 metric present                |
+| Auth: happy paths    | Basic and Bearer for each user and scope; anonymous read on `mammoth-open`     | Round trips, reads, admin API as the scopes allow                         |
+| Auth: refusals       | No, wrong or another user's token; missing scope; refused upload with `Expect` | `401` with `WWW-Authenticate` or `403`, AIP-193 reason; nothing stored    |
+| Auth: hostile input  | Malformed and fuzzed `Authorization` headers, sent raw                         | Always `401`/`403`; never `5xx`; token never echoed                       |
+| Protocol edge cases  | Racing stores, chunked and truncated uploads, bad keys and paths sent raw      | One winner; no partial entries; `400`, never `5xx`                        |
+| Duplicate stores     | Re-store a present key, sending the body slowly                                | Answer only after the body is read, so pooled connections survive         |
+| Bazel cache          | AC and CAS round trips, digest mismatch, bad digests, oversize                 | Per doc 0012: `201`/`200`, `400 DIGEST_MISMATCH`, `413`                   |
 
 Tests that need a server feature that is not built yet carry `@pytest.mark.requires(...)` naming
-it (`config`, `auth`, `disk`, `bucket`, `size-limit`). The target profile lists the features it
+it (`config`, `auth`, `disk`, `bucket`, `bazel`). The target profile lists the features it
 has, and the tests for missing ones skip. The PR that builds a feature turns it on in
 `targets/compose.toml`, so its tests start running in that PR. Known bugs are `xfail(strict=True)`
 with the reason, so the fix turns them into a failure that asks for the marker to go.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import tempfile
 import zipfile
@@ -57,3 +58,44 @@ def gradle_home(version: str) -> Path:
 def maven_home(version: str) -> Path:
     url = f"{MAVEN_CENTRAL}/{MAVEN_DIST}/{version}/apache-maven-{version}-bin.zip"
     return _install(url, f"apache-maven-{version}")
+
+
+def bazel_binary(version: str) -> Path:
+    """The Bazel release binary for this platform, downloaded once from GitHub releases."""
+    machine = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "arm64", "arm64": "arm64"}[
+        platform.machine().lower()
+    ]
+    system = platform.system().lower()
+    dest = cache_dir() / "dists" / f"bazel-{version}-{system}-{machine}"
+    if dest.is_file():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    url = (
+        "https://github.com/bazelbuild/bazel/releases/download/"
+        f"{version}/bazel-{version}-{system}-{machine}"
+    )
+    tmp = dest.with_suffix(f".{os.getpid()}.part")
+    with net.stream(url) as response, tmp.open("wb") as f:
+        for chunk in response.iter_bytes():
+            f.write(chunk)
+    tmp.chmod(0o755)
+    tmp.rename(dest)
+    return dest
+
+
+def bazel_startup_args() -> list[str]:
+    """Extra Bazel startup options from `$MAMMOTH_E2E_BAZEL_STARTUP_ARGS` (space-separated).
+
+    For machines whose proxy needs its CA in Bazel's JVM, e.g.
+    `--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts`.
+    """
+    return os.environ.get("MAMMOTH_E2E_BAZEL_STARTUP_ARGS", "").split()
+
+
+def bazel_registries() -> list[str]:
+    """Extra module registries from `$MAMMOTH_E2E_BAZEL_REGISTRIES` (comma-separated).
+
+    For networks that block bcr.bazel.build; empty means Bazel's default registry.
+    """
+    raw = os.environ.get("MAMMOTH_E2E_BAZEL_REGISTRIES", "")
+    return [r.strip() for r in raw.split(",") if r.strip()]

@@ -4,17 +4,17 @@ Non-hermetic suites that run the real `mammoth` image against real infrastructur
 [0011](../docs/design/0011-end-to-end-and-load-testing.md); the client matrix and scenarios for the
 acceptance suite are [0008](../docs/design/0008-supported-clients.md).
 
-| Directory     | What it tests                                                               |
-| ------------- | --------------------------------------------------------------------------- |
-| `e2e/`        | The image's HTTP surface, metrics and storage tiers, on the Compose stack   |
-| `acceptance/` | Real Gradle and Maven (Build Cache Extension) builds against the image      |
-| `src/`        | `mammoth_e2e`, the typed harness both suites import                         |
-| `targets/`    | Target profiles: where the system under test is and what tests may do to it |
+| Directory     | What it tests                                                                 |
+| ------------- | ----------------------------------------------------------------------------- |
+| `e2e/`        | The image's HTTP surface, metrics and storage tiers, on the Compose stack     |
+| `acceptance/` | Real Gradle, Maven (Build Cache Extension) and Bazel builds against the image |
+| `src/`        | `mammoth_e2e`, the typed harness both suites import                           |
+| `targets/`    | Target profiles: where the system under test is and what tests may do to it   |
 
 ## Running locally
 
-You need Docker, [uv](https://docs.astral.sh/uv/), and Java 17 for the acceptance suite. The
-harness downloads Gradle and Maven itself, into `~/.cache/mammoth-e2e`.
+You need Docker, [uv](https://docs.astral.sh/uv/), git, and Java 17 for the acceptance suite. The
+harness downloads Gradle, Maven and Bazel itself, into `~/.cache/mammoth-e2e`.
 
 ```sh
 docker build -t mammoth-cache:e2e .        # the image under test
@@ -22,6 +22,7 @@ cd tests
 uv run pytest e2e                          # starts and stops deploy/compose for you
 uv run pytest acceptance --gradle 8.14     # one Gradle line; default is 7.6,8.14,9
 uv run pytest acceptance/test_maven.py --maven-extension latest
+uv run pytest acceptance/test_bazel.py --bazel 8
 ```
 
 `MAMMOTH_IMAGE=ghcr.io/nevzheng/mammoth-cache:edge` tests a published image instead.
@@ -39,7 +40,22 @@ CI runs these, plus `uv lock --check`, in the `e2e` workflow.
 ## Targets and features
 
 A target profile lists the server `features` it has (`config`, `auth`, `disk`, `bucket`,
-`size-limit`). Tests marked `@pytest.mark.requires(...)` skip on targets without them, so the PR
+`bazel`). Tests marked `@pytest.mark.requires(...)` skip on targets without them, so the PR
 that builds a feature turns it on in `targets/compose.toml` and its tests start running. Tests
 marked `control` stop or restart services and skip on targets the harness does not own.
 `MAMMOTH_E2E_*` environment variables override profile values, for example `MAMMOTH_E2E_BASE_URL`.
+
+## Users
+
+`deploy/compose/config/mammoth.toml` has four test users, whose tokens are in
+`targets/compose.toml`: `ci` (read and write, the default for every client), `developer` (read
+only), `prometheus` (`metrics:read`) and `admin` (`admin:read`). The `mammoth-open` node on port
+5073 has the same users and lets anonymous requests read. The tokens protect nothing; never reuse
+them.
+
+## Behind a proxy
+
+If your network blocks bcr.bazel.build or needs a proxy CA inside Bazel's JVM, set
+`MAMMOTH_E2E_BAZEL_REGISTRIES` (comma-separated registry URLs) and
+`MAMMOTH_E2E_BAZEL_STARTUP_ARGS` (for example
+`--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts`).

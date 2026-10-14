@@ -14,11 +14,11 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 class Feature(StrEnum):
     """Server features a target may or may not have. Tests that need one skip without it."""
 
-    CONFIG = "config"  # reads mammoth.toml
-    AUTH = "auth"  # Basic and Bearer auth (doc 0002)
-    DISK = "disk"  # L2 wired into the binary
-    BUCKET = "bucket"  # L3 wired into the binary
-    SIZE_LIMIT = "size-limit"  # a configurable entry limit small enough to test
+    CONFIG = "config"  # reads mammoth.toml, so limits and users are the profile's
+    AUTH = "auth"  # enforces users, tokens and scopes (doc 0002)
+    DISK = "disk"  # stores reach the disk tier and survive a restart
+    BUCKET = "bucket"  # stores reach the bucket, and nodes refill from it
+    BAZEL = "bazel"  # serves Bazel's HTTP cache on /bazel/ (doc 0012)
 
 
 class Bucket(BaseModel):
@@ -33,10 +33,12 @@ class Bucket(BaseModel):
 
 
 class Credentials(BaseModel):
+    """A user and its token, sent as HTTP Basic (token as password) or as a Bearer token."""
+
     model_config = ConfigDict(frozen=True)
 
     username: str
-    password: SecretStr
+    token: SecretStr
 
 
 class Compose(BaseModel):
@@ -61,14 +63,18 @@ class Target(BaseSettings):
 
     name: str
     base_url: HttpUrl
+    # A node with the same users whose anonymous requests may read (`auth.anonymous`).
+    open_base_url: HttpUrl | None = None
     extra_base_urls: tuple[HttpUrl, ...] = ()
     prometheus_url: HttpUrl | None = None
     features: frozenset[Feature] = frozenset()
-    max_entry_size: int = 100 * 1024 * 1024  # [limits] max_entry_size; 100 MiB by default
+    max_entry_size: int = 100 * 1024 * 1024  # [limits] max_entry_size
+    memory_max_entry_size: int = 1024 * 1024  # [memory] max_entry_size
     control: bool = False
     destructive: bool = False
     bucket: Bucket | None = None
     users: dict[str, Credentials] = Field(default_factory=dict)
+    default_user: str | None = None  # sent by clients unless a test says otherwise
     compose: Compose | None = None
 
     @classmethod
@@ -93,9 +99,24 @@ class Target(BaseSettings):
             data["compose"]["file"] = str((path.parent / data["compose"]["file"]).resolve())
         return cls(**data)
 
-    def url(self, path: str, *, node: int = 0) -> str:
-        base = str(self.base_url if node == 0 else self.extra_base_urls[node - 1])
-        return base.rstrip("/") + "/" + path.lstrip("/")
+    def base_urls(self) -> list[str]:
+        """Every mammoth node of the target."""
+        nodes = [self.base_url, *self.extra_base_urls]
+        if self.open_base_url is not None:
+            nodes.append(self.open_base_url)
+        return [str(n).rstrip("/") for n in nodes]
+
+    def url(self, path: str, *, base: HttpUrl | str | None = None) -> str:
+        root = str(base if base is not None else self.base_url).rstrip("/")
+        return root + "/" + path.lstrip("/")
 
     def has(self, *features: Feature) -> bool:
         return all(f in self.features for f in features)
+
+    def user(self, name: str) -> Credentials:
+        return self.users[name]
+
+    @property
+    def credentials(self) -> Credentials | None:
+        """The default user's credentials, if the profile names one."""
+        return self.users[self.default_user] if self.default_user else None

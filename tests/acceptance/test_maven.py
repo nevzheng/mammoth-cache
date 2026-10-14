@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import SecretStr
 
 from mammoth_e2e.builds import BuildResult, MavenProject
 from mammoth_e2e.metrics import delta, scrape
@@ -38,7 +39,9 @@ def project(
 ) -> MavenProject:
     del live
     maven, extension = maven_versions
-    return MavenProject.create(tmp_path, maven, extension, target.url("/maven"))
+    project = MavenProject.create(tmp_path, maven, extension, target.url("/maven"))
+    project.credentials = target.credentials
+    return project
 
 
 def test_store(project: MavenProject, target: Target) -> None:
@@ -74,17 +77,8 @@ def test_miss(project: MavenProject) -> None:
 
 
 @pytest.mark.requires("auth")
-def test_basic_auth(project: MavenProject, target: Target) -> None:
-    project.credentials = target.users["ci"]
-    assert project.build().ok
-    result = project.build()
-    assert all(restored(result, m) for m in MODULES), result.describe()
-
-
-@pytest.mark.requires("auth")
 def test_challenge(project: MavenProject, target: Target) -> None:
-    """Maven sends credentials only after a 401 with WWW-Authenticate on GET."""
-    project.credentials = target.users["ci"]
+    """Maven sends credentials after a 401 with WWW-Authenticate, then succeeds."""
     before = scrape(target)
     assert project.build().ok
     result = project.build()
@@ -94,14 +88,34 @@ def test_challenge(project: MavenProject, target: Target) -> None:
 
 @pytest.mark.requires("auth")
 def test_wrong_credentials(project: MavenProject, target: Target) -> None:
-    project.credentials = target.users["ci"].model_copy(update={"password": "wrong"})
+    """Maven logs cache errors and builds anyway; nothing may be restored or stored."""
+    project.credentials = target.user("ci").model_copy(update={"token": SecretStr("mmc_wrong")})
+    before = scrape(target)
     result = project.build()
     assert result.ok, "a cache error must not fail the build\n" + result.describe()
+    after = scrape(target)
+    assert delta(before, after, "mammoth_http_requests_total", code="401") >= 1
+    assert delta(before, after, "mammoth_http_requests_total", method="PUT", code="201") == 0
 
 
-@pytest.mark.requires("auth", "config")
-def test_anonymous_read_only(project: MavenProject, target: Target) -> None:
-    project.credentials = target.users["ci"]
+@pytest.mark.requires("auth")
+def test_read_only_user(project: MavenProject, target: Target) -> None:
+    """A read-only user restores; its stores are refused without breaking the build."""
+    assert project.build().ok
+    project.credentials = target.user("developer")
+    result = project.build()
+    assert result.ok, result.describe()
+    assert all(restored(result, m) for m in MODULES), result.describe()
+
+
+@pytest.mark.requires("auth")
+def test_anonymous_read_only(
+    tmp_path: Path, maven_versions: tuple[str, str], target: Target, open_base_url: str
+) -> None:
+    maven, extension = maven_versions
+    url = target.url("/maven", base=open_base_url)
+    project = MavenProject.create(tmp_path, maven, extension, url)
+    project.credentials = target.user("ci")
     assert project.build().ok
     project.credentials = None
     result = project.build()

@@ -1,7 +1,7 @@
 name: acceptance
 
-# Real Gradle and Maven builds against the image, one job per client line. See
-# docs/design/0008-supported-clients.md. Each line resolves to its newest release at run time, so
+# Real Gradle, Maven and Bazel builds against the image, one job per client line. See
+# docs/design/0008-supported-clients.md and 0012. Each line resolves to its newest release at run time, so
 # the nightly run picks up new patch releases.
 on:
   pull_request:
@@ -42,6 +42,9 @@ jobs:
           - { name: gradle-9, suite: test_gradle.py, args: --gradle 9 }
           - { name: maven-ext-1.2, suite: test_maven.py, args: --maven 3.9 --maven-extension 1.2 }
           - { name: maven-ext-latest, suite: test_maven.py, args: --maven 3.9 --maven-extension latest }
+          - { name: bazel-7, suite: test_bazel.py, args: --bazel 7 }
+          - { name: bazel-8, suite: test_bazel.py, args: --bazel 8 }
+          - { name: bazel-9, suite: test_bazel.py, args: --bazel 9 }
     name: ${{ matrix.name }}
     defaults:
       run:

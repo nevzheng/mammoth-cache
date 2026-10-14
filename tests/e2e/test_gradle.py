@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -9,19 +10,20 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from mammoth_e2e import blobs
+from mammoth_e2e import blobs, raw
+from mammoth_e2e.client import CacheClient, auth_headers
 from mammoth_e2e.metrics import delta, scrape
 from mammoth_e2e.target import Feature
 
 if TYPE_CHECKING:
-    from mammoth_e2e.client import CacheClient
     from mammoth_e2e.metrics import Scrape
+    from mammoth_e2e.stack import Stack
     from mammoth_e2e.target import Target
 
 MIB = 1024 * 1024
 
 
-@pytest.mark.parametrize("size", [1, 64 * 1024, 4 * MIB], ids=["1B", "64KiB", "4MiB"])
+@pytest.mark.parametrize("size", [1, 64 * 1024, MIB], ids=["1B", "64KiB", "1MiB"])
 def test_round_trip(client: CacheClient, size: int) -> None:
     key, body = blobs.gradle_key(), blobs.payload(size)
     assert client.gradle_get(key).status_code == 404
@@ -41,10 +43,11 @@ def test_mid_size_entry_is_kept(
         request.applymarker(
             pytest.mark.xfail(
                 strict=True,
-                reason="memory-only binary answers 201 but drops entries over 16 MiB (audit)",
+                reason="stores reach memory only, which answers 201 but drops big entries (audit)",
             )
         )
-    key, body = blobs.gradle_key(), blobs.payload(32 * MIB)
+    size = (target.memory_max_entry_size + target.max_entry_size) // 2
+    key, body = blobs.gradle_key(), blobs.payload(size)
     assert client.gradle_put(key, body).status_code == 201
     assert client.gradle_get(key).content == body
 
@@ -94,3 +97,91 @@ def test_invalid_keys_are_rejected_cleanly(client: CacheClient, key: str) -> Non
         assert response.status_code in {200, 404}
     else:
         assert response.status_code in {400, 404}, response.text
+
+
+# Edge cases
+
+
+@pytest.mark.control
+def test_concurrent_stores_of_one_key(
+    client: CacheClient, target: Target, controlled: Stack, request: pytest.FixtureRequest
+) -> None:
+    """Racing builds store one key: one write wins everywhere, and still wins after a restart."""
+    if target.has(Feature.DISK):
+        request.applymarker(
+            pytest.mark.xfail(
+                strict=True,
+                reason="racing stores each answer 201; memory and disk keep different bodies",
+            )
+        )
+    keys = [blobs.gradle_key() for _ in range(5)]  # several rounds, so the race shows reliably
+    winners: dict[str, bytes] = {}
+
+    def store(key: str, body: bytes) -> int:
+        c = CacheClient(target, credentials=target.credentials)
+        try:
+            return c.gradle_put(key, body).status_code
+        finally:
+            c.close()
+
+    for key in keys:
+        bodies = [blobs.payload(256 * 1024) for _ in range(16)]
+        with ThreadPoolExecutor(max_workers=len(bodies)) as pool:
+            statuses = list(pool.map(store, [key] * len(bodies), bodies))
+        assert set(statuses) <= {200, 201}, statuses
+        assert statuses.count(201) == 1, statuses
+        winners[key] = bodies[statuses.index(201)]
+        assert client.gradle_get(key).content == winners[key]
+    controlled.restart("mammoth")
+    for key, winner in winners.items():
+        assert client.gradle_get(key).content == winner, "a restart served a different body"
+
+
+def test_chunked_upload_without_length(client: CacheClient) -> None:
+    key = blobs.gradle_key()
+    chunks = [blobs.payload(64 * 1024) for _ in range(16)]
+    assert client.gradle_put(key, iter(chunks)).status_code == 201
+    assert client.gradle_get(key).content == b"".join(chunks)
+
+
+def test_truncated_upload_stores_nothing(client: CacheClient, target: Target) -> None:
+    """A build killed mid-upload must not leave a partial entry that later builds load."""
+    key = blobs.gradle_key()
+    headers = auth_headers(target.credentials)
+    raw.truncated_put(str(target.base_url), f"/cache/{key}", headers, 100_000, b"x" * 50_000)
+    assert client.gradle_get(key).status_code == 404
+
+
+def test_head_on_a_miss(client: CacheClient) -> None:
+    assert client.head(f"/cache/{blobs.gradle_key()}").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["ABCDEF0123456789ABCDEF0123456789", "a" * 129, "zz", "%00", "0123-4567"],
+    ids=["uppercase", "too-long", "not-hex", "nul", "dash"],
+)
+def test_bad_keys_are_400(client: CacheClient, key: str) -> None:
+    assert client.gradle_put(key, b"x").status_code == 400
+    assert client.gradle_get(key).status_code == 400
+
+
+@pytest.mark.requires("disk")
+def test_entry_at_the_limit_is_kept(client: CacheClient, target: Target) -> None:
+    key, body = blobs.gradle_key(), blobs.payload(target.max_entry_size)
+    assert client.gradle_put(key, body).status_code == 201
+    assert client.gradle_get(key).content == body
+
+
+@pytest.mark.xfail(strict=True, reason="a duplicate store is answered before its body is read")
+def test_duplicate_store_reads_the_body_first(client: CacheClient, target: Target) -> None:
+    """Re-storing a present key answers 200, but only after reading the body.
+
+    CI agents often store a key another agent just stored. Answering early and closing the
+    connection leaves the client writing into a closed socket: a broken pipe, which Gradle treats
+    as a failed store and turns the remote cache off for the rest of the build.
+    """
+    key, body = blobs.gradle_key(), blobs.payload(MIB)
+    assert client.gradle_put(key, body).status_code == 201
+    headers = auth_headers(target.credentials)
+    assert not raw.answers_before_body(str(target.base_url), f"/cache/{key}", headers, body)

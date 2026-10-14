@@ -81,8 +81,9 @@ def controlled(stack: Stack | None) -> Stack:
 
 @pytest.fixture
 def client(target: Target, live: Stack | None) -> Iterator[CacheClient]:
+    """A client as the target's default user."""
     del live
-    c = CacheClient(target)
+    c = CacheClient(target, credentials=target.credentials)
     yield c
     c.close()
 
@@ -91,6 +92,13 @@ def client(target: Target, live: Stack | None) -> Iterator[CacheClient]:
 def metrics_before(target: Target, live: Stack | None) -> Scrape:
     del live
     return scrape(target)
+
+
+@pytest.fixture
+def open_base_url(target: Target) -> str:
+    if target.open_base_url is None:
+        pytest.skip(f"target {target.name!r} has no node with anonymous read")
+    return str(target.open_base_url)
 
 
 @pytest.fixture

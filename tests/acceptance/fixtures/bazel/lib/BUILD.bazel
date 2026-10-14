@@ -1,0 +1,7 @@
+genrule(
+    name = "lib",
+    srcs = ["salt.txt"],
+    outs = ["lib.out"],
+    cmd = "sha256sum $(location salt.txt) > $@ && head -c 65536 /dev/zero >> $@",
+    visibility = ["//visibility:public"],
+)
