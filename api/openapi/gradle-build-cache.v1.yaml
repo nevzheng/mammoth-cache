@@ -137,7 +137,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/GradleVersion"
         - $ref: "#/components/parameters/UserAgent"
-        - $ref: "#/components/parameters/Expect"
+        - $ref: "./common.yaml#/components/parameters/Expect"
       requestBody:
         required: true
         content:
@@ -191,14 +191,6 @@ components:
         type: string
         maxLength: 512
         examples: ["Gradle/8.10 (Linux;6.1;amd64) (Eclipse Adoptium;17.0.9;17.0.9+9)"]
-    Expect:
-      name: Expect
-      in: header
-      required: false
-      description: Lets the server refuse an upload before the body is sent.
-      schema:
-        type: string
-        const: 100-continue
   responses:
     InvalidKey:
       description: |

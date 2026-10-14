@@ -8,6 +8,10 @@ apis:
     rules:
       # localhost is the real default address, not a placeholder.
       no-server-example.com: off
+  maven-build-cache@v1:
+    root: openapi/maven-build-cache.v1.yaml
+    rules:
+      no-server-example.com: off
   ops@v1:
     root: openapi/ops.v1.yaml
     rules:

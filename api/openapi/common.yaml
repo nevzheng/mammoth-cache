@@ -129,6 +129,15 @@ components:
         message:
           type: string
           maxLength: 4096
+  parameters:
+    Expect:
+      name: Expect
+      in: header
+      required: false
+      description: Lets the server refuse an upload before the body is sent.
+      schema:
+        type: string
+        const: 100-continue
   responses:
     Unauthenticated:
       description: |
