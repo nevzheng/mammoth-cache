@@ -1,0 +1,36 @@
+{
+  "name": "mammoth",
+  "description": "Solarized base with orange as the primary color. Source of truth for branding/palette.css.",
+  "light": {
+    "bg": "#fdf6e3",
+    "bg-alt": "#eee8d5",
+    "fg": "#586e75",
+    "fg-strong": "#073642",
+    "fg-muted": "#93a1a1",
+    "border": "#e0d8c0",
+    "primary": "#cb4b16",
+    "primary-strong": "#a33a0f",
+    "accent": "#b58900",
+    "link": "#a33a0f",
+    "code-bg": "#eee8d5",
+    "success": "#859900",
+    "danger": "#dc322f",
+    "info": "#268bd2"
+  },
+  "dark": {
+    "bg": "#002b36",
+    "bg-alt": "#073642",
+    "fg": "#93a1a1",
+    "fg-strong": "#eee8d5",
+    "fg-muted": "#657b83",
+    "border": "#0d4654",
+    "primary": "#e8692f",
+    "primary-strong": "#f28c55",
+    "accent": "#d5a520",
+    "link": "#f28c55",
+    "code-bg": "#073642",
+    "success": "#a3b81a",
+    "danger": "#ef5a57",
+    "info": "#4aa3e0"
+  }
+}

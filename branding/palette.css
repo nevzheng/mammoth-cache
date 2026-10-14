@@ -1,0 +1,72 @@
+/* Generated from palette.json by palette.sh. Do not edit by hand. */
+
+:root {
+  --mc-bg: #fdf6e3;
+  --mc-bg-alt: #eee8d5;
+  --mc-fg: #586e75;
+  --mc-fg-strong: #073642;
+  --mc-fg-muted: #93a1a1;
+  --mc-border: #e0d8c0;
+  --mc-primary: #cb4b16;
+  --mc-primary-strong: #a33a0f;
+  --mc-accent: #b58900;
+  --mc-link: #a33a0f;
+  --mc-code-bg: #eee8d5;
+  --mc-success: #859900;
+  --mc-danger: #dc322f;
+  --mc-info: #268bd2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --mc-bg: #002b36;
+    --mc-bg-alt: #073642;
+    --mc-fg: #93a1a1;
+    --mc-fg-strong: #eee8d5;
+    --mc-fg-muted: #657b83;
+    --mc-border: #0d4654;
+    --mc-primary: #e8692f;
+    --mc-primary-strong: #f28c55;
+    --mc-accent: #d5a520;
+    --mc-link: #f28c55;
+    --mc-code-bg: #073642;
+    --mc-success: #a3b81a;
+    --mc-danger: #ef5a57;
+    --mc-info: #4aa3e0;
+  }
+}
+
+/* Explicit light/dark selectors for sites with a theme switcher. */
+[data-mc-theme="light"] {
+  --mc-bg: #fdf6e3;
+  --mc-bg-alt: #eee8d5;
+  --mc-fg: #586e75;
+  --mc-fg-strong: #073642;
+  --mc-fg-muted: #93a1a1;
+  --mc-border: #e0d8c0;
+  --mc-primary: #cb4b16;
+  --mc-primary-strong: #a33a0f;
+  --mc-accent: #b58900;
+  --mc-link: #a33a0f;
+  --mc-code-bg: #eee8d5;
+  --mc-success: #859900;
+  --mc-danger: #dc322f;
+  --mc-info: #268bd2;
+}
+
+[data-mc-theme="dark"] {
+  --mc-bg: #002b36;
+  --mc-bg-alt: #073642;
+  --mc-fg: #93a1a1;
+  --mc-fg-strong: #eee8d5;
+  --mc-fg-muted: #657b83;
+  --mc-border: #0d4654;
+  --mc-primary: #e8692f;
+  --mc-primary-strong: #f28c55;
+  --mc-accent: #d5a520;
+  --mc-link: #f28c55;
+  --mc-code-bg: #073642;
+  --mc-success: #a3b81a;
+  --mc-danger: #ef5a57;
+  --mc-info: #4aa3e0;
+}

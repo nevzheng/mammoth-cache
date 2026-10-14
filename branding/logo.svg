@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" role="img" aria-labelledby="title">
+  <title id="title">mammoth-cache</title>
+  <!-- Placeholder wordmark until the mammoth mascot exists. -->
+  <text x="0" y="56" fill="#cb4b16"
+        font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="56" font-weight="800" letter-spacing="-1">mammoth</text>
+</svg>
