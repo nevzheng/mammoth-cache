@@ -1,0 +1,129 @@
+openapi: 3.1.0
+info:
+  title: mammoth-cache operational endpoints
+  version: 1.0.0
+  summary: Health checks and metrics for load balancers, Kubernetes and Prometheus.
+  description: |
+    These routes are operational, not part of the resource-oriented admin API, so the AIP
+    resource rules do not apply. Failures still use AIP-193 error bodies. None of them require
+    authentication, so probes and scrapers can reach them.
+
+    Probes look only at the status code: `200` is healthy, anything else is not.
+  contact:
+    name: mammoth-cache
+    url: https://github.com/nevzheng/mammoth-cache
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+servers:
+  - url: http://localhost:5071
+    description: Local default
+security: []
+tags:
+  - name: health
+    description: Liveness and readiness
+  - name: metrics
+    description: Prometheus metrics
+paths:
+  /ping:
+    get:
+      operationId: ping
+      summary: Build Cache Node compatible health check
+      description: |
+        Matches the Develocity Build Cache Node, so existing monitoring keeps working after a
+        switch. New setups should use `/livez` and `/readyz`.
+      tags: [health]
+      responses:
+        "200":
+          description: The server is up.
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: SUCCESS
+  /livez:
+    get:
+      operationId: checkLiveness
+      summary: Liveness
+      description: |
+        The process is running and can answer requests. It does not check storage, so a full disk
+        never gets the process restarted. Use it for Kubernetes `livenessProbe`.
+      tags: [health]
+      responses:
+        "200":
+          description: Alive.
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: ok
+  /readyz:
+    get:
+      operationId: checkReadiness
+      summary: Readiness
+      description: |
+        The server should receive traffic: configuration is loaded, storage is writable and free
+        space is above the configured buffer. Use it for Kubernetes `readinessProbe` and load
+        balancer health checks.
+      tags: [health]
+      parameters:
+        - name: verbose
+          in: query
+          description: List each check and its result, as Kubernetes does.
+          required: false
+          allowEmptyValue: true
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Ready. With `verbose`, one `[+]name ok` line per check.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                terse:
+                  value: ok
+                verbose:
+                  value: |
+                    [+]config ok
+                    [+]storage-writable ok
+                    [+]storage-free-space ok
+                    readyz check passed
+        "503":
+          description: Not ready. `details` holds one `ErrorInfo` naming the first failed check.
+          content:
+            application/json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ErrorResponse"
+              example:
+                error:
+                  code: 503
+                  message: Free space is 0.4 GiB, below the 1 GiB buffer.
+                  status: UNAVAILABLE
+                  details:
+                    - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                      reason: STORAGE_FREE_SPACE_LOW
+                      domain: mammoth-cache
+                      metadata:
+                        check: storage-free-space
+                        freeBytes: "429496729"
+                        bufferBytes: "1073741824"
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Prometheus metrics
+      description: Prometheus text exposition format. Metric names are listed in the user guide.
+      tags: [metrics]
+      responses:
+        "200":
+          description: Current metrics.
+          content:
+            text/plain; version=0.0.4:
+              schema:
+                type: string
+              example: |
+                # HELP mammoth_cache_requests_total Cache requests by method and result.
+                # TYPE mammoth_cache_requests_total counter
+                mammoth_cache_requests_total{method="GET",result="hit"} 1027
+                mammoth_cache_requests_total{method="GET",result="miss"} 311
