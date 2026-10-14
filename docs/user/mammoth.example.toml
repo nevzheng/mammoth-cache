@@ -6,8 +6,9 @@
 
 # The file's schema version. Required.
 version = 1
-# Address and port. 5071 is the Build Cache Node's port; use "[::]:5071" for IPv6.
-listen = "0.0.0.0:5071"
+# Address and port. 5071 is the Build Cache Node's port. "[::]" takes IPv4 and IPv6, or IPv4
+# alone on a host without IPv6; "0.0.0.0:5071" listens on IPv4 only.
+listen = "[::]:5071"
 
 # Which client protocols get routes. One that is off answers 404, like an unknown path.
 [protocols]
@@ -18,7 +19,7 @@ reapi = false # the REAPI gRPC cache, on [reapi] listen
 
 # The REAPI gRPC listener, used when protocols.reapi is on.
 [reapi]
-listen = "0.0.0.0:6011" # 6011 is the Build Cache Node's Bazel gRPC port
+listen = "[::]:6011" # 6011 is the Build Cache Node's Bazel gRPC port
 
 # Connection timeouts and shutdown.
 [server]

@@ -16,8 +16,8 @@ linux/arm64:
 docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:edge
 ```
 
-The image runs as a non-root user on a distroless base, and listens on `0.0.0.0:5071`. `edge`
-changes with every merge; pin a `sha-<commit>` tag if you need the same build twice.
+The image runs as a non-root user on a distroless base, and listens on port 5071 over IPv4 and IPv6.
+`edge` changes with every merge; pin a `sha-<commit>` tag if you need the same build twice.
 
 To build the image yourself from a clone of the repository:
 
@@ -44,8 +44,8 @@ cargo build --release --bin mammoth
 ./target/release/mammoth
 ```
 
-With no config file, the binary listens on `0.0.0.0:5071` and keeps entries in memory only. To
-change that, write a [config file](configuration.md) and pass it with `--config`:
+With no config file, the binary listens on `[::]:5071` (IPv4 and IPv6) and keeps entries in memory
+only. To change that, write a [config file](configuration.md) and pass it with `--config`:
 
 ```sh
 ./target/release/mammoth --config mammoth.toml
