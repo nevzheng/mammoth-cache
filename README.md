@@ -101,8 +101,9 @@ Details per feature are in the [user guide](docs/user/README.md#feature-status).
 ## Non-goals
 
 - **No remote execution.** mammoth-cache is a cache, not a build system. The gRPC cache side of
-  Bazel's Remote Execution API (Capabilities, ActionCache, CAS, ByteStream) is in progress; the
-  Execution service never will be. For remote execution, use a REAPI build service.
+  Bazel's Remote Execution API (Capabilities, ActionCache, CAS, ByteStream) is in progress
+  ([design doc 0016](docs/design/0016-reapi-cache.md)); the Execution service never will be. For
+  remote execution, use a REAPI build service.
 - **No Develocity.** The Develocity Gradle plugin, Maven extension and build scans are not
   supported; use the clients' built-in HTTP caches.
 - **No web UI, no runtime configuration API.** Configuration is a file; dashboards live in Grafana.

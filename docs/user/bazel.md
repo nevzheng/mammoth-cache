@@ -5,11 +5,11 @@
 > are still to come.
 
 mammoth-cache serves Bazel's plain
-[HTTP remote cache](https://bazel.build/remote/caching#http-caching), with SHA-256 digests,
-Bazel's default. The gRPC cache (REAPI Capabilities, ActionCache, CAS and ByteStream) is in
-progress and not on `main` yet; until it lands, `--remote_cache=grpc://` needs
-[bazel-remote](https://github.com/buchgr/bazel-remote). Remote execution is out of scope:
-mammoth-cache is a build cache, not a remote build system.
+[HTTP remote cache](https://bazel.build/remote/caching#http-caching), with SHA-256 digests, Bazel's
+default. The gRPC cache (REAPI Capabilities, ActionCache, CAS and ByteStream,
+[design doc 0016](../design/0016-reapi-cache.md)) is in progress and not on `main` yet; until it
+lands, `--remote_cache=grpc://` needs [bazel-remote](https://github.com/buchgr/bazel-remote). Remote
+execution is out of scope: mammoth-cache is a build cache, not a remote build system.
 
 ## Turn it on
 
