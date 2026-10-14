@@ -143,6 +143,13 @@ async fn router_serves_exactly_the_contracted_methods() {
             let uri = concrete(&path);
             for method in &METHODS {
                 let (status, reason) = call(&app, method, &uri).await;
+                // Every error is AIP-193 JSON. `HEAD` responses have no body to check.
+                if !status.is_success() && *method != Method::HEAD {
+                    assert!(
+                        reason.is_some(),
+                        "{name}: {method} {path} answered {status} without an AIP-193 body"
+                    );
+                }
                 // axum answers `HEAD` on any `GET` route, which HTTP allows.
                 let contracted = methods.contains(method)
                     || (*method == Method::HEAD && methods.contains(&Method::GET));

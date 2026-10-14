@@ -8,6 +8,7 @@ pub mod error;
 mod gradle;
 mod maven;
 pub mod metrics;
+mod name;
 mod ops;
 
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use axum::{
     routing::get,
 };
 use metrics_exporter_prometheus::PrometheusHandle;
+use tower_http::catch_panic::CatchPanicLayer;
 
 use crate::{auth::Authenticator, cache::Cache, config::Protocols};
 use error::ApiError;
@@ -114,6 +116,7 @@ pub fn router_with(
             },
             auth::require,
         ))
+        .layer(CatchPanicLayer::custom(error::panicked))
         .layer(middleware::from_fn(error::render))
         .layer(middleware::from_fn(metrics::record))
         .with_state(AppState { cache, metrics })

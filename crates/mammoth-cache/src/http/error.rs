@@ -116,6 +116,13 @@ impl ApiError {
         self
     }
 
+    /// The same error at another HTTP status: for rewriting a response that already has one.
+    #[must_use]
+    fn at(mut self, http: StatusCode) -> Self {
+        self.http = http;
+        self
+    }
+
     /// The HTTP status.
     #[must_use]
     pub fn status(&self) -> StatusCode {
@@ -296,11 +303,23 @@ struct Rendered {
 /// Middleware that logs each error response once, at a level chosen by its code: a server fault
 /// at `error` with the source chain, a storage outage at `warn`, and everything else, the client's
 /// doing or the node's state as `/readyz` reports it, at `debug`.
+///
+/// An error response that is not an [`ApiError`], such as axum's own `405` or a rejection from an
+/// extractor, is rewritten as one at the same status, so every error a client sees is AIP-193.
 pub(super) async fn render(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
-    let Some(Rendered { reason, source }) = response.extensions_mut().remove::<Rendered>() else {
-        return response;
+    let rendered = match response.extensions_mut().remove::<Rendered>() {
+        Some(rendered) => rendered,
+        None if response.status().is_client_error() || response.status().is_server_error() => {
+            response = rewrite(response).await;
+            match response.extensions_mut().remove::<Rendered>() {
+                Some(rendered) => rendered,
+                None => return response,
+            }
+        }
+        None => return response,
     };
+    let Rendered { reason, source } = rendered;
     let status = response.status().as_u16();
     let code = reason.code();
     let reason = reason.as_str();
@@ -318,6 +337,60 @@ pub(super) async fn render(request: Request, next: Next) -> Response {
         (_, None) => tracing::debug!(reason, status, "request refused"),
     }
     response
+}
+
+/// The longest rejection text kept as the message of a rewritten `4xx`.
+const REWRITTEN_MESSAGE_BYTES: usize = 512;
+
+/// An error response axum or a layer built without [`ApiError`], as AIP-193 at the same status.
+/// Headers stay, `Allow` and `WWW-Authenticate` among them; the body is replaced.
+async fn rewrite(response: Response) -> Response {
+    let (parts, body) = response.into_parts();
+    let status = parts.status;
+    let error = match status {
+        StatusCode::NOT_FOUND => ApiError::route_not_found(),
+        StatusCode::METHOD_NOT_ALLOWED => ApiError::new(
+            Reason::MethodNotAllowed,
+            "The method is not supported on this route.",
+        ),
+        _ if status.is_client_error() => {
+            // A rejection says what was wrong with the request; keep it as the message.
+            let text = axum::body::to_bytes(body, REWRITTEN_MESSAGE_BYTES)
+                .await
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes.to_vec()).ok())
+                .filter(|text| !text.trim().is_empty());
+            let message = text.map_or_else(
+                || "The request is not valid.".to_owned(),
+                |text| sentence(&text.trim()),
+            );
+            ApiError::new(Reason::InvalidRequest, message)
+        }
+        _ => ApiError::new(Reason::Internal, "Internal error."),
+    };
+    let mut rewritten = error.at(status).into_response();
+    for (name, value) in &parts.headers {
+        if name != header::CONTENT_TYPE && name != header::CONTENT_LENGTH {
+            rewritten.headers_mut().insert(name, value.clone());
+        }
+    }
+    rewritten
+}
+
+/// The `500 INTERNAL` for a handler that panicked, carrying the panic message to the log line.
+// By value: the signature `CatchPanicLayer::custom` takes.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn panicked(panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    let message = panic
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a non-string payload".to_owned());
+    ApiError::from(cache::Error::new(
+        Code::Internal,
+        anyhow::anyhow!("handler panicked: {message}"),
+    ))
+    .into_response()
 }
 
 #[cfg(test)]
@@ -347,6 +420,11 @@ mod tests {
 
     /// The lines logged while a request runs through a router whose one route answers `error`.
     async fn logged(error: ApiError) -> Vec<String> {
+        logged_response(error.into_response()).await
+    }
+
+    /// The lines logged while a request runs through a router whose one route answers `response`.
+    async fn logged_response(response: Response) -> Vec<String> {
         use std::{
             io,
             sync::{Arc, Mutex},
@@ -367,6 +445,7 @@ mod tests {
             }
         }
 
+        let once = Arc::new(Mutex::new(Some(response)));
         let lines = Lines::default();
         let writer = lines.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -376,7 +455,10 @@ mod tests {
             .finish();
         let _guard = tracing::subscriber::set_default(subscriber);
         let app = Router::new()
-            .route("/", get(move || async move { error }))
+            .route(
+                "/",
+                get(move || async move { once.lock().unwrap().take().unwrap() }),
+            )
             .layer(middleware::from_fn(render));
         let request = axum::http::Request::new(axum::body::Body::empty());
         app.oneshot(request).await.unwrap();
@@ -405,6 +487,89 @@ mod tests {
             assert_eq!(lines.len(), 1, "{lines:?}");
             assert!(lines[0].contains("DEBUG"), "{lines:?}");
         }
+    }
+
+    /// The status, `Allow` header and AIP-193 JSON body of a request through the render and panic
+    /// layers, over routes that answer without [`ApiError`].
+    async fn rendered(
+        method: Method,
+        uri: &str,
+    ) -> (StatusCode, Option<String>, serde_json::Value) {
+        use axum::{Router, middleware, routing::get};
+        use tower::ServiceExt;
+        use tower_http::catch_panic::CatchPanicLayer;
+
+        let app: Router = Router::new()
+            .route("/ok", get(|| async { "ok" }))
+            .route(
+                "/plain",
+                get(|| async { (StatusCode::BAD_REQUEST, "bad query") }),
+            )
+            .route(
+                "/panic",
+                get(|| async {
+                    panic!("boom");
+                    #[allow(unreachable_code)]
+                    ""
+                }),
+            )
+            .layer(CatchPanicLayer::custom(panicked))
+            .layer(middleware::from_fn(render));
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let allow = response
+            .headers()
+            .get(header::ALLOW)
+            .map(|v| v.to_str().unwrap().to_owned());
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        (
+            status,
+            allow,
+            serde_json::from_slice(&body).unwrap_or_default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn responses_built_without_api_error_are_rewritten() {
+        let (status, allow, json) = rendered(Method::POST, "/ok").await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(allow.as_deref(), Some("GET,HEAD"));
+        assert_eq!(json["error"]["details"][0]["reason"], "METHOD_NOT_ALLOWED");
+
+        let (status, _, json) = rendered(Method::GET, "/nowhere").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["error"]["details"][0]["reason"], "ROUTE_NOT_FOUND");
+
+        let (status, _, json) = rendered(Method::GET, "/plain").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["code"], 400);
+        assert_eq!(json["error"]["message"], "Bad query.");
+        assert_eq!(json["error"]["details"][0]["reason"], "INVALID_REQUEST");
+
+        let (status, _, json) = rendered(Method::GET, "/ok").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json.is_null());
+    }
+
+    #[tokio::test]
+    async fn a_panic_is_500_internal_and_logged_with_its_message() {
+        let (status, _, json) = rendered(Method::GET, "/panic").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(json["error"]["status"], "INTERNAL");
+        assert_eq!(json["error"]["message"], "Internal error.");
+        assert_eq!(json["error"]["details"][0]["reason"], "INTERNAL");
+
+        let response = panicked(Box::new("boom"));
+        let lines = logged_response(response).await;
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("handler panicked: boom"), "{lines:?}");
     }
 
     #[test]

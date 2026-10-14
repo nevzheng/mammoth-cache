@@ -121,9 +121,12 @@ async fn miss_is_404_entry_not_found() {
 
 #[tokio::test]
 async fn invalid_key_is_400() {
-    let response = send(&app(1024), get("/cache/NOT-HEX")).await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(error_reason(response).await, "INVALID_CACHE_KEY");
+    // Not hex, and not even UTF-8 once decoded: both are the protocol's own invalid key.
+    for uri in ["/cache/NOT-HEX", "/cache/%FF"] {
+        let response = send(&app(1024), get(uri)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(error_reason(response).await, "INVALID_CACHE_KEY", "{uri}");
+    }
 }
 
 #[tokio::test]
@@ -241,7 +244,12 @@ async fn maven_miss_names_the_path() {
 
 #[tokio::test]
 async fn maven_rejects_bad_paths() {
-    for uri in ["/maven/v1/../etc/passwd", "/maven/v1/a%20b", "/maven/v1//x"] {
+    for uri in [
+        "/maven/v1/../etc/passwd",
+        "/maven/v1/a%20b",
+        "/maven/v1//x",
+        "/maven/v1/%FF",
+    ] {
         let response = send(&app(1024), get(uri)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
         assert_eq!(error_reason(response).await, "INVALID_CACHE_PATH");
