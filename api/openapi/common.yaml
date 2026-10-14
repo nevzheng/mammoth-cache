@@ -163,10 +163,11 @@ components:
               status: PERMISSION_DENIED
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
-                  reason: WRITE_NOT_ALLOWED
+                  reason: SCOPE_MISSING
                   domain: mammoth-cache.dev
                   metadata:
                     user: ci
+                    requiredScope: cache:write
     Unavailable:
       description: The server cannot serve the request right now.
       content:
