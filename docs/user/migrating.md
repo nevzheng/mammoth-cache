@@ -5,9 +5,9 @@ points users at Develocity Edge. mammoth-cache is an open-source alternative for
 self-hosted node without Develocity.
 
 > [!WARNING]
-> mammoth-cache is pre-alpha. Today it can stand in for a BCN in a trial (Gradle and Maven, with
-> memory, disk and bucket tiers, authentication and TLS), but not in production: there is no
-> release yet. This page describes the full migration as designed, so you can plan it.
+> mammoth-cache is pre-alpha. Today it can stand in for a BCN in a trial (Gradle, Maven and Bazel's
+> HTTP cache, with memory, disk and bucket tiers, authentication and TLS), but not in production:
+> there is no release yet. This page describes the full migration as designed, so you can plan it.
 
 ## What stays the same
 
@@ -20,17 +20,17 @@ self-hosted node without Develocity.
 
 ## What changes
 
-| Build Cache Node                         | mammoth-cache                                                              |
-| ---------------------------------------- | -------------------------------------------------------------------------- |
-| `config.yaml`, rewritten by the web UI   | `mammoth.toml`, read once, never rewritten                                 |
-| Web UI and Develocity registration       | None; edit the file and restart                                            |
-| Users with passwords                     | Users with generated tokens, stored as hashes                              |
-| Replication between nodes, by Develocity | A shared bucket; nodes are stateless                                       |
-| One disk per node                        | Memory, then disk, then an optional bucket                                 |
-| JVM                                      | A single static binary or a distroless image                               |
-| Bazel gRPC on port 6011                  | Not supported; use bazel-remote                                            |
-| Develocity plugin and Maven extension    | Not supported; use Gradle's `HttpBuildCache` or the Apache Maven extension |
-| No Prometheus metrics                    | `/metrics` with a documented catalog                                       |
+| Build Cache Node                         | mammoth-cache                                                                     |
+| ---------------------------------------- | --------------------------------------------------------------------------------- |
+| `config.yaml`, rewritten by the web UI   | `mammoth.toml`, read once, never rewritten                                        |
+| Web UI and Develocity registration       | None; edit the file and restart                                                   |
+| Users with passwords                     | Users with generated tokens, stored as hashes                                     |
+| Replication between nodes, by Develocity | A shared bucket; nodes are stateless                                              |
+| One disk per node                        | Memory, then disk, then an optional bucket                                        |
+| JVM                                      | A single static binary or a distroless image                                      |
+| Bazel gRPC on port 6011                  | Not supported; Bazel's HTTP cache is served on `/bazel/`, gRPC needs bazel-remote |
+| Develocity plugin and Maven extension    | Not supported; use Gradle's `HttpBuildCache` or the Apache Maven extension        |
+| No Prometheus metrics                    | `/metrics` with a documented catalog                                              |
 
 ## Translating `config.yaml`
 

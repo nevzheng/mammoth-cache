@@ -73,7 +73,8 @@ skip the round trip, set `-Daether.connector.http.preemptiveAuth=true`.
 - **Oversized stores get `413`.** Maven only logs a failed store and keeps using the cache, so the
   node tells the truth instead of dropping the entry silently. A silent drop could leave a
   `buildinfo.xml` without the files it lists.
-- **WebDAV.** With WebDAV on, the extension sends `OPTIONS` first. The node answers without a `DAV`
-  header, so the extension skips `MKCOL`. A stray `MKCOL` gets `201` and does nothing.
+- **WebDAV.** Maven's transport sends `OPTIONS` before its first `PUT`. The node answers `204`
+  without a `DAV` header, so the extension skips `MKCOL`. A stray `MKCOL` gets `201` and does
+  nothing.
 - **Errors are misses.** Any failed load is treated as a miss, and a failed store never fails the
   build, unless you set `failFast`.
