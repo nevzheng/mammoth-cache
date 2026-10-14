@@ -104,7 +104,7 @@ paths:
                   details:
                     - "@type": type.googleapis.com/google.rpc.ErrorInfo
                       reason: STORAGE_FREE_SPACE_LOW
-                      domain: mammoth-cache
+                      domain: mammoth-cache.dev
                       metadata:
                         check: storage-free-space
                         freeBytes: "429496729"

@@ -95,7 +95,7 @@ components:
         domain:
           description: The service that produced the error.
           type: string
-          const: mammoth-cache
+          const: mammoth-cache.dev
         metadata:
           description: Dynamic values for this occurrence, keyed in lowerCamelCase.
           type: object
@@ -136,7 +136,7 @@ components:
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
                   reason: CREDENTIALS_MISSING
-                  domain: mammoth-cache
+                  domain: mammoth-cache.dev
     PermissionDenied:
       description: The user may not perform this operation. Gradle fails the build on this status.
       content:
@@ -151,7 +151,7 @@ components:
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
                   reason: WRITE_NOT_ALLOWED
-                  domain: mammoth-cache
+                  domain: mammoth-cache.dev
                   metadata:
                     user: ci
     Unavailable:
@@ -168,7 +168,7 @@ components:
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
                   reason: STORAGE_NOT_WRITABLE
-                  domain: mammoth-cache
+                  domain: mammoth-cache.dev
   securitySchemes:
     basicAuth:
       type: http

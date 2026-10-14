@@ -13,10 +13,10 @@ import "google/protobuf/duration.proto";
 
 option java_multiple_files = true;
 option java_outer_classname = "AdminProto";
-option java_package = "io.github.nevzheng.mammoth.admin.v1";
+option java_package = "dev.mammothcache.mammoth.admin.v1";
 
 // Manages a mammoth-cache node. Errors follow AIP-193: a `google.rpc.Status` carrying one
-// `google.rpc.ErrorInfo` with domain `mammoth-cache`.
+// `google.rpc.ErrorInfo` with domain `mammoth-cache.dev`.
 //
 // Stub: only the status singleton is defined so far. Users, configuration and cache purge
 // come next.
@@ -33,7 +33,7 @@ service AdminService {
 // The node's current status. A singleton resource (AIP-156).
 message ServerStatus {
   option (google.api.resource) = {
-    type: "mammoth-cache/ServerStatus"
+    type: "mammoth-cache.dev/ServerStatus"
     pattern: "serverStatus"
     singular: "serverStatus"
     plural: "serverStatuses"
@@ -66,6 +66,6 @@ message GetServerStatusRequest {
   // The resource name. Must be `serverStatus`.
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
-    (google.api.resource_reference).type = "mammoth-cache/ServerStatus"
+    (google.api.resource_reference).type = "mammoth-cache.dev/ServerStatus"
   ];
 }

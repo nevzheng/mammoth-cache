@@ -141,7 +141,7 @@ components:
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
                   reason: ENTRY_NOT_FOUND
-                  domain: mammoth-cache
+                  domain: mammoth-cache.dev
                   metadata:
                     key: a3f5e1c09b2d4e7f8a1b6c3d5e9f0a2b
     EntryTooLarge:
@@ -161,7 +161,7 @@ components:
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
                   reason: ENTRY_TOO_LARGE
-                  domain: mammoth-cache
+                  domain: mammoth-cache.dev
                   metadata:
                     entryBytes: "157286400"
                     maxEntryBytes: "104857600"

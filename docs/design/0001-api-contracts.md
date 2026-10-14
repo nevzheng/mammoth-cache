@@ -54,7 +54,7 @@ All error responses use the AIP-193 JSON form of `google.rpc.Status`:
       {
         "@type": "type.googleapis.com/google.rpc.ErrorInfo",
         "reason": "ENTRY_TOO_LARGE",
-        "domain": "mammoth-cache",
+        "domain": "mammoth-cache.dev",
         "metadata": { "entryBytes": "157286400", "maxEntryBytes": "104857600" }
       }
     ]
@@ -62,7 +62,10 @@ All error responses use the AIP-193 JSON form of `google.rpc.Status`:
 }
 ```
 
-`reason` values are stable identifiers, part of the contract, and never reused.
+`reason` values are stable identifiers, part of the contract, and never reused. `domain` is
+`mammoth-cache.dev`, the service name in DNS form as AIP-193 asks. The same name prefixes resource
+types (`mammoth-cache.dev/ServerStatus`, [AIP-123](https://google.aip.dev/123)). It is an
+identifier only; it does not need to resolve.
 
 ### Gradle protocol exceptions
 
@@ -119,6 +122,5 @@ The docs site publishes all OpenAPI documents, including the one generated from 
 
 - Maven: its build cache extension uses a path layout (`/v1.1/<groupId>/<artifactId>/...`) rather
   than a single key. Needs its own route and spec.
-- The `ErrorInfo.domain` value. `mammoth-cache` is a placeholder until there is a domain name.
 - Whether `/metrics` should support optional authentication.
 - Generator and Bazel wiring for the admin OpenAPI document and for linting in CI.
