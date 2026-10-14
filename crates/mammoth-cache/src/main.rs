@@ -1,8 +1,18 @@
 use std::{env, io, sync::Arc};
 
 use mammoth_cache::{cache::Cache, store::memory::MemoryStore};
+use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+
+// The global allocator is chosen at build time (see the features in Cargo.toml).
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:5071";
 // Until the config file (design doc 0005) lands, the memory tier is the only tier.
@@ -21,9 +31,15 @@ async fn main() -> io::Result<()> {
     let cache = Cache::builder()
         .bounded_tier(Arc::new(MemoryStore::new(DEFAULT_MEMORY_BYTES)))
         .build();
-    axum::serve(listener, mammoth_cache::router(Arc::new(cache)))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
+    let metrics = PrometheusBuilder::new()
+        .install_recorder()
+        .map_err(io::Error::other)?;
+    axum::serve(
+        listener,
+        mammoth_cache::router(Arc::new(cache), Some(metrics)),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
 }
 
 async fn shutdown_signal() {

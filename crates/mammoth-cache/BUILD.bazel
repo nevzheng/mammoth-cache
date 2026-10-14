@@ -35,6 +35,9 @@ rust_binary(
     name = "mammoth",
     srcs = ["src/main.rs"],
     aliases = aliases(),
+    # Cargo's default features: the official build uses mimalloc. Other allocators (the `jemalloc`
+    # feature) build with Cargo for now.
+    crate_features = ["mimalloc"],
     lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env_files = [":cargo_env"],

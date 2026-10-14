@@ -4,7 +4,9 @@
 //! [`BlobStore`]. The local tiers also implement [`BoundedStore`]. The core depends only on these
 //! traits, never on a file system or cloud SDK (design doc 0003).
 
+pub mod disk;
 pub mod memory;
+pub mod meta;
 
 use std::{fmt, future::Future, io, pin::Pin};
 
@@ -67,16 +69,20 @@ impl fmt::Debug for Blob {
 /// What a store did with a `put`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PutOutcome {
-    /// The entry was written.
+    /// The entry was written, or replaced an existing mutable entry.
     Stored,
-    /// The key was already present; nothing was written.
+    /// The key is immutable and was already present; nothing was written.
     Exists,
 }
 
 /// The blob store port, implemented by every tier.
 ///
-/// Entries are immutable: a `put` for a key that exists writes nothing. A `put` whose body stream
-/// fails must leave nothing behind, so a partial upload never becomes a hit.
+/// A `put` for an existing key writes nothing when the key's namespace is immutable (Gradle) and
+/// replaces the entry otherwise (Maven); see [`Namespace::is_immutable`]. A `put` whose body stream
+/// fails must leave nothing behind, not even a damaged copy of a replaced entry, so a partial
+/// upload never becomes a hit.
+///
+/// [`Namespace::is_immutable`]: crate::key::Namespace::is_immutable
 pub trait BlobStore: Send + Sync + fmt::Debug {
     /// Which tier this store is.
     fn tier(&self) -> Tier;

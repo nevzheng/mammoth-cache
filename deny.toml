@@ -7,6 +7,11 @@ all-features = true
 [advisories]
 # Vulnerabilities always fail; unmaintained and yanked crates are reported too.
 yanked = "deny"
+ignore = [
+    # `paste` is unmaintained but finished: a compile-time macro with no known vulnerability,
+    # pulled in by foyer-memory (the memory tier, design doc 0010). Drop once foyer replaces it.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained compile-time macro used by foyer-memory" },
+]
 
 [licenses]
 # Permissive licenses compatible with MIT OR Apache-2.0.

@@ -43,15 +43,16 @@ server. Storage behaviour is in 0003, auth in [0002](0002-authentication.md).
 
 ### Framework
 
-| Concern         | Choice                                                                 |
-| --------------- | ---------------------------------------------------------------------- |
-| Runtime         | tokio, multi-threaded                                                  |
-| HTTP            | hyper 1.x through axum                                                 |
-| Middleware      | tower and tower-http (tracing, timeouts, limits, auth)                 |
-| Admin API types | Hand-written serde types for now; prost and pbjson once the API grows  |
-| Errors          | One AIP-193 error type, used by every route                            |
-| Bucket (L3)     | `object_store` crate                                                   |
-| Observability   | tracing, and a Prometheus exporter for the 0004 catalog                |
+| Concern         | Choice                                                                |
+| --------------- | --------------------------------------------------------------------- |
+| Runtime         | tokio, multi-threaded                                                 |
+| HTTP            | hyper 1.x through axum                                                |
+| Middleware      | tower and tower-http (tracing, timeouts, limits, auth)                |
+| Admin API types | Hand-written serde types for now; prost and pbjson once the API grows |
+| Errors          | One AIP-193 error type, used by every route                           |
+| Bucket (L3)     | `object_store` crate                                                  |
+| Observability   | tracing, and a Prometheus exporter for the 0004 catalog               |
+| Allocator       | mimalloc by default, jemalloc with `--features jemalloc`; build time  |
 
 axum is a thin layer over hyper. Request and response bodies stay `http_body::Body` streams, so a
 `PUT` flows into a store with backpressure, and a `GET` streams from memory, a file or the bucket.
@@ -64,7 +65,7 @@ to a hand-written hyper service if a benchmark ever shows axum on the hot path.
 crates/mammoth-cache/src/
 ├── main.rs          thin binary: logging, listener, wiring
 ├── lib.rs
-├── key.rs           CacheKey: validated lowercase hex, at most 128 characters
+├── key.rs           CacheKey: a namespace (gradle, maven) and a validated name
 ├── cache.rs         core: lookup order, size limit, hit and miss counts
 ├── store/
 │   ├── mod.rs       ports: BlobStore, BoundedStore, Blob, ByteStream, Tier
@@ -72,7 +73,10 @@ crates/mammoth-cache/src/
 └── http/
     ├── mod.rs       router
     ├── error.rs     AIP-193 responses
+    ├── entries.rs   load, check and store, shared by the protocol adapters
     ├── gradle.rs    GET, HEAD and PUT /cache/{key}
+    ├── maven.rs     GET, HEAD, PUT, OPTIONS and MKCOL /maven/{path}
+    ├── metrics.rs   request counters labelled by client
     ├── ops.rs       /ping, /livez, /readyz, /metrics
     └── admin.rs     /v1/serverStatus
 ```
