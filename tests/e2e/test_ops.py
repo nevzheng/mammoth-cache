@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from typing import TYPE_CHECKING
 
 import httpx
@@ -56,5 +57,12 @@ def test_metrics_pass_promtool(target: Target, controlled: Stack) -> None:
 
 
 def test_prometheus_scrapes_mammoth(prometheus: Prometheus) -> None:
-    targets = {(t.job, t.instance): t.health for t in prometheus.targets()}
+    # Earlier tests restart the node; Prometheus reports the result of its last scrape, so give it
+    # a few scrape intervals to see the node back.
+    deadline = time.monotonic() + 15.0
+    while True:
+        targets = {(t.job, t.instance): t.health for t in prometheus.targets()}
+        if targets.get(("mammoth", "mammoth:5071")) == "up" or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
     assert targets.get(("mammoth", "mammoth:5071")) == "up", targets
