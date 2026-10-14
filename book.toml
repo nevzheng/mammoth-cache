@@ -1,6 +1,6 @@
 [book]
 title = "mammoth-cache"
-description = "A fast, open-source remote build cache node for Gradle, written in Rust."
+description = "mammoth-cache: a fast, open-source remote build cache server for Gradle and Maven, written in Rust. A self-hosted drop-in for the Gradle Build Cache Node."
 authors = ["The mammoth-cache contributors"]
 language = "en"
 src = "docs"
@@ -19,3 +19,7 @@ theme = "book-theme"
 additional-css = ["branding/palette.css", "book-theme/mammoth.css"]
 # Renders Mermaid diagrams; see book-theme/mermaid-init.js.
 additional-js = ["book-theme/mermaid-init.js"]
+
+# Adds created and last-updated dates from git to every page.
+[preprocessor.git-dates]
+command = "python3 scripts/mdbook-git-dates.py"

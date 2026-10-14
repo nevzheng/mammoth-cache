@@ -115,8 +115,13 @@ proposal under review.
 | `free_space_buffer` | size     | `1GiB`   | Free space to leave on the volume                            |
 | `max_entry_age`     | duration | none     | Evict entries older than this                                |
 
+The disk tier is built (`mammoth_cache::store::disk::DiskStore`), but the `mammoth` binary turns it
+on only once the config file lands; a [custom build](custom-builds.md) can use it today.
+
 Entries are written to a temporary file and renamed into place, so a crash never leaves a partial
-entry.
+entry. Each file carries a CRC32C checksum, checked on every read; a damaged entry is treated as a
+miss and removed. On startup the node indexes the files already on disk, so a restarted node
+starts warm.
 
 ### `[bucket]` (L3)
 
