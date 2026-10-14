@@ -1,9 +1,12 @@
 # Metrics
 
 > [!NOTE]
-> Two metrics are exported today: `mammoth_http_requests_total` and
-> `mammoth_gradle_requests_total`. The rest of the catalog below is the contract from design doc
-> [0004](../design/0004-metrics.md) and arrives with the features it measures. Names and labels
+> Exported today: `mammoth_http_requests_total`, `mammoth_gradle_requests_total`,
+> `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total` (memory tier),
+> `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
+> `mammoth_bucket_uploads_total` and `mammoth_bucket_uploads_dropped_total`. The rest of the catalog
+> below is the contract from design doc [0004](../design/0004-metrics.md) and arrives with the
+> features it measures. Names and labels
 > won't change without a breaking release.
 
 mammoth-cache exports Prometheus metrics at `/metrics` on the main port. The node exports raw

@@ -10,10 +10,12 @@
 //! The crate is a library with a thin `mammoth` binary, so a custom build can supply its own
 //! [`store::BlobStore`] implementation without forking.
 
+pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod http;
 pub mod key;
 pub mod store;
+mod tee;
 
-pub use http::router;
+pub use http::{router, router_with, router_with_auth};

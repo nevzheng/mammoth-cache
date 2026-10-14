@@ -1,7 +1,7 @@
 # Maven
 
 > [!NOTE]
-> The `/maven/` routes are served today, from memory and without authentication. The acceptance
+> The `/maven/` routes are served today. The acceptance
 > suite that runs real Maven builds against the node in CI is still to come.
 
 mammoth-cache supports the
@@ -44,7 +44,7 @@ mvn -Dmaven.build.cache.remote.save.enabled=true verify
 
 ## Credentials
 
-Once [authentication](authentication.md) lands, credentials go in `~/.m2/settings.xml`, under a
+With [authentication](authentication.md) on, credentials go in `~/.m2/settings.xml`, under a
 `<server>` whose `id` matches the `id` on `<remote>`:
 
 ```xml

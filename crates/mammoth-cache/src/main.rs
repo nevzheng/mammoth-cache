@@ -1,8 +1,9 @@
 use std::{env, io, path::PathBuf, process::ExitCode, sync::Arc};
 
 use mammoth_cache::{
-    cache::Cache,
-    config::{Config, DEFAULT_PATH, LogFormat, PATH_ENV},
+    auth,
+    cache::{BucketWrite, Cache},
+    config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
     store::{
         bucket::{BucketConfig, BucketStore},
         disk::{DiskConfig, DiskStore},
@@ -25,12 +26,14 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const USAGE: &str = "\
 usage: mammoth [--config <path>]
        mammoth config check [--config <path>]
+       mammoth token new
 
 The config file is --config, else $MAMMOTH_CONFIG, else ./mammoth.toml.";
 
 enum Command {
     Serve,
     Check,
+    NewToken,
 }
 
 fn main() -> ExitCode {
@@ -41,6 +44,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if matches!(command, Command::NewToken) {
+        return new_token();
+    }
     let (config, source) = match load_config(explicit) {
         Ok(loaded) => loaded,
         Err(message) => {
@@ -93,6 +99,10 @@ fn parse_args(
                 Some("check") => command = Command::Check,
                 _ => return Err("expected `config check`".to_owned()),
             },
+            "token" if matches!(command, Command::Serve) => match args.next().as_deref() {
+                Some("new") => command = Command::NewToken,
+                _ => return Err("expected `token new`".to_owned()),
+            },
             "-h" | "--help" => return Err("mammoth-cache, a remote build cache node".to_owned()),
             other => return Err(format!("unexpected argument {other:?}")),
         }
@@ -102,6 +112,27 @@ fn parse_args(
 
 /// Loads the config file. With no `--config` or `$MAMMOTH_CONFIG` and no `./mammoth.toml`, the
 /// node runs on the defaults, memory only, so `docker run` works without a file.
+/// Prints a new token and the hash to put in `mammoth.toml`.
+#[allow(clippy::print_stdout)] // The command's output.
+fn new_token() -> ExitCode {
+    match auth::new_token() {
+        Ok(token) => {
+            let hash = auth::format_hash(&auth::hash_token(&token));
+            println!("token: {token}");
+            println!("hash:  {hash}");
+            eprintln!(
+                "\nGive the token to the client, add the hash to the user's token_hashes in \
+                 mammoth.toml, and restart. The token is not stored anywhere."
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("mammoth: cannot generate a token: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Returns the config and the file it came from, if any.
 fn load_config(explicit: Option<PathBuf>) -> Result<(Config, Option<PathBuf>), String> {
     let chosen = explicit.is_some() || env::var_os(PATH_ENV).is_some();
@@ -125,8 +156,23 @@ fn init_logging(config: &Config) {
 }
 
 async fn serve(config: Config) -> io::Result<()> {
-    warn_unenforced(&config);
+    let auth = config.auth.authenticator(&config.metrics);
+    if config.auth.is_configured(&config.metrics) {
+        tracing::warn!(
+            "authentication is on and this server speaks plain HTTP: serve it behind a proxy \
+             that terminates TLS, or tokens cross the network in clear"
+        );
+    } else {
+        tracing::warn!("no [auth] users configured: every request is allowed");
+    }
     let cache = build_cache(&config).await?;
+    let protocols = &config.protocols;
+    tracing::info!(
+        gradle = protocols.gradle,
+        maven = protocols.maven,
+        bazel = protocols.bazel,
+        "protocols"
+    );
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(addr = %listener.local_addr()?, "mammoth-cache listening");
 
@@ -135,7 +181,12 @@ async fn serve(config: Config) -> io::Result<()> {
         .map_err(io::Error::other)?;
     axum::serve(
         listener,
-        mammoth_cache::router(Arc::new(cache), Some(metrics)),
+        mammoth_cache::router_with(
+            Arc::new(cache),
+            Some(metrics),
+            Arc::new(auth),
+            config.protocols,
+        ),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
@@ -149,6 +200,7 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         eviction: config.memory.eviction,
     })
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    // With memory as the deepest tier, the cache caps entries at memory.max_entry_size.
     let mut builder = Cache::builder()
         .max_entry_size(config.limits.max_entry_size.bytes())
         .bounded_tier(Arc::new(memory));
@@ -169,24 +221,41 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
             endpoint: bucket.endpoint.clone(),
             ..BucketConfig::new(bucket.url.clone())
         })?;
-        builder = builder.tier(Arc::new(store));
+        let write = match bucket.write {
+            config::BucketWrite::Async => BucketWrite::Async {
+                queue: bucket.upload_queue,
+            },
+            config::BucketWrite::Sync => BucketWrite::Sync,
+        };
+        builder = builder.bucket_tier(Arc::new(store), write);
     }
     Ok(builder.build())
 }
 
-/// Settings that parse but are not acted on yet, so nobody relies on them unknowingly.
-fn warn_unenforced(config: &Config) {
-    if !config.auth.users.is_empty()
-        || !config.auth.anonymous.is_empty()
-        || config.metrics.require_auth
-    {
-        tracing::warn!("[auth] is not enforced yet: every request is allowed");
-    }
-}
-
+/// Resolves on Ctrl-C or, on Unix, `SIGTERM`, which is how Kubernetes and Docker stop a container.
+/// As PID 1 the process gets no default `SIGTERM` handler, so without this it would be killed only
+/// after the grace period.
 async fn shutdown_signal() {
-    // If the handler can't be installed, run until killed rather than exit at once.
-    if tokio::signal::ctrl_c().await.is_err() {
-        std::future::pending::<()>().await;
-    }
+    // If a handler can't be installed, wait on the other rather than exit at once.
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    let name = tokio::select! {
+        () = ctrl_c => "interrupt",
+        () = terminate => "SIGTERM",
+    };
+    tracing::info!(signal = name, "shutting down; finishing requests in flight");
 }

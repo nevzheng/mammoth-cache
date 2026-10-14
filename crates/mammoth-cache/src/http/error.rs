@@ -13,6 +13,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
+    auth::Scope,
     cache::CacheError,
     key::{CacheKey, InvalidKey, Namespace},
 };
@@ -79,6 +80,7 @@ impl ApiError {
         let field = match key.namespace() {
             Namespace::Gradle => "key",
             Namespace::Maven => "path",
+            Namespace::BazelAc | Namespace::BazelCas => "digest",
         };
         Self::new(
             StatusCode::NOT_FOUND,
@@ -97,6 +99,19 @@ impl ApiError {
         let mut error = Self::new(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", reason, message);
         error.challenge = true;
         error
+    }
+
+    /// `403 PERMISSION_DENIED`: the user is known but lacks `scope`.
+    #[must_use]
+    pub fn permission_denied(user: &str, scope: Scope) -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "PERMISSION_DENIED",
+            "SCOPE_MISSING",
+            format!("User {user:?} lacks the {scope} scope."),
+        )
+        .with("user", user)
+        .with("requiredScope", scope.as_str())
     }
 
     /// `405` for a method the route does not support.
@@ -121,6 +136,18 @@ impl ApiError {
         )
     }
 
+    /// `400 INVALID_ARGUMENT` for a Bazel CAS upload whose SHA-256 is not its digest.
+    #[must_use]
+    pub fn digest_mismatch(key: &CacheKey) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_ARGUMENT",
+            "DIGEST_MISMATCH",
+            "The uploaded content does not hash to its digest.",
+        )
+        .with("digest", key.name())
+    }
+
     /// `501 UNIMPLEMENTED` for a route in the contract that is not built yet.
     #[must_use]
     pub fn unimplemented(what: &str) -> Self {
@@ -138,6 +165,7 @@ impl From<InvalidKey> for ApiError {
         let reason = match e {
             InvalidKey::Gradle => "INVALID_CACHE_KEY",
             InvalidKey::Maven => "INVALID_CACHE_PATH",
+            InvalidKey::Bazel => "INVALID_DIGEST",
         };
         Self::new(
             StatusCode::BAD_REQUEST,

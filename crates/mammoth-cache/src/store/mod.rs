@@ -94,6 +94,12 @@ pub trait BlobStore: Send + Sync + fmt::Debug {
     /// Returns an entry's size without reading it. `Ok(None)` is a miss.
     fn head<'a>(&'a self, key: &'a CacheKey) -> BoxFuture<'a, io::Result<Option<u64>>>;
 
+    /// The largest entry the store keeps, when it has its own cap. A store with a cap may answer
+    /// [`PutOutcome::Stored`] for a larger entry without keeping it, as the memory tier does.
+    fn max_entry_size(&self) -> Option<u64> {
+        None
+    }
+
     /// Writes an entry from a stream. `size_hint` is the declared length, when known.
     fn put<'a>(
         &'a self,

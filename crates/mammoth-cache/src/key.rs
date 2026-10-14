@@ -1,7 +1,8 @@
 //! Cache keys.
 //!
-//! Every key carries its protocol's namespace (`gradle/<hex key>`, `maven/<path>`), so a Maven path
-//! can never collide with a Gradle hash in any tier (design doc 0003).
+//! Every key carries its protocol's namespace (`gradle/<hex key>`, `maven/<path>`,
+//! `bazel-ac/<sha256>`, `bazel-cas/<sha256>`), so a Maven path can never collide with a Gradle hash
+//! in any tier (design doc 0003).
 
 use std::fmt;
 
@@ -14,6 +15,9 @@ pub const MAX_PATH_LEN: usize = 512;
 /// The most segments a Maven path may have.
 pub const MAX_PATH_SEGMENTS: usize = 16;
 
+/// The length of a Bazel digest: a SHA-256 hash in lowercase hex.
+pub const BAZEL_DIGEST_LEN: usize = 64;
+
 /// The protocol a key belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Namespace {
@@ -22,6 +26,13 @@ pub enum Namespace {
     /// The Apache Maven Build Cache Extension's `/maven/{path}`: named files that a store may
     /// replace, because they are not content-addressed.
     Maven,
+    /// Bazel's action cache, `/bazel/ac/{digest}`: action results keyed by the action's digest. A
+    /// store replaces the entry, as in bazel-remote, because a non-hermetic action can produce a
+    /// different result for the same digest.
+    BazelAc,
+    /// Bazel's content-addressed store, `/bazel/cas/{digest}`: blobs keyed by their own SHA-256,
+    /// immutable.
+    BazelCas,
 }
 
 impl Namespace {
@@ -31,6 +42,8 @@ impl Namespace {
         match self {
             Self::Gradle => "gradle",
             Self::Maven => "maven",
+            Self::BazelAc => "bazel-ac",
+            Self::BazelCas => "bazel-cas",
         }
     }
 
@@ -38,7 +51,7 @@ impl Namespace {
     /// nothing; a store to an existing mutable key replaces it.
     #[must_use]
     pub fn is_immutable(self) -> bool {
-        matches!(self, Self::Gradle)
+        matches!(self, Self::Gradle | Self::BazelCas)
     }
 }
 
@@ -89,6 +102,22 @@ impl CacheKey {
         }
     }
 
+    /// Parses a Bazel digest for the action cache ([`Namespace::BazelAc`]) or the
+    /// content-addressed store ([`Namespace::BazelCas`]): [`BAZEL_DIGEST_LEN`] lowercase hex
+    /// characters.
+    pub fn bazel(namespace: Namespace, digest: &str) -> Result<Self, InvalidKey> {
+        let valid = matches!(namespace, Namespace::BazelAc | Namespace::BazelCas)
+            && digest.len() == BAZEL_DIGEST_LEN
+            && digest
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        if valid {
+            Ok(Self::new(namespace, digest))
+        } else {
+            Err(InvalidKey::Bazel)
+        }
+    }
+
     fn new(namespace: Namespace, name: &str) -> Self {
         Self {
             namespace,
@@ -134,6 +163,8 @@ pub enum InvalidKey {
     Gradle,
     /// Not a valid Maven path.
     Maven,
+    /// Not [`BAZEL_DIGEST_LEN`] lowercase hex characters.
+    Bazel,
 }
 
 impl fmt::Display for InvalidKey {
@@ -145,6 +176,10 @@ impl fmt::Display for InvalidKey {
             ),
             Self::Maven => f.write_str(
                 "path segments may contain only letters, digits, \".\", \"_\" and \"-\"",
+            ),
+            Self::Bazel => write!(
+                f,
+                "digest must be a SHA-256 hash: {BAZEL_DIGEST_LEN} lowercase hex characters"
             ),
         }
     }
@@ -202,10 +237,71 @@ mod tests {
     }
 
     #[test]
+    fn bazel_accepts_sha256_digests() {
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let ac = CacheKey::bazel(Namespace::BazelAc, digest).unwrap();
+        let cas = CacheKey::bazel(Namespace::BazelCas, digest).unwrap();
+        assert_eq!(ac.as_str(), format!("bazel-ac/{digest}"));
+        assert_eq!(cas.as_str(), format!("bazel-cas/{digest}"));
+        assert_eq!(cas.name(), digest);
+        assert_ne!(ac, cas);
+        assert!(cas.namespace().is_immutable() && !ac.namespace().is_immutable());
+    }
+
+    #[test]
+    fn bazel_rejects_everything_else() {
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let upper = digest.to_uppercase();
+        for bad in [
+            "",
+            "abc",
+            &digest[1..],
+            upper.as_str(),
+            &format!("{digest}0"),
+        ] {
+            assert_eq!(
+                CacheKey::bazel(Namespace::BazelCas, bad),
+                Err(InvalidKey::Bazel),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            CacheKey::bazel(Namespace::Gradle, digest),
+            Err(InvalidKey::Bazel)
+        );
+    }
+
+    #[test]
     fn namespaces_never_collide() {
         assert_ne!(
             CacheKey::gradle("abc").unwrap(),
             CacheKey::maven("abc").unwrap()
         );
+    }
+
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn gradle_accepts_exactly_lowercase_hex(key in "[0-9a-zA-Z./%-]{0,140}") {
+                let expected = !key.is_empty()
+                    && key.len() <= MAX_KEY_LEN
+                    && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+                prop_assert_eq!(CacheKey::gradle(&key).is_ok(), expected);
+            }
+
+            #[test]
+            fn maven_never_accepts_a_path_that_escapes(path in "[a-z./%-]{0,40}(/[a-z./%-]{0,8}){0,4}") {
+                if let Ok(key) = CacheKey::maven(&path) {
+                    prop_assert_eq!(key.name(), path.as_str());
+                    prop_assert!(!path.starts_with('/'));
+                    prop_assert!(path.split('/').all(|s| !s.is_empty() && s != "." && s != ".."));
+                    prop_assert!(!path.contains('%'));
+                }
+            }
+        }
     }
 }

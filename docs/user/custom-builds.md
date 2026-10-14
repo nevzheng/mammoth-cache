@@ -90,9 +90,8 @@ Passing `None` for metrics makes `/metrics` answer `501`; to export them, instal
 [`main.rs`](https://github.com/nevzheng/mammoth-cache/blob/main/crates/mammoth-cache/src/main.rs)
 does.
 
-Tiers are looked up in the order they are added. For now the core writes only to the first tier;
-the full write path (disk first, then a background bucket upload) arrives with the bucket tier. So
-until then, add your store as the first or only tier. The rules a store must follow:
+Tiers are looked up in the order they are added, a store is written through every tier, and a hit
+in a lower tier is copied into the tiers above it. The rules a store must follow:
 
 - Gradle entries are immutable: when `key.namespace().is_immutable()`, a `put` for a key that
   already exists writes nothing and returns `PutOutcome::Exists`. Maven keys are not immutable, so

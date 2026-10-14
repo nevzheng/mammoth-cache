@@ -63,6 +63,8 @@ rust_test(
         size = "small",
         srcs = [src],
         aliases = aliases(normal_dev = True),
+        # tests/contract.rs embeds the OpenAPI contracts.
+        compile_data = ["//api/openapi:specs"],
         lint_config = ":lints",
         proc_macro_deps = all_crate_deps(proc_macro_dev = True),
         deps = [":mammoth_cache"] + all_crate_deps(

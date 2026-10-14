@@ -1,8 +1,15 @@
 //! The core: tiering rules over the blob store port.
 //!
 //! The core knows nothing of HTTP, file systems or cloud SDKs (design doc 0003). It owns the lookup
-//! order, the entry size limit and the hit and miss counts. Promotion between tiers, single-flight
-//! bucket reads, checksums and the background bucket upload are not implemented yet.
+//! order, the write path, promotion between tiers, the background bucket upload, the entry size
+//! limit and the hit and miss counts. Single-flight bucket reads are not implemented yet.
+//!
+//! - **Reads** look in each local tier, then the bucket. A hit below the first tier is copied up
+//!   into the tiers above it while it streams to the client. Copies never slow the client: one
+//!   that falls behind is abandoned.
+//! - **Writes** stream into every local tier at once; the deepest (disk, when configured) decides
+//!   the outcome. The bucket gets the entry in the background through a bounded queue, or inline
+//!   with [`BucketWrite::Sync`]. A node with no local tier writes straight to the bucket.
 
 use std::{
     fmt, io,
@@ -13,12 +20,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, future, stream};
+use tokio::sync::mpsc;
 
 use crate::{
     key::{CacheKey, Namespace},
     store::{Blob, BlobStore, BoundedStore, ByteStream, PutOutcome, Tier, TierUsage},
+    tee::{self, tee},
 };
+
+/// Bucket uploads in flight at once.
+const UPLOAD_CONCURRENCY: usize = 8;
 
 /// The default largest entry, matching the Build Cache Node's `cache.maxArtifactSize`.
 pub const DEFAULT_MAX_ENTRY_SIZE: u64 = 100 * 1024 * 1024;
@@ -35,6 +47,20 @@ pub enum OversizePolicy {
     Drop,
     /// Refuse with [`CacheError::TooLarge`] (HTTP `413`), as the Build Cache Node does.
     Reject,
+}
+
+/// When a store reaches the bucket (`bucket.write` in `mammoth.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BucketWrite {
+    /// Answer once the local tiers have the entry, then upload in the background. Up to `queue`
+    /// uploads wait; when the queue is full, the upload is dropped and counted, which costs other
+    /// nodes a miss and nothing more.
+    Async {
+        /// Uploads that may wait.
+        queue: usize,
+    },
+    /// Answer only after the upload, trading `PUT` latency for other nodes seeing the entry sooner.
+    Sync,
 }
 
 /// Whether to take an upload, decided from its declared size before reading it.
@@ -157,10 +183,18 @@ struct TierHandle {
     bounded: Option<Arc<dyn BoundedStore>>,
 }
 
+#[derive(Debug)]
+struct BucketHandle {
+    store: Arc<dyn BlobStore>,
+    /// The background upload queue; `None` when stores reach the bucket inline.
+    uploads: Option<mpsc::Sender<CacheKey>>,
+}
+
 /// Builds a [`Cache`] from its tiers, in lookup order.
 #[derive(Debug)]
 pub struct CacheBuilder {
     tiers: Vec<TierHandle>,
+    bucket: Option<(Arc<dyn BlobStore>, BucketWrite)>,
     max_entry_size: u64,
     oversize: OversizePolicy,
 }
@@ -169,6 +203,7 @@ impl Default for CacheBuilder {
     fn default() -> Self {
         Self {
             tiers: Vec::new(),
+            bucket: None,
             max_entry_size: DEFAULT_MAX_ENTRY_SIZE,
             oversize: OversizePolicy::default(),
         }
@@ -186,7 +221,18 @@ impl CacheBuilder {
         self
     }
 
-    /// Adds a tier without a capacity (the bucket).
+    /// Sets the shared bucket, looked up after every local tier.
+    #[must_use]
+    pub fn bucket_tier<S: BlobStore + 'static>(
+        mut self,
+        store: Arc<S>,
+        write: BucketWrite,
+    ) -> Self {
+        self.bucket = Some((store, write));
+        self
+    }
+
+    /// Adds a local tier without a capacity, such as a custom store.
     #[must_use]
     pub fn tier<S: BlobStore + 'static>(mut self, store: Arc<S>) -> Self {
         self.tiers.push(TierHandle {
@@ -210,12 +256,37 @@ impl CacheBuilder {
         self
     }
 
-    /// Builds the cache.
+    /// Builds the cache. With a bucket and [`BucketWrite::Async`], starts the upload workers, so
+    /// it must be called inside a Tokio runtime.
     #[must_use]
     pub fn build(self) -> Cache {
+        // The deepest local tier holds every stored entry, unless it caps entry size (memory).
+        let source = self.tiers.last().map(|handle| handle.store.clone());
+        let source_cap = source.as_ref().and_then(|store| store.max_entry_size());
+        let mut max_entry_size = self.max_entry_size;
+        if self.bucket.is_none()
+            && let Some(cap) = source_cap
+        {
+            // Nothing below would keep a larger entry, so it is oversized.
+            max_entry_size = max_entry_size.min(cap);
+        }
+        let bucket = self.bucket.map(|(store, write)| {
+            let uploads = match (write, source) {
+                // Background uploads read the entry back, so its local copy must be whole.
+                (BucketWrite::Async { queue }, Some(source)) if source_cap.is_none() => {
+                    let (tx, rx) = mpsc::channel(queue.max(1));
+                    tokio::spawn(upload_worker(rx, source, store.clone()));
+                    Some(tx)
+                }
+                // Inline: asked for, or there is no whole local copy to upload from.
+                _ => None,
+            };
+            BucketHandle { store, uploads }
+        });
         Cache {
             tiers: self.tiers,
-            max_entry_size: self.max_entry_size,
+            bucket,
+            max_entry_size,
             oversize: self.oversize,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -229,6 +300,7 @@ impl CacheBuilder {
 #[derive(Debug)]
 pub struct Cache {
     tiers: Vec<TierHandle>,
+    bucket: Option<BucketHandle>,
     max_entry_size: u64,
     oversize: OversizePolicy,
     hits: AtomicU64,
@@ -249,15 +321,26 @@ impl Cache {
         self.max_entry_size
     }
 
+    /// Every tier in lookup order: the local tiers, then the bucket.
+    fn lookup_order(&self) -> impl Iterator<Item = &Arc<dyn BlobStore>> {
+        self.tiers
+            .iter()
+            .map(|handle| &handle.store)
+            .chain(self.bucket.as_ref().map(|bucket| &bucket.store))
+    }
+
     /// Loads an entry, looking in each tier in order. `Ok(None)` is a miss.
     ///
-    /// A tier that fails is skipped and the next one tried: for a cache, a failed read is a miss.
+    /// A hit below the first tier is copied into the local tiers above it as it streams. A tier
+    /// that fails is skipped and the next one tried: for a cache, a failed read is a miss.
     pub async fn get(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
-        for handle in &self.tiers {
-            let tier = handle.store.tier();
-            match handle.store.get(key).await {
+        for (depth, store) in self.lookup_order().enumerate() {
+            let tier = store.tier();
+            match store.get(key).await {
                 Ok(Some(blob)) => {
                     self.hits.fetch_add(1, Ordering::Relaxed);
+                    let above = &self.tiers[..depth.min(self.tiers.len())];
+                    let blob = promote(key, tier, blob, above);
                     return Ok(Some(Hit { tier, blob }));
                 }
                 Ok(None) => {}
@@ -270,12 +353,12 @@ impl Cache {
 
     /// Returns an entry's size without reading it. `Ok(None)` is a miss.
     pub async fn head(&self, key: &CacheKey) -> Result<Option<u64>, CacheError> {
-        for handle in &self.tiers {
-            match handle.store.head(key).await {
+        for store in self.lookup_order() {
+            match store.head(key).await {
                 Ok(Some(size)) => return Ok(Some(size)),
                 Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(%key, tier = %handle.store.tier(), %error, "tier head failed");
+                    tracing::warn!(%key, tier = %store.tier(), %error, "tier head failed");
                 }
             }
         }
@@ -309,7 +392,8 @@ impl Cache {
     pub fn oversize_policy(&self, namespace: Namespace) -> OversizePolicy {
         match namespace {
             Namespace::Gradle => self.oversize,
-            Namespace::Maven => OversizePolicy::Reject,
+            // Maven and Bazel only log a failed store and keep using the cache.
+            Namespace::Maven | Namespace::BazelAc | Namespace::BazelCas => OversizePolicy::Reject,
         }
     }
 
@@ -321,8 +405,8 @@ impl Cache {
     /// An entry over the size limit is dropped or refused according to the [`OversizePolicy`],
     /// whether its declared size says so or the body passes the limit while streaming. A body
     /// dropped mid-stream is read to the end and discarded, so the client sees a clean response.
-    /// Writes to the first tier only for now; the full write path (disk, then a background bucket
-    /// upload) arrives with the disk and bucket tiers.
+    /// The entry is written to every local tier, and to the bucket inline or in the background
+    /// (see [`BucketWrite`]).
     pub async fn put(
         &self,
         key: &CacheKey,
@@ -337,7 +421,20 @@ impl Cache {
         if key.namespace().is_immutable() && self.head(key).await?.is_some() {
             return Ok(StoreOutcome::Exists);
         }
-        let Some(first) = self.tiers.first() else {
+        // The deepest local tier decides the outcome; the others, and the bucket when it is
+        // written inline, get copies of the same stream.
+        let mut writers: Vec<&Arc<dyn BlobStore>> = self
+            .tiers
+            .iter()
+            .rev()
+            .map(|handle| &handle.store)
+            .collect();
+        if let Some(bucket) = &self.bucket
+            && bucket.uploads.is_none()
+        {
+            writers.push(&bucket.store);
+        }
+        let Some((primary, others)) = writers.split_first() else {
             return Err(CacheError::Internal(io::Error::other(
                 "no storage tiers configured",
             )));
@@ -345,12 +442,35 @@ impl Cache {
 
         let limit = self.max_entry_size;
         let drain = self.oversize_policy(key.namespace()) == OversizePolicy::Drop;
-        match first
-            .store
-            .put(key, declared_size, limit_stream(body, limit, drain))
-            .await
-        {
-            Ok(outcome) => Ok(outcome.into()),
+        let (body, copies) = tee(
+            limit_stream(body, limit, drain),
+            others.len(),
+            tee::Mode::Lockstep,
+            None,
+        );
+        let secondary = others.iter().zip(copies).map(|(store, copy)| async move {
+            (store.tier(), store.put(key, declared_size, copy).await)
+        });
+        let (result, secondary) = future::join(
+            primary.put(key, declared_size, body),
+            future::join_all(secondary),
+        )
+        .await;
+        if result.is_ok() {
+            for (tier, outcome) in secondary {
+                if let Err(error) = outcome {
+                    tracing::warn!(%key, %tier, %error, "write to a secondary tier failed");
+                }
+            }
+        }
+
+        match result {
+            Ok(outcome) => {
+                if outcome == PutOutcome::Stored {
+                    self.enqueue_upload(key);
+                }
+                Ok(outcome.into())
+            }
             Err(e) if is_too_large(&e) => {
                 self.oversized.fetch_add(1, Ordering::Relaxed);
                 if drain {
@@ -361,6 +481,27 @@ impl Cache {
                 }
             }
             Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Queues a background upload to the bucket, when there is one. A full queue drops the upload.
+    fn enqueue_upload(&self, key: &CacheKey) {
+        let Some(uploads) = self
+            .bucket
+            .as_ref()
+            .and_then(|bucket| bucket.uploads.as_ref())
+        else {
+            return;
+        };
+        match uploads.try_send(key.clone()) {
+            Ok(()) => metrics::gauge!("mammoth_bucket_upload_queue_entries").increment(1.0),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                metrics::counter!("mammoth_bucket_uploads_dropped_total").increment(1);
+                tracing::warn!(%key, "bucket upload queue full; upload dropped");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::error!(%key, "bucket upload workers stopped; upload dropped");
+            }
         }
     }
 
@@ -378,6 +519,71 @@ impl Cache {
                 .collect(),
         }
     }
+}
+
+/// Copies a hit from a lower tier into the tiers `above` it while it streams to the client. Each
+/// copy is written in the background and abandoned if it falls behind the client.
+fn promote(key: &CacheKey, from: Tier, blob: Blob, above: &[TierHandle]) -> Blob {
+    if above.is_empty() {
+        return blob;
+    }
+    let size = blob.size;
+    let (body, copies) = tee(blob.body, above.len(), tee::Mode::Lossy, Some(size));
+    for (handle, copy) in above.iter().zip(copies) {
+        let store = handle.store.clone();
+        let key = key.clone();
+        tokio::spawn(async move {
+            let to = store.tier();
+            match store.put(&key, Some(size), copy).await {
+                Ok(_) => {
+                    metrics::counter!(
+                        "mammoth_tier_promotions_total",
+                        "from" => from.as_str(),
+                        "to" => to.as_str(),
+                    )
+                    .increment(1);
+                }
+                Err(error) => tracing::debug!(%key, %from, %to, %error, "promotion abandoned"),
+            }
+        });
+    }
+    Blob { size, body }
+}
+
+/// Uploads stored entries to the bucket, reading each one back from the deepest local tier.
+async fn upload_worker(
+    queue: mpsc::Receiver<CacheKey>,
+    source: Arc<dyn BlobStore>,
+    bucket: Arc<dyn BlobStore>,
+) {
+    let keys = stream::unfold(queue, |mut queue| async move {
+        let key = queue.recv().await?;
+        metrics::gauge!("mammoth_bucket_upload_queue_entries").decrement(1.0);
+        Some((key, queue))
+    });
+    keys.for_each_concurrent(UPLOAD_CONCURRENCY, |key| {
+        let (source, bucket) = (&source, &bucket);
+        async move {
+            let result = match source.get(&key).await {
+                Ok(Some(blob)) => bucket.put(&key, Some(blob.size), blob.body).await.map(Some),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            };
+            let outcome = match result {
+                Ok(Some(_)) => "ok",
+                Ok(None) => {
+                    tracing::debug!(%key, "entry left the local tiers before its upload");
+                    "skipped"
+                }
+                Err(error) => {
+                    tracing::warn!(%key, %error, "bucket upload failed");
+                    "error"
+                }
+            };
+            metrics::counter!("mammoth_bucket_uploads_total", "result" => outcome).increment(1);
+        }
+    })
+    .await;
 }
 
 /// Fails the stream once more than `limit` bytes have passed, so the store discards the entry.
@@ -436,7 +642,7 @@ mod tests {
 
     fn cache_with(limit: u64, policy: OversizePolicy) -> Cache {
         Cache::builder()
-            .bounded_tier(Arc::new(MemoryStore::new(1024)))
+            .bounded_tier(Arc::new(MemoryStore::new(1 << 20)))
             .max_entry_size(limit)
             .oversize(policy)
             .build()
@@ -444,6 +650,19 @@ mod tests {
 
     fn cache(limit: u64) -> Cache {
         cache_with(limit, OversizePolicy::Drop)
+    }
+
+    #[tokio::test]
+    async fn memory_only_caps_entries_at_the_memory_limit() {
+        // A 1 KiB memory store keeps entries of at most 16 bytes, below the 1 KiB limit.
+        let cache = Cache::builder()
+            .bounded_tier(Arc::new(MemoryStore::new(1024)))
+            .max_entry_size(1024)
+            .build();
+        let k = key("abc123");
+        let outcome = cache.put(&k, Some(17), body(&[&[0; 17]])).await.unwrap();
+        assert_eq!(outcome, StoreOutcome::Dropped);
+        assert!(cache.get(&k).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -571,5 +790,221 @@ mod tests {
         assert_eq!(status.tiers.len(), 1);
         assert_eq!(status.tiers[0].0, Tier::Memory);
         assert_eq!(status.tiers[0].1.entries, 1);
+    }
+
+    mod tiers {
+        use std::time::Duration;
+
+        use object_store::{memory::InMemory, path::Path};
+
+        use super::*;
+        use crate::store::{
+            bucket::BucketStore,
+            disk::{DiskConfig, DiskStore},
+        };
+
+        struct Tiers {
+            memory: Arc<MemoryStore>,
+            disk: Arc<DiskStore>,
+            bucket: Arc<BucketStore>,
+            _dir: tempfile::TempDir,
+        }
+
+        async fn tiers() -> Tiers {
+            let dir = tempfile::tempdir().unwrap();
+            let disk = DiskStore::open(DiskConfig {
+                path: dir.path().to_path_buf(),
+                capacity_bytes: 1 << 20,
+                max_entry_age: None,
+            })
+            .await
+            .unwrap();
+            Tiers {
+                memory: Arc::new(MemoryStore::new(1 << 20)),
+                disk: Arc::new(disk),
+                bucket: Arc::new(BucketStore::with_store(
+                    Arc::new(InMemory::new()),
+                    Path::from("p"),
+                    0,
+                )),
+                _dir: dir,
+            }
+        }
+
+        fn cache(t: &Tiers, write: BucketWrite) -> Cache {
+            Cache::builder()
+                .bounded_tier(t.memory.clone())
+                .bounded_tier(t.disk.clone())
+                .bucket_tier(t.bucket.clone(), write)
+                .build()
+        }
+
+        /// Waits for background work (promotions, uploads) to land in `store`.
+        async fn eventually_has(store: &dyn BlobStore, k: &CacheKey) {
+            for _ in 0..200 {
+                if store.head(k).await.unwrap().is_some() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("{k} never reached the {} tier", store.tier());
+        }
+
+        #[tokio::test]
+        async fn put_writes_every_local_tier_and_uploads_in_the_background() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Async { queue: 8 });
+            let k = key("ab12");
+            let outcome = cache.put(&k, None, body(&[b"hello ", b"tiers"])).await;
+            assert_eq!(outcome.unwrap(), StoreOutcome::Stored);
+            assert_eq!(t.memory.head(&k).await.unwrap(), Some(11));
+            assert_eq!(t.disk.head(&k).await.unwrap(), Some(11));
+            eventually_has(t.bucket.as_ref(), &k).await;
+        }
+
+        #[tokio::test]
+        async fn sync_bucket_writes_before_answering() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Sync);
+            let k = key("cd34");
+            cache.put(&k, None, body(&[b"now"])).await.unwrap();
+            assert_eq!(t.bucket.head(&k).await.unwrap(), Some(3));
+        }
+
+        #[tokio::test]
+        async fn disk_hits_are_promoted_to_memory() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Sync);
+            let k = key("ef56");
+            t.disk.put(&k, None, body(&[b"warm"])).await.unwrap();
+
+            let hit = cache.get(&k).await.unwrap().unwrap();
+            assert_eq!(hit.tier, Tier::Disk);
+            assert_eq!(read_all(hit.blob).await, b"warm");
+            eventually_has(t.memory.as_ref(), &k).await;
+            assert_eq!(cache.get(&k).await.unwrap().unwrap().tier, Tier::Memory);
+        }
+
+        #[tokio::test]
+        async fn bucket_hits_are_promoted_to_disk_and_memory() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Sync);
+            let k = key("0123");
+            t.bucket
+                .put(&k, None, body(&[b"from ", b"elsewhere"]))
+                .await
+                .unwrap();
+
+            let hit = cache.get(&k).await.unwrap().unwrap();
+            assert_eq!(hit.tier, Tier::Bucket);
+            assert_eq!(read_all(hit.blob).await, b"from elsewhere");
+            eventually_has(t.disk.as_ref(), &k).await;
+            eventually_has(t.memory.as_ref(), &k).await;
+        }
+
+        #[tokio::test]
+        async fn an_abandoned_read_promotes_nothing() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Sync);
+            let k = key("4567");
+            // Several disk read chunks long.
+            let big: Vec<io::Result<Bytes>> = vec![Ok(Bytes::from(vec![7_u8; 200_000]))];
+            t.disk
+                .put(&k, None, Box::pin(stream::iter(big)))
+                .await
+                .unwrap();
+
+            let mut hit = cache.get(&k).await.unwrap().unwrap();
+            hit.blob.body.next().await.unwrap().unwrap();
+            drop(hit);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(t.memory.head(&k).await.unwrap(), None);
+        }
+
+        #[tokio::test]
+        async fn an_entry_in_any_tier_is_not_stored_again() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Sync);
+            let k = key("89ab");
+            t.bucket.put(&k, None, body(&[b"old"])).await.unwrap();
+            let outcome = cache.put(&k, None, body(&[b"new"])).await.unwrap();
+            assert_eq!(outcome, StoreOutcome::Exists);
+            assert_eq!(t.disk.head(&k).await.unwrap(), None);
+        }
+
+        #[tokio::test]
+        async fn oversized_stores_reach_no_tier() {
+            let t = tiers().await;
+            let cache = Cache::builder()
+                .bounded_tier(t.memory.clone())
+                .bounded_tier(t.disk.clone())
+                .bucket_tier(t.bucket.clone(), BucketWrite::Sync)
+                .max_entry_size(4)
+                .build();
+            let k = key("cdef");
+            let outcome = cache
+                .put(&k, None, body(&[b"too", b" long"]))
+                .await
+                .unwrap();
+            assert_eq!(outcome, StoreOutcome::Dropped);
+            assert_eq!(cache.head(&k).await.unwrap(), None);
+        }
+
+        #[tokio::test]
+        async fn a_bucket_only_node_writes_straight_to_the_bucket() {
+            let t = tiers().await;
+            let cache = Cache::builder()
+                .bucket_tier(t.bucket.clone(), BucketWrite::Async { queue: 8 })
+                .build();
+            let k = key("fedc");
+            cache.put(&k, None, body(&[b"direct"])).await.unwrap();
+            assert_eq!(t.bucket.head(&k).await.unwrap(), Some(6));
+        }
+    }
+
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn chunked(data: &[u8], cuts: &[usize]) -> ByteStream {
+            let mut chunks = Vec::new();
+            let mut start = 0;
+            for &cut in cuts {
+                let end = (start + cut).min(data.len());
+                chunks.push(Ok(Bytes::copy_from_slice(&data[start..end])));
+                start = end;
+            }
+            chunks.push(Ok(Bytes::copy_from_slice(&data[start..])));
+            Box::pin(stream::iter(chunks))
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            /// However a body is chunked, it is stored whole if it fits the limit and not at all
+            /// if it does not.
+            #[test]
+            fn stores_whole_or_not_at_all(
+                data in proptest::collection::vec(any::<u8>(), 0..3000),
+                cuts in proptest::collection::vec(0_usize..700, 0..8),
+                limit in 0_u64..2500,
+            ) {
+                let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+                rt.block_on(async {
+                    let cache = cache(limit);
+                    let k = key("abc");
+                    let outcome = cache.put(&k, None, chunked(&data, &cuts)).await.unwrap();
+                    let fits = data.len() as u64 <= limit;
+                    let expected = if fits { StoreOutcome::Stored } else { StoreOutcome::Dropped };
+                    prop_assert_eq!(outcome, expected);
+                    match cache.get(&k).await.unwrap() {
+                        Some(hit) => prop_assert!(fits && read_all(hit.blob).await == data),
+                        None => prop_assert!(!fits),
+                    }
+                    Ok(())
+                })?;
+            }
+        }
     }
 }

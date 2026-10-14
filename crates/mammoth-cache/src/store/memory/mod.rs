@@ -273,6 +273,10 @@ impl<B: MemoryBackend> BlobStore for MemoryStore<B> {
         Box::pin(async move { Ok(self.backend.get(key).map(|entry| entry.meta.size)) })
     }
 
+    fn max_entry_size(&self) -> Option<u64> {
+        Some(self.config.max_entry_bytes)
+    }
+
     fn put<'a>(
         &'a self,
         key: &'a CacheKey,
