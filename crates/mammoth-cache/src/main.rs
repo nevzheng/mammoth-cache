@@ -1,8 +1,8 @@
 use std::{env, io, path::PathBuf, process::ExitCode, sync::Arc};
 
 use mammoth_cache::{
-    cache::Cache,
-    config::{Config, DEFAULT_PATH, LogFormat, PATH_ENV},
+    cache::{BucketWrite, Cache},
+    config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
     store::{
         bucket::{BucketConfig, BucketStore},
         disk::{DiskConfig, DiskStore},
@@ -149,8 +149,14 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         eviction: config.memory.eviction,
     })
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut max_entry_size = config.limits.max_entry_size.bytes();
+    if config.disk.is_none() && config.bucket.is_none() {
+        // Memory is the only copy, so an entry it cannot hold is over the limit: counted as
+        // oversized rather than answered as stored and lost.
+        max_entry_size = max_entry_size.min(config.memory.max_entry_size.bytes());
+    }
     let mut builder = Cache::builder()
-        .max_entry_size(config.limits.max_entry_size.bytes())
+        .max_entry_size(max_entry_size)
         .bounded_tier(Arc::new(memory));
     if let Some(disk) = &config.disk {
         let store = DiskStore::open(DiskConfig {
@@ -169,7 +175,13 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
             endpoint: bucket.endpoint.clone(),
             ..BucketConfig::new(bucket.url.clone())
         })?;
-        builder = builder.tier(Arc::new(store));
+        let write = match bucket.write {
+            config::BucketWrite::Async => BucketWrite::Async {
+                queue: bucket.upload_queue,
+            },
+            config::BucketWrite::Sync => BucketWrite::Sync,
+        };
+        builder = builder.bucket_tier(Arc::new(store), write);
     }
     Ok(builder.build())
 }

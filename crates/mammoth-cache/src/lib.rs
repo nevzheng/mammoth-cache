@@ -15,5 +15,6 @@ pub mod config;
 pub mod http;
 pub mod key;
 pub mod store;
+mod tee;
 
 pub use http::router;
