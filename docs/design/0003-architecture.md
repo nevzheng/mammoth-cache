@@ -39,6 +39,7 @@ auth and metrics are in their own docs.
   a possible future direction for higher availability, but not recommended now.
 - Consistency guarantees beyond those immutable entries already give.
 - Deleting from the bucket. Expiry there is left to the bucket's lifecycle rules.
+- A web UI. Operators use the config file, `/metrics` with their own dashboards, and the admin API.
 
 ## Design objectives and constraints
 
@@ -103,7 +104,7 @@ Nodes are stateless and interchangeable; the bucket is the only shared state.
 
 | Tier | Holds                                | Bounded by                               | Eviction                                     |
 | ---- | ------------------------------------ | ---------------------------------------- | -------------------------------------------- |
-| L1   | Hot entries up to a size threshold   | Configured bytes                         | Admission-aware LRU (for example W-TinyLFU)  |
+| L1   | Hot entries up to a size threshold   | Configured bytes                         | `memory.eviction`, S3-FIFO by default (0010) |
 | L2   | Recently used entries, one file each | Configured bytes, free-space buffer, age | LRU by bytes, plus maximum age               |
 | L3   | Every stored entry                   | The bucket                               | Bucket lifecycle rules (for example 30 days) |
 
@@ -195,14 +196,23 @@ sequenceDiagram
 ### Integrity
 
 Gradle's keys are hashes of a task's inputs, not of the stored bytes, so a key cannot verify its
-entry. Each entry is stored with a checksum of its bytes. A mismatch on read is treated as a miss,
-the bad copy is deleted locally, and the event is counted in metrics.
+entry. Each entry is stored with a CRC32C checksum of its bytes
+([0010](0010-memory-tier-and-eviction.md)), and the bad copy is deleted locally when a check fails.
+
+How a failure looks to the client depends on when it is found. A damaged L2 header is found before
+the response starts, so it is a miss. The body checksum is a trailer, checked as the body streams,
+so a mismatch is found only after `200` and most of the bytes have gone out: the response is cut
+short, the client sees a failed download (Gradle turns its remote cache off for the rest of the
+build), and the next request for the key misses. Verifying small entries before answering would
+turn that into a clean miss; whether to is an open question below. Counting these in
+`mammoth_cache_integrity_errors_total` is not implemented yet.
 
 ### Statelessness and recovery
 
-L1 and L2 are caches of L3. On restart a node may index its existing L2 files for a warm start, or
-begin empty. A failed node is replaced by a new one, which fills L1 and L2 from the bucket as
-requests arrive. There is nothing to back up except the bucket.
+L1 and L2 are caches of L3. On restart a node rebuilds its L2 index from the entry headers, so it
+starts warm; files that are not valid entries, and entries past their maximum age, are deleted. A
+failed node is replaced by a new one, which fills L1 and L2 from the bucket as requests arrive.
+There is nothing to back up except the bucket.
 
 Without a bucket, the node's disk is the only copy, as with the Build Cache Node. Losing that disk
 loses the cache, which is acceptable for a cache.
@@ -220,33 +230,43 @@ loses the cache, which is acceptable for a cache.
 ### Code structure: ports and adapters
 
 The code follows a hexagonal (ports and adapters) structure. Every tier is a key-value store of
-immutable blobs: a key maps to bytes plus a little metadata (size, checksum, last access), with no
-updates and no transactions.
+immutable blobs: a key maps to bytes plus a little metadata (size, checksum, creation time), with
+no updates and no transactions. Recency and frequency live in each tier's eviction policy, not in
+the entry ([0010](0010-memory-tier-and-eviction.md)).
 
 ```mermaid
 flowchart LR
-    subgraph in["Inbound adapters"]
-        gradle["Gradle HTTP"]
-        admin["Admin API"]
+    subgraph in["Inbound adapters (http/)"]
+        gradle["Gradle: /cache/{key}"]
+        maven["Maven: /maven/{path}"]
+        admin["Admin API: /v1/serverStatus"]
         ops["Health and metrics"]
     end
-    subgraph core["Core"]
-        tiering["Tiering: lookup order, promotion,<br/>eviction, single-flight, checksums"]
+    mw["Middleware: request metrics;<br/>auth (planned)"]
+    subgraph core["Core (cache.rs)"]
+        tiering["Lookup order, size limit, hit and miss counts;<br/>promotion, single-flight, write path (planned)"]
     end
-    subgraph out["Outbound adapters (blob store port)"]
-        mem["Memory store (L1)"]
+    subgraph out["Outbound adapters (blob store port, store/)"]
+        mem["Memory store (L1), foyer"]
         disk["Disk store (L2)"]
-        obj["Object store (L3)"]
+        obj["Bucket store (L3), planned"]
     end
-    sdk["Object-store library:<br/>S3, GCS, Azure, file"]
-    gradle --> tiering
-    admin --> tiering
-    ops --> tiering
+    sdk["object_store crate:<br/>S3, GCS, Azure, file"]
+    gradle --> mw
+    maven --> mw
+    admin --> mw
+    ops --> mw
+    mw --> tiering
     tiering --> mem
     tiering --> disk
     tiering --> obj
     obj --> sdk
+    classDef planned stroke-dasharray: 5 5
+    class obj,sdk planned
 ```
+
+Dashed boxes are not on `main` yet. [Implementation status](#implementation-status) has the
+details.
 
 - **Core:** the tiering rules above. It depends only on ports, never on HTTP, a file system or a
   cloud SDK.
@@ -254,8 +274,9 @@ flowchart LR
   implementations can be swapped and tests can use in-memory fakes.
 - **Bounded store port:** what only the local tiers have, which is capacity, current size and
   eviction. The bucket does not implement it; its expiry is lifecycle rules.
-- **Inbound adapters:** the protocol routes from [0001](0001-api-contracts.md). They translate HTTP
-  to core calls and core errors to AIP-193 responses.
+- **Inbound adapters:** the protocol routes from [0001](0001-api-contracts.md), one axum router per
+  protocol ([0008](0008-supported-clients.md)). They translate HTTP to core calls and core errors to
+  AIP-193 responses, and keep each protocol's own status rules.
 
 ### Flow control
 
@@ -272,6 +293,49 @@ is handled inside instead:
 - There is no refusal Gradle survives with the cache still on (`413` included). Oversized entries
   are already accepted and dropped; doing the same to shed load under overload is an open
   question.
+
+## Implementation status
+
+As of 2026-10-14 (`main` at `51e3385`). The design above is the target; this section says how much
+of it the code does today, and is updated as tiers land.
+
+```mermaid
+flowchart LR
+    client["Gradle and Maven clients"]
+    subgraph node["mammoth binary today"]
+        http["axum router<br/>/cache, /maven, ops, admin"]
+        core["Cache core"]
+        l1["L1 memory, 1 GiB,<br/>entries up to 16 MiB"]
+        l2["L2 disk store<br/>(built, not wired in)"]
+    end
+    l3[("L3 bucket<br/>(adapter in review)")]
+    client -- "HTTP, no auth" --> http
+    http --> core
+    core -- "reads and writes" --> l1
+    core -.-> l2
+    core -.-> l3
+    classDef planned stroke-dasharray: 5 5
+    class l2,l3 planned
+```
+
+| Area                         | State                                                                                        |
+| ---------------------------- | -------------------------------------------------------------------------------------------- |
+| Gradle and Maven routes      | Done: `GET`, `HEAD`, `PUT`; Maven `OPTIONS` and `MKCOL`; namespaced keys                     |
+| Entry size limit             | Done: accept and drop for Gradle, `413` for Maven, by `Content-Length` and while streaming   |
+| L1 memory                    | Done: foyer, five eviction policies, eviction counter                                        |
+| L2 disk                      | Done: atomic writes, CRC32C, warm index, LRU and age; set by `[disk]`                        |
+| L3 bucket                    | Done: S3, GCS, Azure, local files; set by `[bucket]`                                         |
+| Core read path               | Lookup in order, failed tier skipped; no promotion, no single-flight                         |
+| Core write path              | Writes the first tier only; no L2-then-bucket path, no upload queue                          |
+| Configuration (0005)         | Done: `mammoth.toml`, `config check`; some keys validated but not enforced yet               |
+| Authentication (0002)        | Not started: every route is open                                                             |
+| Metrics (0004)               | Request counters and memory evictions only; the rest of the catalog is missing               |
+| Health                       | `/ping`, `/livez` done; `/readyz` always ready                                               |
+| Flow control                 | Not started: no per-tier concurrency limits, timeouts or connection limit                    |
+| TLS                          | Not started                                                                                  |
+
+Without `[disk]`, a node keeps nothing across a restart, and entries are capped at
+`memory.max_entry_size`.
 
 ## Cross-cutting concerns
 
@@ -292,9 +356,9 @@ Client authentication is in [0002](0002-authentication.md).
 
 #### Bucket access
 
-L3 sits behind a small object-store interface (get, put, head) backed by an existing library that
-speaks S3, GCS, Azure Blob and the local file system, such as the `object_store` crate or Apache
-OpenDAL. The choice is open.
+L3 sits behind the blob store port (get, put, head), backed by the `object_store` crate, which
+speaks S3, GCS, Azure Blob and the local file system. Apache OpenDAL is the fallback
+([0006](0006-server-framework.md)).
 
 Credentials come from each cloud's default credential chain, the same one the official SDKs use, so
 workload identity works without code of our own:
@@ -306,8 +370,8 @@ workload identity works without code of our own:
 | Azure    | AKS Workload Identity, managed identity, environment keys                        |
 
 Federation from outside a cloud (on-premises or CI to GCS through an "external account" file, or
-to S3 through `AssumeRoleWithWebIdentity`) depends on the library, and which flows each candidate
-supports must be checked before choosing.
+to S3 through `AssumeRoleWithWebIdentity`) depends on the library; which flows `object_store`
+supports must be checked before the bucket tier ships.
 
 The config file names only the bucket, region, key prefix and, for S3-compatible stores such as
 MinIO or Cloudflare R2, an endpoint. It never holds keys; static keys are accepted only from the
@@ -336,7 +400,8 @@ Every tier reports hits, misses, latency, size and evictions. The metric catalog
 - Whether to shed `PUT`s under sustained overload by accepting and dropping them, as oversized
   entries are.
 - The default L1 size threshold for an entry.
-- Whether to index L2 on restart or start cold.
 - Which object stores to support first.
+- Whether to read and verify entries small enough for L1 before answering, so a checksum mismatch
+  is a clean miss rather than a cut-off response.
 - Whether to put a short-lived negative cache or a filter (for example a Bloom filter) in front of
   the bucket, so misses avoid an object-store round trip.

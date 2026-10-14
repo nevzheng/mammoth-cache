@@ -16,7 +16,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=builder /mammoth /mammoth
-ENV MAMMOTH_ADDR=0.0.0.0:5071
 EXPOSE 5071
 USER nonroot
 ENTRYPOINT ["/mammoth"]

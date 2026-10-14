@@ -125,8 +125,9 @@ Defined in `api/proto/mammoth/admin/v1/` and checked with Google's
 resource is the `serverStatus` singleton.
 
 The admin API is deliberately small. Configuration, including users and their token hashes, comes
-from a static config file and is never changed through the API or a UI: a cache should be only as
-complex as it needs to be. The API reads state; a cache purge is the only write being considered.
+from a static config file and is never changed through the API, and there is no UI: a cache should
+be only as complex as it needs to be. The API reads state; a cache purge is the only write being
+considered.
 
 ### Transports
 

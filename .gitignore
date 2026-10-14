@@ -4,3 +4,7 @@
 /docs/assets/branding/
 /book-theme/favicon.svg
 /book-theme/favicon.png
+
+# Bazel.
+/bazel-*
+/user.bazelrc

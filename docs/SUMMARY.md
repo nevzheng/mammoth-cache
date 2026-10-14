@@ -2,9 +2,20 @@
 
 [Introduction](README.md)
 
+[Philosophy](philosophy.md)
+
 ## User guide
 
-- [User guide](user/README.md)
+- [Overview](user/README.md)
+- [Quickstart](user/quickstart.md)
+- [Gradle](user/gradle.md)
+- [Maven](user/maven.md)
+- [Migrating from the Build Cache Node](user/migrating.md)
+- [Configuration reference](user/configuration.md)
+- [Authentication](user/authentication.md)
+- [Health checks and status](user/health.md)
+- [Metrics](user/metrics.md)
+- [Custom builds](user/custom-builds.md)
 
 ## Design
 
@@ -17,6 +28,7 @@
   - [0005: Configuration](design/0005-configuration.md)
   - [0006: Server framework and code structure](design/0006-server-framework.md)
   - [0007: Entry size limits and admission](design/0007-size-limits-and-admission.md)
+  - [0008: Supported clients and acceptance testing](design/0008-supported-clients.md)
   - [0009: Releases and packaging](design/0009-releases.md)
   - [0010: Memory tier, eviction policies and entry metadata](design/0010-memory-tier-and-eviction.md)
   - [0011: End-to-end and load testing](design/0011-end-to-end-and-load-testing.md)
