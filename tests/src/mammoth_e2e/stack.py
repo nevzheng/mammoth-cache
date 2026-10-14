@@ -59,6 +59,13 @@ class Stack:
         self._run("restart", *services)
         self.wait_ready()
 
+    def pause(self, *services: str) -> None:
+        """Freeze services: connections open but nothing answers, like a network blackhole."""
+        self._run("pause", *services)
+
+    def unpause(self, *services: str) -> None:
+        self._run("unpause", *services)
+
     def kill(self, service: str, signal: str = "SIGTERM") -> None:
         """Send a signal to a service's container, as Kubernetes does when it stops a pod."""
         self._run("kill", "--signal", signal, service)

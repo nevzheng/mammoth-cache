@@ -10,9 +10,9 @@ mammoth gets a non-hermetic test stage that runs the real container image agains
 S3-compatible bucket (SeaweedFS) and a Prometheus server, all started with Docker Compose. A typed
 Python harness (uv, pytest, ruff, pyrefly) drives it: it holds the HTTP clients, the `/metrics`
 parser, the bucket inspector and the stack lifecycle. The same harness runs the real-client
-acceptance suite from [0008](0008-supported-clients.md). Load and traffic simulation use k6, which
-writes its results to the same Prometheus. Every suite reads its target from a profile, so the tests
-that run against Compose today can run against a deployed cluster later.
+acceptance suite from [0008](0008-supported-clients.md). Load and traffic simulation use Locust,
+whose client-side numbers Prometheus scrapes next to mammoth's. Every suite reads its target from a
+profile, so the tests that run against Compose today can run against a deployed cluster later.
 
 ## Context and scope
 
@@ -69,7 +69,7 @@ In priority order:
 flowchart LR
     U["Unit + integration<br/>cargo / Bazel, hermetic"] --> E["End-to-end<br/>image + SeaweedFS + Prometheus"]
     E --> A["Acceptance (0008)<br/>real Gradle and Maven"]
-    E --> L["Load<br/>k6 traffic models"]
+    E --> L["Load<br/>Locust traffic models"]
     A --> D["Deployed targets (later)<br/>same suites, cloud profile"]
     L --> D
 ```
@@ -88,7 +88,7 @@ flowchart LR
 deploy/compose/
   compose.yaml            mammoth, seaweedfs, bucket-init, prometheus; grafana under a profile
   mammoth.toml            test config: all three tiers, one user per scope
-  prometheus.yml          scrapes mammoth and seaweedfs; accepts remote write from k6
+  prometheus.yml          scrapes mammoth, seaweedfs and a Locust run on the host
   grafana/                provisioned datasource and dashboard (profile "observe")
 tests/
   pyproject.toml          one uv project for the harness and both Python suites
@@ -96,7 +96,7 @@ tests/
   src/mammoth_e2e/        the harness library
   e2e/                    end-to-end suite
   acceptance/             the 0008 suite and its Gradle and Maven fixture projects
-  load/                   load scripts and traffic models (follow-up)
+  load/                   locustfile: simulated clients, run shapes, thresholds
   targets/                target profiles: compose.toml, and later cloud ones
 ```
 
@@ -106,7 +106,7 @@ tests/
 
 ```mermaid
 flowchart LR
-    T["pytest / k6"] -->|"/cache, /maven"| M1["mammoth-1"]
+    T["pytest / Locust"] -->|"/cache, /maven"| M1["mammoth-1"]
     T -->|"/cache, /maven"| M2["mammoth-2<br/>(profile: multi)"]
     M1 -->|S3 API| S["SeaweedFS<br/>weed server -s3"]
     M2 -->|S3 API| S
@@ -114,7 +114,7 @@ flowchart LR
     P["Prometheus"] -->|scrape /metrics| M1
     P -->|scrape /metrics| M2
     P -->|scrape| S
-    T -->|"k6 remote write"| P
+    P -->|"scrape client metrics"| T
     G["Grafana<br/>(profile: observe)"] --> P
 ```
 
@@ -127,8 +127,8 @@ flowchart LR
   config. It is Apache-2.0, small, and exposes its own Prometheus metrics.
 - **bucket-init** is a one-shot container that creates the bucket and exits. mammoth depends on it
   with `condition: service_completed_successfully`.
-- **Prometheus** scrapes every mammoth node and SeaweedFS every second, and runs with the remote
-  write receiver on so k6 can push its metrics into the same store. mammoth's metrics stay raw, as
+- **Prometheus** scrapes every mammoth node and SeaweedFS every second, and the Locust exporter on
+  the host (`host.docker.internal:9646`) during a load run. mammoth's metrics stay raw, as
   [0004](0004-metrics.md) requires: rates, ratios and percentiles are computed by Prometheus here,
   never by the node. Running it in tests also checks that a real Prometheus can scrape and parse
   `/metrics`.
@@ -226,21 +226,26 @@ with the reason, so the fix turns them into a failure that asks for the marker t
 
 ### Load and traffic simulation
 
-k6 is the load generator.
+Locust is the load generator (decided by Nevin, 2026-10-14): the suites stay in one language and
+share the harness, and Locust is the most widely used Python load tool.
 
-- **Open-model load.** Its `constant-arrival-rate` and `ramping-arrival-rate` executors send
-  requests on a schedule whether or not earlier ones returned. That avoids coordinated omission, so
-  tail latency is measured honestly. A cache node's job is tail latency, so this matters most.
-- **Throughput per runner.** One Go process drives tens of thousands of requests a second, so the
-  generator is not the bottleneck on one machine.
-- **Pass or fail built in.** Thresholds (for example `p(99) < 20ms`, error rate under 0.1%) make a
-  run exit non-zero, which is what CI needs.
-- **Same store as the server.** k6's Prometheus remote-write output sends client-side latency to
-  the Prometheus that scrapes mammoth, so one dashboard shows both sides.
-- Scripts are TypeScript, which k6 runs directly.
+- **Simulated clients.** `tests/load/locustfile.py` has one user class per protocol: a Gradle,
+  Maven or Bazel client looks an entry up and stores it on a miss, as the build tools do. `--mix`
+  weights the three (`8:1:1` by default). `FastHttpUser` keeps the per-request cost low.
+- **Paced, not racing.** Each client runs at a fixed rate (`constant_throughput`), and the run's
+  shape sets how many clients there are, so a run holds a request rate. Locust is still a closed
+  model underneath: a client waits for its response before the next request, so when the node
+  slows down, fewer requests are sent and tail latency reads low (coordinated omission). Runs keep
+  enough clients for the rate to hold at the threshold's latency, and the server's own histograms
+  in Prometheus are the honest tail.
+- **Pass or fail.** `--max-p99-ms` and `--max-fail-ratio` (100 ms and 0.1% by default) make the run
+  exit non-zero, which is what CI needs. A miss (`404`) counts as success.
+- **Same store as the server.** The run serves Locust's counters and recent percentiles on
+  `--metrics-port` (9646); Prometheus scrapes it next to mammoth, so one dashboard shows both
+  sides. More throughput than one process gives comes from `--processes`.
 
-Traffic models live in `tests/load/models/`. Python generates them, so they share the harness's
-seeded blob generators:
+Traffic models are Python in the harness (`mammoth_e2e.traffic`), seeded so every run asks for the
+same keys and sizes. The synthetic model is built; the replay models come later:
 
 | Model        | Shape                                                                                           |
 | ------------ | ----------------------------------------------------------------------------------------------- |
@@ -287,7 +292,8 @@ secret_access_key = "mammoth-e2e-secret"
 # [users.ci] test-only credentials, once auth lands
 ```
 
-`pytest --target targets/compose.toml` and `k6 run -e TARGET=...` read the same file. A later
+`pytest --target targets/compose.toml` and `locust --target targets/compose.toml` read the same
+file. A later
 `staging.toml` sets `control = false`, and the harness skips every test that needs control, so the
 suites that only send traffic and read metrics run against a real deployment. Secrets for deployed
 targets come from environment variables, never from the profile.
@@ -314,8 +320,8 @@ targets come from environment variables, never from the profile.
 - **Flakiness:** tests wait on health checks and on `mammoth_bucket_upload_queue_entries` reaching
   zero, never on sleeps.
   A test that flakes is fixed or deleted, never retried by default.
-- **Observability:** every failing test attaches service logs; every load run leaves a k6 summary
-  and, locally, a Grafana view.
+- **Observability:** every failing test attaches service logs; every load run leaves a Locust
+  summary and, locally, a Grafana view.
 
 ## Alternatives considered
 
@@ -328,10 +334,13 @@ targets come from environment variables, never from the profile.
 - **testcontainers-python.** Good for single containers. The stack is also a user-facing example,
   so one `compose.yaml` that both users and tests read is worth more than containers declared in
   Python.
-- **Locust for load.** Python, so one language, but it is closed-model by default, which hides tail
-  latency behind coordinated omission, and it needs many workers for the rates a cache node takes.
+- **k6.** Open-model executors avoid coordinated omission and one Go process drives high rates,
+  but its scripts are JavaScript, a third language beside Rust and Python, and it cannot share
+  the harness. The pacing and server-side histograms above cover most of the difference.
+- **aiolocust.** The Locust team's asyncio rewrite; promising, but young next to Locust.
 - **Gatling, vegeta, oha, goose.** Gatling is heavier to run; vegeta and oha are single-endpoint
-  tools without scenarios; goose (Rust) is promising but has a far smaller ecosystem than k6.
+  tools without scenarios; goose (Rust) fits the server's language but has a far smaller
+  ecosystem and would not share the Python harness.
 - **mypy or pyright instead of pyrefly.** Pyrefly is fast, has a strict mode, and is a good fit for
   a small greenfield codebase with no legacy configuration to carry.
 - **Poetry or pip-tools.** uv covers the interpreter, the lockfile and running tools in one fast
@@ -339,9 +348,6 @@ targets come from environment variables, never from the profile.
 
 ## Open questions
 
-- k6 or aiolocust for load? This doc proposes k6 for its open-model executors; aiolocust (the
-  Locust team's asyncio rewrite) would keep everything in Python. The load framework is built after
-  this is settled.
-- Should k6 results be kept over time somewhere (a branch, an artifact store, a Prometheus with long
-  retention) to plot trends, or are nightly artifacts enough for now?
+- Should load results be kept over time somewhere (a branch, an artifact store, a Prometheus with
+  long retention) to plot trends, or are nightly artifacts enough for now?
 - Which deployed target comes first, and who pays for it?

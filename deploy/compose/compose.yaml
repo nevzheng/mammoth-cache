@@ -110,10 +110,11 @@ services:
     image: prom/prometheus:v3.13.4
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --web.enable-remote-write-receiver # load generators push client-side metrics here
       - --storage.tsdb.retention.time=1d
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
+    extra_hosts:
+      - host.docker.internal:host-gateway # Locust's exporter runs on the host
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     healthcheck:
