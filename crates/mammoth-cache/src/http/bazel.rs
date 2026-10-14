@@ -6,8 +6,8 @@
 //!
 //! Digests are SHA-256, Bazel's default `--digest_function`. A CAS upload must hash to its digest,
 //! checked as it streams; one that does not gets `400` and is not stored. Action cache entries are
-//! stored as sent, and a store replaces the entry. The empty blob is always present, as over gRPC,
-//! whether or not anyone stored it. An oversized store gets `413`: Bazel only warns
+//! stored as sent, and a store replaces the entry. The empty blob is always present, as over gRPC:
+//! a miss on it is answered anyway. An oversized store gets `413`: Bazel only warns
 //! about a failed upload and keeps using the cache.
 
 use std::{fmt, io};
@@ -60,10 +60,7 @@ pub(super) async fn load_blob(
     Name(digest): Name,
 ) -> Result<Response, ApiError> {
     let key = CacheKey::bazel(Namespace::BazelCas, &digest)?;
-    if key.name() == EMPTY_SHA256 {
-        return Ok(empty());
-    }
-    entries::load(&state, &key).await
+    or_empty(&key, entries::load(&state, &key).await)
 }
 
 pub(super) async fn check_blob(
@@ -71,19 +68,22 @@ pub(super) async fn check_blob(
     Name(digest): Name,
 ) -> Result<Response, ApiError> {
     let key = CacheKey::bazel(Namespace::BazelCas, &digest)?;
-    if key.name() == EMPTY_SHA256 {
-        return Ok(empty());
-    }
-    entries::check(&state, &key).await
+    or_empty(&key, entries::check(&state, &key).await)
 }
 
-/// The empty blob, which needs no lookup.
-fn empty() -> Response {
-    let headers = [
-        (header::CONTENT_TYPE, "application/octet-stream"),
-        (header::CONTENT_LENGTH, "0"),
-    ];
-    (headers, Body::empty()).into_response()
+/// `answer`, unless it is a miss on the empty blob, which is answered anyway. The lookup still
+/// counts as the miss it was, and a stored empty blob is a hit like any other entry.
+fn or_empty(key: &CacheKey, answer: Result<Response, ApiError>) -> Result<Response, ApiError> {
+    match answer {
+        Err(e) if e.status() == StatusCode::NOT_FOUND && key.name() == EMPTY_SHA256 => {
+            let headers = [
+                (header::CONTENT_TYPE, "application/octet-stream"),
+                (header::CONTENT_LENGTH, "0"),
+            ];
+            Ok((headers, Body::empty()).into_response())
+        }
+        answer => answer,
+    }
 }
 
 pub(super) async fn store_blob(
