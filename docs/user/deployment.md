@@ -15,6 +15,28 @@ flowchart LR
     b --> bucket
 ```
 
+## Checklist
+
+What a node needs to run well on Kubernetes, and where each part is covered:
+
+| Need                                     | How                                                     | Status   |
+| ---------------------------------------- | ------------------------------------------------------- | -------- |
+| Exit cleanly on `SIGTERM`                | Built in                                                | Done     |
+| Drain before exiting                     | [Shutdown and timeouts](#shutdown-and-timeouts)         | Done     |
+| Liveness, readiness and startup probes   | [Health checks](health.md#kubernetes)                   | Done     |
+| Readiness that checks the disk           | Writable and free-space checks every 5 s                | Done     |
+| Stateless pods sharing entries           | A bucket; [Hit rate](#hit-rate-with-several-nodes)      | Done     |
+| Large uploads through the proxy          | [Proxy settings](#proxy-settings)                       | Done     |
+| Idle timeout above the load balancer's   | `server.idle_timeout`, 75 s by default                  | Done     |
+| Config and token hashes from a Secret    | [Config and credentials](#config-and-credentials)       | Done     |
+| Bucket access without keys               | Workload identity                                       | Done     |
+| Non-root, read-only root filesystem      | The distroless image writes only `disk.path`            | Done     |
+| Memory under the container limit         | [Memory and disk sizing](#memory-and-disk-sizing)       | Done     |
+| `/metrics` not exposed publicly          | [Metrics](#metrics)                                     | Done     |
+| TLS                                      | At the ingress for now; `[tls]` on the node is planned  | Partial  |
+| Access log with client addresses         | `log.access_log` and `trusted_proxies`                  | Planned  |
+| Helm chart or example manifests          | Not shipped; use the snippets on this page              | None     |
+
 ## Proxy settings
 
 Gradle turns its remote cache off for the rest of the build after any failed store, `413`
