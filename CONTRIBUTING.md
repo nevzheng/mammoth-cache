@@ -78,9 +78,35 @@ for a branch, then force-push.
 
 ## Building and testing
 
-mammoth-cache is pre-alpha. It will build with [Bazel](https://bazel.build/) (bzlmod and
-`rules_rust`), and plain Cargo will keep working. Build and test commands will land here with the
-first code.
+mammoth-cache is pre-alpha. Cargo is the source of truth today; a [Bazel](https://bazel.build/)
+build (bzlmod and `rules_rust`) will come later and read the same `Cargo.toml` and `Cargo.lock`.
+The toolchain is pinned in `rust-toolchain.toml`, and the minimum supported Rust version is 1.85.
+
+```sh
+cargo build
+cargo run --bin mammoth   # listens on 0.0.0.0:5071; override with MAMMOTH_ADDR
+```
+
+## Local checks
+
+Git hooks run the formatters and linters before each commit. Install
+[prek](https://prek.j178.dev) (or [pre-commit](https://pre-commit.com)) and enable the hooks once:
+
+```sh
+prek install
+```
+
+CI runs these checks on every pull request, with warnings treated as errors:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo nextest run --workspace --locked
+cargo test --doc --workspace --locked
+cargo +1.85 check --workspace --locked   # MSRV
+cargo deny check                         # licenses, advisories, sources
+rumdl check .
+```
 
 ## Documentation
 

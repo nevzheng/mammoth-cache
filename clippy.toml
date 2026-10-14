@@ -1,0 +1,4 @@
+msrv = "1.85"
+# Tests may panic on unexpected values; production code may not.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

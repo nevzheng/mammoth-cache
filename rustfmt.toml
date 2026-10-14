@@ -1,0 +1,3 @@
+# Matches the 100-column limit in .rumdl.toml.
+max_width = 100
+edition = "2024"
