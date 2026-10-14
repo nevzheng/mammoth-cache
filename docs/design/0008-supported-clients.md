@@ -112,7 +112,7 @@ Every tested version runs these scenarios:
 | Wrong credentials               | Bad password                                                | Gradle reports the cache error; server counts `401`      |
 | Anonymous read-only             | No credentials, anonymous `read`                            | Loads hit; stores rejected without breaking Maven builds |
 | Expect-continue                 | Gradle `useExpectContinue = true`; Maven default            | Stores succeed                                           |
-| Oversized entry                 | Entry over the configured limit                             | Follows the oversized-entry policy; build passes         |
+| Oversized entry                 | Entry over the configured limit                             | `2xx`, entry dropped and counted; cache stays on         |
 | Server down                     | Stop the server mid-suite                                   | Builds still pass without the remote cache               |
 
 ### CI
@@ -143,7 +143,5 @@ Every tested version runs these scenarios:
 
 ## Open questions
 
-- The oversized-entry policy: answer `413`, which turns Gradle's remote cache off for the rest of
-  the build, or accept the entry and drop it with a `2xx`.
 - Whether to add a weekly smoke test for Gradle 6.9, for users stuck on older builds.
 - When Maven 4 goes GA, and which extension version it needs.
