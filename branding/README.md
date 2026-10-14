@@ -3,15 +3,19 @@
 Everything that defines how mammoth-cache looks lives in this folder. The docs site reads its
 colors, logo and favicon from here, so rebranding means editing these files only.
 
-| File           | What it is                                                                  |
-| -------------- | --------------------------------------------------------------------------- |
-| `palette.json` | Color tokens for light and dark themes. The source of truth.                |
-| `palette.css`  | The same tokens as CSS custom properties (`--mc-*`). Generated; don't edit. |
-| `palette.sh`   | Regenerates `palette.css` from `palette.json` (needs `jq`).                 |
-| `logo.svg`     | Placeholder wordmark.                                                       |
-| `favicon.svg`  | Placeholder square mark for browser tabs.                                   |
+| File           | What it is                                                   |
+| -------------- | ------------------------------------------------------------ |
+| `palette.json` | Color tokens for light and dark themes. The source of truth. |
+| `palette.css`  | The tokens as CSS custom properties. Generated; do not edit. |
+| `palette.sh`   | Regenerates `palette.css` from `palette.json` (needs `jq`).  |
+| `logo.svg`     | Placeholder wordmark.                                        |
+| `favicon.svg`  | Placeholder square mark for browser tabs.                    |
 
 ## Palette
+
+`palette.css` defines each token three ways: `--mc-light-<token>` and `--mc-dark-<token>` stay
+fixed, for sites with their own theme switcher (the docs site uses these), and `--mc-<token>`
+follows the reader's OS light or dark preference.
 
 A [Solarized](https://ethanschoonover.com/solarized/) base, with orange promoted to the primary
 color.

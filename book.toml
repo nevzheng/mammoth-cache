@@ -1,0 +1,19 @@
+[book]
+title = "mammoth-cache"
+description = "A fast, open-source remote build cache node for Gradle, written in Rust."
+authors = ["The mammoth-cache contributors"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+
+[output.html]
+site-url = "/mammoth-cache/"
+git-repository-url = "https://github.com/nevzheng/mammoth-cache"
+edit-url-template = "https://github.com/nevzheng/mammoth-cache/edit/main/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+# Colors, logo and favicon come from branding/; scripts/docs.sh copies the assets in.
+theme = "book-theme"
+additional-css = ["branding/palette.css", "book-theme/mammoth.css"]

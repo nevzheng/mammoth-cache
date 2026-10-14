@@ -110,8 +110,11 @@ rumdl check .
 
 ## Documentation
 
-Project docs live in [docs/](docs/README.md). Changes that affect the protocol, storage,
-configuration or operations need a [design doc](docs/design/README.md).
+Project docs live in [docs/](docs/README.md) and are published with
+[mdBook](https://rust-lang.github.io/mdBook/) to <https://nevzheng.github.io/mammoth-cache/>.
+Preview them with `scripts/docs.sh serve`; colors and logos come from
+[branding/](branding/README.md). Changes that affect the protocol, storage, configuration or
+operations need a [design doc](docs/design/README.md).
 
 Markdown is linted with [rumdl](https://rumdl.dev/) using the repository's `.rumdl.toml`. Before
 pushing doc changes, run:

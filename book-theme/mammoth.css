@@ -1,0 +1,90 @@
+/* Maps mdBook's theme variables to the brand tokens in branding/palette.css.
+ * Light themes use --mc-light-*, dark themes use --mc-dark-*. Change colors in branding/, not here. */
+
+.light,
+.rust,
+html:not(.js) {
+    --bg: var(--mc-light-bg);
+    --fg: var(--mc-light-fg);
+    --sidebar-bg: var(--mc-light-bg-alt);
+    --sidebar-fg: var(--mc-light-fg);
+    --sidebar-active: var(--mc-light-primary);
+    --sidebar-spacer: var(--mc-light-border);
+    --sidebar-header-border-color: var(--mc-light-primary);
+    --icons: var(--mc-light-fg-muted);
+    --icons-hover: var(--mc-light-primary);
+    --links: var(--mc-light-link);
+    --inline-code-color: var(--mc-light-fg-strong);
+    --theme-popup-bg: var(--mc-light-bg-alt);
+    --theme-popup-border: var(--mc-light-border);
+    --theme-hover: var(--mc-light-border);
+    --quote-bg: var(--mc-light-bg-alt);
+    --quote-border: var(--mc-light-border);
+    --warning-border: var(--mc-light-primary);
+    --table-border-color: var(--mc-light-border);
+    --table-header-bg: var(--mc-light-bg-alt);
+    --table-alternate-bg: var(--mc-light-bg-alt);
+    --searchbar-border-color: var(--mc-light-border);
+    --searchbar-bg: var(--mc-light-bg);
+    --searchbar-fg: var(--mc-light-fg-strong);
+    --search-mark-bg: var(--mc-light-accent);
+    --footnote-highlight: var(--mc-light-primary);
+    --mc-heading: var(--mc-light-fg-strong);
+    --mc-code-bg-current: var(--mc-light-code-bg);
+    --mc-primary-current: var(--mc-light-primary);
+    --color-scheme: light;
+}
+
+.navy,
+.coal,
+.ayu {
+    --bg: var(--mc-dark-bg);
+    --fg: var(--mc-dark-fg);
+    --sidebar-bg: var(--mc-dark-bg-alt);
+    --sidebar-fg: var(--mc-dark-fg);
+    --sidebar-active: var(--mc-dark-primary);
+    --sidebar-spacer: var(--mc-dark-border);
+    --sidebar-header-border-color: var(--mc-dark-primary);
+    --icons: var(--mc-dark-fg-muted);
+    --icons-hover: var(--mc-dark-primary);
+    --links: var(--mc-dark-link);
+    --inline-code-color: var(--mc-dark-fg-strong);
+    --theme-popup-bg: var(--mc-dark-bg-alt);
+    --theme-popup-border: var(--mc-dark-border);
+    --theme-hover: var(--mc-dark-border);
+    --quote-bg: var(--mc-dark-bg-alt);
+    --quote-border: var(--mc-dark-border);
+    --warning-border: var(--mc-dark-primary);
+    --table-border-color: var(--mc-dark-border);
+    --table-header-bg: var(--mc-dark-bg-alt);
+    --table-alternate-bg: var(--mc-dark-bg-alt);
+    --searchbar-border-color: var(--mc-dark-border);
+    --searchbar-bg: var(--mc-dark-bg-alt);
+    --searchbar-fg: var(--mc-dark-fg-strong);
+    --search-mark-bg: var(--mc-dark-accent);
+    --footnote-highlight: var(--mc-dark-primary);
+    --mc-heading: var(--mc-dark-fg-strong);
+    --mc-code-bg-current: var(--mc-dark-code-bg);
+    --mc-primary-current: var(--mc-dark-primary);
+    --color-scheme: dark;
+}
+
+.content h1,
+.content h2,
+.content h3 {
+    color: var(--mc-heading);
+}
+
+.menu-title {
+    color: var(--mc-primary-current);
+    font-weight: 800;
+}
+
+/* Logo above the table of contents. */
+.sidebar-scrollbox::before {
+    content: "";
+    display: block;
+    height: 48px;
+    margin: 4px 0 12px;
+    background: url("../assets/branding/logo.svg") left center / contain no-repeat;
+}

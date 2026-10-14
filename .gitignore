@@ -1,1 +1,5 @@
 /target
+
+# Copied from branding/ by scripts/docs.sh.
+/docs/assets/branding/
+/book-theme/favicon.svg

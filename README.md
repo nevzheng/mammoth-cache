@@ -5,7 +5,8 @@ yet.
 
 ## Documentation
 
-See [docs/](docs/README.md) for the [user guide](docs/user/README.md) and
+Read the docs at <https://nevzheng.github.io/mammoth-cache/>. Sources live in
+[docs/](docs/README.md): the [user guide](docs/user/README.md) and
 [design docs](docs/design/README.md).
 
 ## License
