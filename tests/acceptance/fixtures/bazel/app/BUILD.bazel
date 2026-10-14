@@ -5,5 +5,5 @@ genrule(
         "//lib",
     ],
     outs = ["app.out"],
-    cmd = "cat $(location app.txt) $(location //lib) > $@",
+    cmd = "cat $(execpath app.txt) $(execpath //lib) > $@",
 )
