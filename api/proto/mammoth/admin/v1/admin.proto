@@ -48,17 +48,15 @@ message ServerStatus {
   // Time since the process started.
   google.protobuf.Duration uptime = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
 
-  // Total size of stored entries, in bytes.
-  int64 stored_bytes = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
-
-  // Number of stored entries.
-  int64 entry_count = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
-
-  // Cache hits since the process started.
-  int64 hit_count = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // Cache hits since the process started, across all tiers.
+  int64 hit_count = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 
   // Cache misses since the process started.
-  int64 miss_count = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  int64 miss_count = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // The current population of each local tier. The bucket tier is not listed: counting it
+  // means listing the bucket.
+  repeated TierStatus tiers = 6 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 // Request message for `GetServerStatus`.
@@ -68,4 +66,37 @@ message GetServerStatusRequest {
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference).type = "mammoth-cache.dev/ServerStatus"
   ];
+}
+
+// The current population of one tier. Matches the `mammoth_tier_*` gauges.
+message TierStatus {
+  // The tier.
+  Tier tier = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Entries held.
+  int64 entry_count = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Bytes held.
+  int64 size_bytes = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // The configured limit, in bytes.
+  int64 capacity_bytes = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+
+  // Age of the least recently used entry.
+  google.protobuf.Duration oldest_entry_age = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+}
+
+// A storage tier.
+enum Tier {
+  // Not set.
+  TIER_UNSPECIFIED = 0;
+
+  // L1: memory.
+  TIER_MEMORY = 1;
+
+  // L2: local disk.
+  TIER_DISK = 2;
+
+  // L3: object-store bucket.
+  TIER_BUCKET = 3;
 }

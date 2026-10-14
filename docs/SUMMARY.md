@@ -13,3 +13,4 @@
   - [0001: API contracts](design/0001-api-contracts.md)
   - [0002: Authentication and authorization](design/0002-authentication.md)
   - [0003: Architecture](design/0003-architecture.md)
+  - [0004: Metrics](design/0004-metrics.md)
