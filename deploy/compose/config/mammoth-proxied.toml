@@ -1,5 +1,6 @@
 # The node behind nginx (`mammoth-proxied`). Its entry limit is above the proxy tests' 100 MiB
-# store. Anonymous requests may read and write, so the tests exercise the proxy, not auth.
+# store. Anonymous requests may read and write, so the tests exercise the proxy, not auth. It
+# writes the bucket synchronously (`write = "sync"`), for the sync-upload tests.
 version = 1
 listen = "0.0.0.0:5071"
 
@@ -14,6 +15,12 @@ max_entry_size = "8MiB"
 path = "/var/lib/mammoth"
 size = "1GiB"
 free_space_buffer = "64MiB"
+
+[bucket]
+url = "s3://mammoth-e2e/mammoth/"
+region = "us-east-1"
+endpoint = "http://seaweedfs:8333"
+write = "sync"
 
 [protocols]
 gradle = true

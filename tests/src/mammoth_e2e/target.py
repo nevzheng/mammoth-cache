@@ -71,6 +71,9 @@ class Target(BaseSettings):
     # proxy on its defaults. The node behind them takes entries of at least 100 MiB.
     proxy_url: HttpUrl | None = None
     proxy_defaults_url: HttpUrl | None = None
+    # Nodes with fewer tiers than the full one, by topology: "memory", "memory-disk",
+    # "memory-bucket". Anonymous requests may read and write on them.
+    topologies: dict[str, HttpUrl] = Field(default_factory=dict)
     prometheus_url: HttpUrl | None = None
     features: frozenset[Feature] = frozenset()
     max_entry_size: int = 100 * 1024 * 1024  # [limits] max_entry_size

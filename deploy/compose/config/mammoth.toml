@@ -13,7 +13,7 @@ max_entry_size = "8MiB"
 
 [disk]
 path = "/var/lib/mammoth"
-size = "1GiB"
+size = "4GiB" # room for the warm load run (tests/load) of about 1.3 GiB
 free_space_buffer = "64MiB"
 
 [bucket]
