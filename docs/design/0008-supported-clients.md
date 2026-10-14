@@ -77,31 +77,47 @@ flowchart TB
     maven["Maven Build Cache Extension 1.2+"]
     ops["Prometheus, probes"]
     admin["Admin"]
+    mw["Middleware on every route (http/mod.rs):<br/>request metrics with client label"]
+    auth["Basic and Bearer auth (0002)"]
     subgraph inbound["Inbound adapters (axum routers)"]
         rcache["/cache/{key}<br/>http/gradle.rs"]
         rmaven["/maven/{path...}<br/>http/maven.rs"]
         rops["/ping /livez /readyz /metrics<br/>http/ops.rs"]
         radmin["/v1/serverStatus<br/>http/admin.rs"]
     end
-    mw["Shared middleware: auth, metrics client label"]
-    core["Cache core (cache.rs)<br/>namespaced keys, size limit (accept and drop),<br/>read L1 then L2 then L3, fill upper tiers on hit"]
+    entries["Shared load, check, store<br/>http/entries.rs"]
+    core["Cache core (cache.rs)<br/>namespaced keys, size limit (accept and drop),<br/>read tiers in order"]
+    fill["Fill upper tiers on hit,<br/>write L2 then bucket"]
     port{{"BlobStore port (store/mod.rs)"}}
-    l1["L1 memory"]
-    l2["L2 local disk"]
+    l1["L1 memory<br/>store/memory/"]
+    l2["L2 local disk<br/>store/disk.rs"]
     l3[("L3 object-store bucket")]
-    gradle --> rcache
-    maven --> rmaven
-    ops --> rops
-    admin --> radmin
-    rcache --> mw
-    rmaven --> mw
-    mw --> core
+    gradle --> mw
+    maven --> mw
+    ops --> mw
+    admin --> mw
+    mw --> auth
+    auth --> rcache
+    auth --> rmaven
+    auth --> radmin
+    mw --> rops
+    rcache --> entries
+    rmaven --> entries
+    entries --> core
     radmin --> core
+    core --> fill
     core --> port
     port --> l1
     port --> l2
     port --> l3
+    classDef planned stroke-dasharray: 5 5
+    class auth,fill,l3 planned
 ```
+
+Dashed boxes are not built yet. The disk store is built but the `mammoth` binary does not wire it
+in yet, so today every request is served from L1 alone. Design doc 0003 tracks
+[implementation status](0003-architecture.md#implementation-status). `/metrics` and the probes stay
+outside auth unless `[metrics] require_auth` is set (0004).
 
 The Gradle namespace is write-once, because its keys are content hashes. The Maven namespace
 allows overwrites, because its paths are not content-addressed.
