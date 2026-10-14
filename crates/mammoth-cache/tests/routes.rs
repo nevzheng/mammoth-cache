@@ -105,6 +105,7 @@ async fn a_protocol_that_is_off_looks_like_an_unknown_route() {
         gradle: false,
         maven: false,
         bazel: false,
+        reapi: false,
     });
     let digest = "0".repeat(64);
     for uri in [

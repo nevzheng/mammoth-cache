@@ -6,6 +6,7 @@
 //! - [`cache`]: the core, which applies the tiering rules over the port.
 //! - [`config`]: the `mammoth.toml` file.
 //! - [`http`]: inbound adapters for the Gradle protocol, health checks and the admin API.
+//! - [`reapi`]: the inbound gRPC adapter for the REAPI cache (Bazel, Buck2, Pants, sbt 2, Please).
 //! - [`server`]: connections, timeouts and the shutdown drain.
 //! - [`telemetry`]: the Prometheus recorder behind `/metrics`.
 //! - [`tls`]: the optional built-in TLS certificate and its reload.
@@ -18,6 +19,7 @@ pub mod cache;
 pub mod config;
 pub mod http;
 pub mod key;
+pub mod reapi;
 pub mod server;
 pub mod store;
 mod tee;

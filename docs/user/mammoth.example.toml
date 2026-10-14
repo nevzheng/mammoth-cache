@@ -14,6 +14,11 @@ listen = "0.0.0.0:5071"
 gradle = true # /cache/
 maven = true # /maven/
 bazel = false # /bazel/ac/ and /bazel/cas/
+reapi = false # the REAPI gRPC cache, on [reapi] listen
+
+# The REAPI gRPC listener, used when protocols.reapi is on.
+[reapi]
+listen = "0.0.0.0:6011" # 6011 is the Build Cache Node's Bazel gRPC port
 
 # Connection timeouts and shutdown.
 [server]
