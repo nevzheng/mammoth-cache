@@ -8,7 +8,9 @@ Draft
 
 Inside, errors use Google's standard: a canonical `google.rpc.Code` (the same 17 codes as
 `absl::StatusCode`), a typed detail only where a caller needs data, and `anyhow` context for the
-logs, on a `thiserror` type. No private error vocabulary. At the edge, each protocol owns a mapping
+logs, on a `thiserror` type. No private error vocabulary.
+
+At the edge, each protocol owns a mapping
 to what its clients understand. AIP-193 is the default: a stable `reason`, the code and fixed
 metadata in the `mammoth-cache.dev` domain, from one shared catalogue that keeps HTTP and gRPC
 consistent. Protocols whose clients read only status codes (Gradle, Maven, Bazel HTTP) override
@@ -45,36 +47,40 @@ Constructors cover the common cases; `From<CacheError>` and `From<InvalidKey>` m
 **gRPC adapter** (`reapi/status.rs`). A second, independent mapping from `CacheError` to
 `tonic::Status`, plus its own constructors in `reapi/services.rs` and `reapi/auth.rs`.
 
-**Logging.** Both `From` mappings log as a side effect (`warn` for upload and unavailable, `error`
-for internal), so the log level is chosen in two places.
+**Logging.** Both mappings (HTTP's `From<CacheError>`, gRPC's `status::storage`) log as a side
+effect, with different levels for the same error: an upload failure is `warn` on HTTP and `debug`
+on gRPC.
 
 ### Gaps
 
-| # | Gap                                                      | Where                                 |
-| - | -------------------------------------------------------- | ------------------------------------- |
-| 1 | The same core error gets different reasons per protocol: | `http/error.rs`, `reapi/status.rs`    |
-|   | `Internal` is `INTERNAL` on HTTP and `STORAGE_ERROR` on  |                                       |
-|   | gRPC; an unsupported method is `NOT_IMPLEMENTED` on HTTP |                                       |
-|   | and `METHOD_NOT_SUPPORTED` on gRPC                       |                                       |
-| 2 | Metadata keys differ: `ENTRY_TOO_LARGE` has              | same                                  |
-|   | `maxEntryBytes`/`entryBytes` on HTTP and `limit` on      |                                       |
-|   | gRPC; `ENTRY_NOT_FOUND` has `key`/`path`/`digest` on     |                                       |
-|   | HTTP and `key` on gRPC                                   |                                       |
-| 3 | The domain string is defined twice                       | `ERROR_DOMAIN`, `status::DOMAIN`      |
-| 4 | No catalogue: reasons are string literals in five files, | `http/`, `reapi/`, `store/`           |
-|   | so nothing checks they are documented, unique or stable  |                                       |
-| 5 | axum's own rejections answer in plain text, not AIP-193: | `Path<String>`, `Query<_>` extractors |
-|   | a `Path<String>` that is not UTF-8 after decoding        |                                       |
-|   | (`/cache/%FF`), a malformed `/readyz` query (inferred    |                                       |
-|   | from axum 0.8's rejection types, not yet reproduced)     |                                       |
-| 6 | A panic in a handler drops the connection instead of     | no `CatchPanicLayer`                  |
-|   | answering `500 INTERNAL`                                 |                                       |
-| 7 | Logging lives inside the mappings, twice, with different | both `From` impls                     |
-|   | levels for the same error (`debug` vs `warn` on upload)  |                                       |
-| 8 | `405` sends canonical `UNIMPLEMENTED`, whose AIP-193     | `ApiError::method_not_allowed`        |
-|   | status is `501`; not listed in 0001's exception table    |                                       |
-| 9 | `ErrorInfo` reasons are pattern-checked by the OpenAPI   | `api/openapi/common.yaml`             |
-|   | contract test (#38), but the set of reasons is not       |                                       |
+| #   | Gap                                                       | Where                                 |
+| --- | --------------------------------------------------------- | ------------------------------------- |
+| 1   | The same core error gets different reasons per protocol:  | `http/error.rs`, `reapi/status.rs`    |
+|     | `Internal` is `INTERNAL` on HTTP and `STORAGE_ERROR` on   |                                       |
+|     | gRPC; an unsupported method is `NOT_IMPLEMENTED` on HTTP  |                                       |
+|     | and `METHOD_NOT_SUPPORTED` on gRPC                        |                                       |
+| 2   | Metadata keys differ: `ENTRY_TOO_LARGE` has               | same                                  |
+|     | `maxEntryBytes`/`entryBytes` on HTTP and `limit` on       |                                       |
+|     | gRPC; `ENTRY_NOT_FOUND` has `key`/`path`/`digest` on      |                                       |
+|     | HTTP and `key` on gRPC, with different values (the bare   |                                       |
+|     | name on HTTP, the namespaced key on gRPC)                 |                                       |
+| 2b  | `ENTRY_TOO_LARGE` has canonical `status: OUT_OF_RANGE` on | `http/error.rs`, `reapi/status.rs`,   |
+|     | HTTP (also 0001's example) and `INVALID_ARGUMENT` on gRPC | `0001-api-contracts.md`               |
+| 3   | The domain string is defined twice                        | `ERROR_DOMAIN`, `status::DOMAIN`      |
+| 4   | No catalogue: reasons are string literals in eight files, | `http/`, `reapi/`, `store/`           |
+|     | so nothing checks they are documented, unique or stable   |                                       |
+| 5   | axum's own rejections answer in plain text, not AIP-193:  | `Path<String>`, `Query<_>` extractors |
+|     | a `Path<String>` that is not UTF-8 after decoding         |                                       |
+|     | (`/cache/%FF`), a malformed `/readyz` query (inferred     |                                       |
+|     | from axum 0.8's rejection types, not yet reproduced)      |                                       |
+| 6   | A panic in a handler drops the connection instead of      | no `CatchPanicLayer`                  |
+|     | answering `500 INTERNAL`                                  |                                       |
+| 7   | Logging lives inside the mappings, twice, with different  | both mappings                         |
+|     | levels for the same error (`debug` vs `warn` on upload)   |                                       |
+| 8   | `405` sends canonical `UNIMPLEMENTED`, whose AIP-193      | `ApiError::method_not_allowed`        |
+|     | status is `501`; not listed in 0001's exception table     |                                       |
+| 9   | `ErrorInfo` reasons are pattern-checked by the OpenAPI    | `api/openapi/common.yaml`             |
+|     | contract test (#38), but the set of reasons is not        |                                       |
 
 None of these breaks a supported client today: Gradle, Maven and Bazel read status codes only.
 They matter for operators, scripts and the next protocol.
@@ -125,12 +131,13 @@ They matter for operators, scripts and the next protocol.
 3. **At the boundary: AIP-193, or the protocol's own rules.** Where a protocol defines nothing,
    errors are AIP-193. Where it does (Gradle's status codes, REAPI's per-method codes, a future
    protocol's own error body), the protocol wins and AIP-193 fills only what it leaves open.
-4. **One mapping per protocol, exhaustive.** Each protocol's mapping matches every code and
-   detail, so a new one fails the build until every protocol has decided what it means.
+4. **Exhaustive at every step.** The shared core-to-`Status` map matches every `Code` and
+   `Detail`; each protocol's override matches every `Reason`. A new code, detail or reason fails
+   the build until every step has decided what it means.
 
 ```mermaid
 flowchart LR
-  T[Tiers: io::Error + anyhow context] --> C[Core: cache::Error<br/>kind + context]
+  T[Tiers: io::Error + anyhow context] --> C[Core: cache::Error<br/>code + detail + context]
   C --> TL[Translation layer: api::error<br/>Reason catalogue, AIP-193 Status]
   K[Adapter input parsing:<br/>keys, digests, resource names] --> TL
   A[Auth] --> TL
@@ -154,14 +161,14 @@ pub enum Code { Cancelled, InvalidArgument, DeadlineExceeded, NotFound, /* ... a
 
 /// Why an operation failed: a canonical code, a typed detail when a caller needs data, and
 /// `anyhow` context for the logs.
-#[derive(Debug, thiserror::Error)]
-#[error("{code:?}: {source}")]
+#[derive(Debug)]
 pub struct Error {
     code: Code,
     detail: Option<Detail>,
-    #[source]
-    source: anyhow::Error, // "writing generation 7 of /var/cache/...: No space left on device"
+    context: anyhow::Error, // "writing generation 7 of /var/cache/...: No space left on device"
 }
+// `Display` and `source()` by hand: `anyhow::Error` is not itself a `std::error::Error`, so
+// `source()` returns `Some(self.context.as_ref())`.
 
 /// Typed payloads, like `absl::Status` payloads or `google.rpc` details. Added only when a
 /// mapping needs the data, never to name a failure.
@@ -184,14 +191,33 @@ The codes the core actually uses, and when:
 |                     | dropped and the read answers as a miss)                   |                   |
 | `INTERNAL`          | Anything else: a bug or an unexpected storage failure     | `Internal`        |
 
+How the codes become reasons (`From<&cache::Error> for Status`):
+
+| Core code and detail            | Reason                | HTTP sent (all protocols)    |
+| ------------------------------- | --------------------- | ---------------------------- |
+| `INVALID_ARGUMENT` + `TooLarge` | `ENTRY_TOO_LARGE`     | `413` (Gradle `Drop`: `200`) |
+| `INVALID_ARGUMENT`              | `UPLOAD_INCOMPLETE`   | `400`                        |
+| `CANCELLED`                     | `UPLOAD_INCOMPLETE`   | `400` (as today)             |
+| `DEADLINE_EXCEEDED`             | `UPLOAD_IDLE`         | `400` (as today; gRPC keeps  |
+|                                 |                       | `DEADLINE_EXCEEDED`)         |
+| `UNAVAILABLE`                   | `STORAGE_UNAVAILABLE` | `503`                        |
+| `DATA_LOSS`                     | never sent: the read  | miss (`404`)                 |
+|                                 | answers as a miss     |                              |
+| `INTERNAL`                      | `INTERNAL`            | `500`                        |
+
+Splitting the upload codes improves gRPC and the logs, but must not change what HTTP clients see:
+today every upload failure is `400 UPLOAD_INCOMPLETE` on HTTP, so the HTTP mappings pin `400` for
+`CANCELLED` and `DEADLINE_EXCEEDED` instead of AIP-193's `499` and `504`.
+
 A miss is not an error: it stays `Ok(None)`, so `NOT_FOUND` is produced by the adapters. Tiers and
 the core attach detail with `anyhow::Context` (`.context("renaming the temp file")`) instead of
 growing variants, and the code is chosen once, where the failure is understood. An adapter that
 needs more than the code, such as the gRPC adapter telling a digest mismatch from a stalled upload,
-downcasts the source to the error type it put there itself; the core never needs to know those
-types. Google's Rust client libraries take the same shape from the other side: `google-cloud-gax`'s
-`Error` is an opaque struct with a few predicates and a `status()` accessor for the AIP-193 payload,
-not an enum per failure.
+downcasts the context to the error type it put there itself, as the gRPC adapter already does with
+its `UploadError` (`reapi/services.rs`); the core never needs to know those types. Google's Rust
+client libraries take the same shape from the other side: `google-cloud-gax`'s `Error` is an opaque
+struct with a few predicates and a `status()` accessor for the AIP-193 payload, not an enum per
+failure.
 
 `anyhow` is also right for startup: `main`, config loading and TLS setup report one message chain
 and an exit code, and nothing matches on them. `thiserror` is for types that cross a boundary and
@@ -226,17 +252,10 @@ documented without leaking into the core. Metadata keys are camelCase and fixed 
 
 ### Protocol mappings
 
-Not every protocol speaks AIP. Each protocol owns a mapping from the core `Error` (and its own
-input errors) to what its clients understand. AIP-193 is the default mapping, not a requirement:
-
-```rust
-/// How one protocol answers a failure. AIP-193 unless the protocol says otherwise.
-trait ErrorMapping {
-    fn respond(&self, status: &api::error::Status) -> Response {
-        aip193::render(status) // canonical code -> HTTP status, JSON google.rpc.Status
-    }
-}
-```
+Not every protocol speaks AIP. Each protocol module owns one function from an `api::error::Status`
+(and its own input errors) to what its clients understand, returning its own transport's type
+(`axum::Response`, `tonic::Status`, or whatever a future protocol needs). AIP-193 rendering is the
+default those functions call, not a requirement:
 
 | Protocol                           | Clients read                    | Mapping                        |
 | ---------------------------------- | ------------------------------- | ------------------------------ |
@@ -250,22 +269,21 @@ trait ErrorMapping {
 |                                    |                                 | XML `<Error><Code>`, or a JSON |
 |                                    |                                 | body a client already parses   |
 
-Every mapping is an exhaustive `match` on `Code`, so a protocol cannot silently miss a case. The
-status-code overrides for today's HTTP protocols:
+Each override is an exhaustive `match` on `Reason`, so a protocol cannot silently miss a case.
+The status-code overrides for today's HTTP protocols:
 
 | Protocol     | Reason               | AIP-193 | Sent  | Why                              |
 | ------------ | -------------------- | ------- | ----- | -------------------------------- |
 | Gradle       | `ENTRY_TOO_LARGE`    | `400`   | `413` | Under `Reject`; `Drop` sends 200 |
 | Maven, Bazel | `ENTRY_TOO_LARGE`    | `400`   | `413` | Clients log and carry on         |
+| all HTTP     | `UPLOAD_INCOMPLETE`  | `499`   | `400` | Unchanged from today             |
+|              | (from `CANCELLED`)   |         |       |                                  |
+| all HTTP     | `UPLOAD_IDLE`        | `504`   | `400` | Unchanged from today             |
 | all HTTP     | `METHOD_NOT_ALLOWED` | `501`   | `405` | HTTP semantics, with `Allow`     |
-| all HTTP     | `CREDENTIALS_*`      | `401`   | `401` | Adds the Basic challenge         |
 
+Every HTTP `401` also carries the Basic challenge header; that is a header, not a status override.
 Gradle's accept-and-drop stays a success path in the handler, not an error.
 
-- **gRPC** keeps `ENTRY_TOO_LARGE` as `INVALID_ARGUMENT` (0016: clients retry
-  `RESOURCE_EXHAUSTED`). The `ErrorInfo` detail is built with `tonic-types`
-  (`Status::with_error_details`), the gRPC richer-error-model helpers, in place of the hand-encoded
-  `google.rpc` protos in `reapi/status.rs`.
 - **Rejections and panics.** Handlers take a thin `Path` wrapper whose rejection is
   `INVALID_ARGUMENT` with the protocol's key reason, a `Query` wrapper likewise, and the router
   gets `CatchPanicLayer` rendering `500 INTERNAL`. A last-resort `map_response` layer rewrites any
@@ -291,9 +309,13 @@ REAPI layers its own rules on top, and those win where they speak:
   `google.rpc.Status` per blob. The same mapping fills those, so a blob's error has the same code
   and reason as it would as a call error.
 - **Not errors at all.** `FindMissingBlobs` answers with a list, and a `ByteStream.Write` of a blob
-  that already exists finishes early with its full `committed_size` rather than an error.
+  that already exists finishes early with its full `committed_size` (the spec's rule for an
+uncompressed upload; this server refuses compressors) rather than an error.
 - **Where the spec allows a choice, the client's behaviour decides.** An oversized blob is
   `INVALID_ARGUMENT`, not `RESOURCE_EXHAUSTED`, because Bazel retries the latter (0016).
+- **Rendering.** The `ErrorInfo` detail is built with `tonic-types` (`Status::with_error_details`),
+  the gRPC richer-error-model helpers, in place of the hand-encoded `google.rpc` protos in
+  `reapi/status.rs`.
 
 Clients such as Bazel and Buck2 read the code; `ErrorInfo` is for people and tools reading the
 error. That is why the reasons match the HTTP ones: an operator sees `ENTRY_TOO_LARGE` in both.
@@ -303,61 +325,68 @@ error. That is why the reasons match the HTTP ones: an operator sees `ENTRY_TOO_
 The catalogue is the `Reason` enum; this table is its documentation and a test keeps them equal.
 The proposed resolutions of gaps 1 and 2 are in bold.
 
-| Reason                        | Code                  | HTTP | Metadata                      |
-| ----------------------------- | --------------------- | ---- | ----------------------------- |
-| `ENTRY_NOT_FOUND`             | `NOT_FOUND`           | 404  | **`key`** (all protocols)     |
-| `ROUTE_NOT_FOUND`             | `NOT_FOUND`           | 404  |                               |
-| `ENTRY_TOO_LARGE`             | `INVALID_ARGUMENT`    | 413* | `maxEntryBytes`, `entryBytes` |
-| `DIGEST_MISMATCH`             | `INVALID_ARGUMENT`    | 400  | `key`                         |
-| `SIZE_MISMATCH`               | `INVALID_ARGUMENT`    | 400  | `key`                         |
-| `UPLOAD_INCOMPLETE`           | `INVALID_ARGUMENT`    | 400  |                               |
-| `UPLOAD_IDLE`                 | `DEADLINE_EXCEEDED`   | 504  |                               |
-| `INVALID_CACHE_KEY`           | `INVALID_ARGUMENT`    | 400  |                               |
-| `INVALID_CACHE_PATH`          | `INVALID_ARGUMENT`    | 400  |                               |
-| `INVALID_DIGEST`              | `INVALID_ARGUMENT`    | 400  |                               |
-| `INVALID_RESOURCE_NAME`       | `INVALID_ARGUMENT`    | 400  |                               |
-| `INVALID_READ_LIMIT`          | `INVALID_ARGUMENT`    | 400  |                               |
-| `INVALID_WRITE`               | `INVALID_ARGUMENT`    | 400  |                               |
-| `OFFSET_OUT_OF_RANGE`         | `OUT_OF_RANGE`        | 400  |                               |
-| `BATCH_TOO_LARGE`             | `INVALID_ARGUMENT`    | 400  |                               |
-| `UNSUPPORTED_DIGEST_FUNCTION` | `INVALID_ARGUMENT`    | 400  |                               |
-| `CREDENTIALS_MISSING`         | `UNAUTHENTICATED`     | 401  |                               |
-| `CREDENTIALS_INVALID`         | `UNAUTHENTICATED`     | 401  |                               |
-| `SCOPE_MISSING`               | `PERMISSION_DENIED`   | 403  | `user`, `requiredScope`       |
-| `METHOD_NOT_ALLOWED`          | `UNIMPLEMENTED`       | 405* |                               |
-| **`METHOD_NOT_SUPPORTED`**    | `UNIMPLEMENTED`       | 501  | `method` (replaces HTTP's     |
-|                               |                       |      | `NOT_IMPLEMENTED`)            |
-| `STORAGE_UNAVAILABLE`         | `UNAVAILABLE`         | 503  |                               |
-| `STORAGE_NOT_WRITABLE`        | `UNAVAILABLE`         | 503  | `check`, tier details         |
-| `STORAGE_FREE_SPACE_LOW`      | `UNAVAILABLE`         | 503  | `check`, tier details         |
-| `SHUTTING_DOWN`               | `UNAVAILABLE`         | 503  | `check`                       |
-| **`INTERNAL`**                | `INTERNAL`            | 500  | (replaces gRPC's              |
-|                               |                       |      | `STORAGE_ERROR`)              |
+| Reason                        | Code                           | HTTP | Metadata                      |
+| ----------------------------- | ------------------------------ | ---- | ----------------------------- |
+| `ENTRY_NOT_FOUND`             | `NOT_FOUND`                    | 404  | **`key`**, the bare name, on  |
+|                               |                                |      | all protocols                 |
+| `ROUTE_NOT_FOUND`             | `NOT_FOUND`                    | 404  |                               |
+| `ENTRY_TOO_LARGE`             | **`INVALID_ARGUMENT`**         | 413* | `maxEntryBytes`, `entryBytes` |
+|                               | (HTTP body was `OUT_OF_RANGE`) |      |                               |
+| `DIGEST_MISMATCH`             | `INVALID_ARGUMENT`             | 400  | `key`                         |
+| `SIZE_MISMATCH`               | `INVALID_ARGUMENT`             | 400  | `key`                         |
+| `UPLOAD_INCOMPLETE`           | `INVALID_ARGUMENT`             | 400  |                               |
+| `UPLOAD_IDLE`                 | `DEADLINE_EXCEEDED`            | 400* |                               |
+| `EMPTY_WRITE`                 | `INVALID_ARGUMENT`             | 400  |                               |
+| `UNSUPPORTED_COMPRESSOR`      | `INVALID_ARGUMENT`             | 400  |                               |
+| `ACTION_RESULT_MISSING`       | `INVALID_ARGUMENT`             | 400  |                               |
+| `INVALID_CACHE_KEY`           | `INVALID_ARGUMENT`             | 400  |                               |
+| `INVALID_CACHE_PATH`          | `INVALID_ARGUMENT`             | 400  |                               |
+| `INVALID_DIGEST`              | `INVALID_ARGUMENT`             | 400  |                               |
+| `INVALID_RESOURCE_NAME`       | `INVALID_ARGUMENT`             | 400  |                               |
+| `INVALID_READ_LIMIT`          | `INVALID_ARGUMENT`             | 400  |                               |
+| `INVALID_WRITE`               | `INVALID_ARGUMENT`             | 400  |                               |
+| `OFFSET_OUT_OF_RANGE`         | `OUT_OF_RANGE`                 | 400  |                               |
+| `BATCH_TOO_LARGE`             | `INVALID_ARGUMENT`             | 400  |                               |
+| `UNSUPPORTED_DIGEST_FUNCTION` | `INVALID_ARGUMENT`             | 400  |                               |
+| `CREDENTIALS_MISSING`         | `UNAUTHENTICATED`              | 401  |                               |
+| `CREDENTIALS_INVALID`         | `UNAUTHENTICATED`              | 401  |                               |
+| `SCOPE_MISSING`               | `PERMISSION_DENIED`            | 403  | `user`, `requiredScope`       |
+| `METHOD_NOT_ALLOWED`          | `UNIMPLEMENTED`                | 405* |                               |
+| **`METHOD_NOT_SUPPORTED`**    | `UNIMPLEMENTED`                | 501  | `method` (replaces HTTP's     |
+|                               |                                |      | `NOT_IMPLEMENTED`)            |
+| `STORAGE_UNAVAILABLE`         | `UNAVAILABLE`                  | 503  |                               |
+| `STORAGE_NOT_WRITABLE`        | `UNAVAILABLE`                  | 503  | `check`, tier details         |
+| `STORAGE_FREE_SPACE_LOW`      | `UNAVAILABLE`                  | 503  | `check`, tier details         |
+| `SHUTTING_DOWN`               | `UNAVAILABLE`                  | 503  | `check`                       |
+| **`INTERNAL`**                | `INTERNAL`                     | 500  | (replaces gRPC's              |
+|                               |                                |      | `STORAGE_ERROR`)              |
 
 `*` is a protocol override from the table above. Renaming the two gRPC-only reasons is allowed
-now: the gRPC adapter has not shipped in a release.
+now: the gRPC adapter has not shipped in a release. Moving `ENTRY_TOO_LARGE`'s HTTP body from
+`OUT_OF_RANGE` to `INVALID_ARGUMENT` changes a body field no supported client reads; the status
+code stays `413`.
 
 ## Testing
 
-| Layer                | Test                                                                |
-| -------------------- | ------------------------------------------------------------------- |
-| Compile              | `Reason::code`, the HTTP override and both renderers are exhaustive |
-|                      | `match`es with no `_` arm, so a new reason fails the build          |
-| Unit                 | Catalogue test: every `Reason` (via `Reason::ALL`) is in this doc's |
-|                      | table and in `api/openapi/common.yaml`, matches the reason pattern, |
-|                      | and no two variants share a string                                  |
-| Unit                 | Rendering: each reason's HTTP status, JSON body, gRPC code and      |
-|                      | `ErrorInfo` detail; domain and metadata keys equal across both      |
-| Proptest             | Arbitrary `CacheError`/`InvalidKey` render to the same reason and   |
-|                      | metadata keys on HTTP and gRPC                                      |
-| Router (extends #38) | Arbitrary paths, methods and queries (including `%FF`, `%00`, bad   |
-|                      | query strings): every non-2xx body validates against `Status` in    |
-|                      | `common.yaml`; a handler that panics answers `500 INTERNAL`         |
-| E2E (Hypothesis)     | `ParityModel` also compares error reasons between `/bazel` HTTP and |
-|                      | gRPC; existing models keep asserting no status code a client reads  |
-|                      | has changed                                                         |
-| Acceptance           | Unchanged: real Gradle, Maven and Bazel clients are the check that  |
-|                      | overrides still hold                                                |
+| Layer                | Test                                                                    |
+| -------------------- | ----------------------------------------------------------------------- |
+| Compile              | `Reason::code`, the core map and every protocol override are exhaustive |
+|                      | `match`es with no `_` arm, so a new reason fails the build              |
+| Unit                 | Catalogue test: every `Reason` (via `Reason::ALL`) is in this doc's     |
+|                      | table and in `api/openapi/common.yaml`, matches the reason pattern,     |
+|                      | and no two variants share a string                                      |
+| Unit                 | Rendering: each reason's HTTP status, JSON body, gRPC code and          |
+|                      | `ErrorInfo` detail; domain and metadata keys equal across both          |
+| Proptest             | Arbitrary `CacheError`/`InvalidKey` render to the same reason and       |
+|                      | metadata keys on HTTP and gRPC                                          |
+| Router (extends #38) | Arbitrary paths, methods and queries (including `%FF`, `%00`, bad       |
+|                      | query strings): every non-2xx body validates against `Status` in        |
+|                      | `common.yaml`; a handler that panics answers `500 INTERNAL`             |
+| E2E (Hypothesis)     | `ParityModel` also compares error reasons between `/bazel` HTTP and     |
+|                      | gRPC; existing models keep asserting no status code a client reads      |
+|                      | has changed                                                             |
+| Acceptance           | Unchanged: real Gradle, Maven and Bazel clients are the check that      |
+|                      | overrides still hold                                                    |
 
 ## Plan
 
@@ -367,13 +396,13 @@ Each step is one PR that keeps CI green.
 2. Core: `cache::Error` as canonical code, typed detail and `anyhow` context, `thiserror` on the
    error types, `anyhow` in `main` and config loading. No behaviour change.
 3. Translation layer: `api::error` (`Reason`, `Code`, `Status`, `DOMAIN`) and the catalogue test.
-   Both adapters render through it, which fixes gaps 1 to 4 and 7. No status code changes; the two
-   gRPC reasons are renamed.
+   Both adapters render through it, which fixes gaps 1 to 4, 7 and 9. No status code changes; the
+   two gRPC reasons are renamed.
 4. Rejections and panics: `Path`/`Query` wrappers, `CatchPanicLayer`, the fallback layer and the
    router fuzz test (gaps 5 and 6).
 5. Parity: the proptest and the `ParityModel` reason check.
-6. Mark this doc Accepted, add the `405` row to 0001's exception table (gap 8), and list the
-   reasons in the user docs.
+6. Mark this doc Accepted, add the `405` row to 0001's exception table (gap 8), update 0001's
+   error example to `INVALID_ARGUMENT` (gap 2b), and list the reasons in the user docs.
 
 ## Cross-cutting concerns
 
@@ -399,5 +428,6 @@ Each step is one PR that keeps CI green.
 
 ## Open questions
 
-- None blocking. `anyhow` and `thiserror` are already in the lock file through dependencies;
-  `tonic-types` is a new direct dependency from the tonic project.
+- None blocking. `anyhow` and `thiserror` are already in the lock file through dependencies.
+  New direct dependencies: `tonic-types` (from the tonic project) and `tower-http` with its
+  `catch-panic` feature.
