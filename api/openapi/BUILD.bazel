@@ -1,0 +1,6 @@
+# The OpenAPI contracts, for tests that check the router against them.
+filegroup(
+    name = "specs",
+    srcs = glob(["*.yaml"]),
+    visibility = ["//visibility:public"],
+)
