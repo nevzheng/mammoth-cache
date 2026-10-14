@@ -21,6 +21,7 @@ shutdown_delay = "5s" # keep serving after SIGTERM while load balancers see /rea
 shutdown_timeout = "25s" # finish requests and queued uploads within this; below the grace period
 idle_timeout = "75s" # above the load balancer's idle timeout (600s on Google Cloud)
 body_read_timeout = "60s" # abandon an upload that sends nothing this long; per read
+send_timeout = "60s" # drop a client that stops reading a response this long; per write
 
 # Optional: serve HTTPS. Leave the section out to serve plain HTTP behind a proxy.
 [tls]

@@ -69,6 +69,7 @@ fn fast() -> ServerSettings {
         shutdown_timeout: Duration::from_secs(5),
         idle_timeout: Duration::from_secs(5),
         body_read_timeout: Duration::from_secs(5),
+        send_timeout: Duration::from_secs(5),
     }
 }
 

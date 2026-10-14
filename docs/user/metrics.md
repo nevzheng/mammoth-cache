@@ -3,7 +3,8 @@
 > [!NOTE]
 > Exported today: `mammoth_http_requests_total`, `mammoth_gradle_requests_total`,
 > `mammoth_http_request_duration_seconds`, `mammoth_http_requests_in_flight`,
-> `mammoth_auth_failures_total`,
+> `mammoth_auth_failures_total`, `mammoth_cache_lookups_total`, `mammoth_cache_stores_total`,
+> `mammoth_cache_entry_size_bytes`,
 > `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total` (memory tier),
 > `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
 > `mammoth_bucket_uploads_total`, `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`,
@@ -66,7 +67,7 @@ cache key, a token or a user name.
 | `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)                | Uploads to the bucket, sync or background        |
 | `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`, `bucket-down`) | Uploads skipped; the entry stays local           |
 | `mammoth_tier_up`                      | gauge     | `tier` (`bucket`)                                  | `0` from a bucket failure until it answers again |
-| `mammoth_shutting_down`                | gauge     |                                                    | `1` while the node drains                        |
+| `mammoth_shutting_down`                | gauge     |                                                    | `0`, then `1` while the node drains              |
 
 ### Current population
 

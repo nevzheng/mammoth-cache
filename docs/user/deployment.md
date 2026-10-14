@@ -115,6 +115,9 @@ key = "/etc/mammoth/tls/tls.key"
   updating a mounted Secret and with certbot rewriting files. With certbot, copy the renewed files
   into place from a deploy hook; the node must be able to read them as its own user (uid 65532 in
   the image).
+- **Key permissions.** The node warns when the key file is readable by every user. Make it `0400`
+  or `0600` for the node's own user. For a Kubernetes Secret volume, set `defaultMode: 0440` with
+  `fsGroup: 65532`, so only the node's group can read it.
 - **Probes and scrapes.** Probes need `scheme: HTTPS` (kubelet doesn't verify the certificate), load
   balancer health checks need the HTTPS protocol, and Prometheus needs `scheme: https` with a
   `tls_config` naming the CA.
@@ -236,12 +239,13 @@ stops accepting, finishes requests in flight, flushes the bucket upload queue an
 
 The settings are in the `[server]` section (see [Configuration](configuration.md#server)):
 
-| Key                 | Default | Meaning                                                                        |
-| ------------------- | ------- | ------------------------------------------------------------------------------ |
-| `shutdown_delay`    | `5s`    | Keep serving after `SIGTERM` while load balancers remove the node              |
-| `shutdown_timeout`  | `25s`   | Deadline for the whole drain; below Kubernetes' default 30 s                   |
-| `idle_timeout`      | `75s`   | Close a connection that sends no request headers this long; above the LB's     |
-| `body_read_timeout` | `60s`   | Abort an upload that sends nothing for this long (per read, not total)         |
+| Key                 | Default | Meaning                                                                         |
+| ------------------- | ------- | ------------------------------------------------------------------------------- |
+| `shutdown_delay`    | `5s`    | Keep serving after `SIGTERM` while load balancers remove the node               |
+| `shutdown_timeout`  | `25s`   | Deadline for the whole drain; below Kubernetes' default 30 s                    |
+| `idle_timeout`      | `75s`   | Close a connection that sends no request headers this long; above the LB's      |
+| `body_read_timeout` | `60s`   | Abort an upload that sends nothing for this long (per read, not total)          |
+| `send_timeout`      | `60s`   | Close a connection whose client stops reading a response (per write, not total) |
 
 `idle_timeout` also bounds how long a client may take to send request headers: hyper starts that
 timer as soon as a keep-alive connection goes idle, so a shorter header timeout would close idle

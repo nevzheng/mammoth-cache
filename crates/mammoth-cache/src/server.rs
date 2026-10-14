@@ -4,7 +4,14 @@
 //! `axum::serve` sets no timeouts and waits for open connections without limit, so this module
 //! serves each connection with hyper directly.
 
-use std::{future::Future, io, pin::pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    io,
+    pin::{Pin, pin},
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use axum::{
     Router,
@@ -21,9 +28,9 @@ use hyper_util::{
     service::TowerToHyperService,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
-    time::Instant,
+    time::{Instant, Sleep},
 };
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 
@@ -42,6 +49,9 @@ pub struct ServerSettings {
     pub idle_timeout: Duration,
     /// How long a request body may send nothing before the request fails.
     pub body_read_timeout: Duration,
+    /// How long a response may make no progress, because the client stopped reading, before the
+    /// connection is closed.
+    pub send_timeout: Duration,
 }
 
 impl Default for ServerSettings {
@@ -51,6 +61,7 @@ impl Default for ServerSettings {
             shutdown_timeout: Duration::from_secs(25),
             idle_timeout: Duration::from_secs(75),
             body_read_timeout: Duration::from_secs(60),
+            send_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -261,9 +272,94 @@ where
         .timer(TokioTimer::new())
         .header_read_timeout(settings.idle_timeout)
         .keep_alive(true)
-        .serve_connection(TokioIo::new(stream), TowerToHyperService::new(app));
+        .serve_connection(
+            TokioIo::new(SendTimeout::new(stream, settings.send_timeout)),
+            TowerToHyperService::new(app),
+        );
     if let Err(error) = watcher.watch(connection).await {
         tracing::debug!(%error, "connection ended with an error");
+    }
+}
+
+/// Fails a connection's writes once one makes no progress for the timeout: a client that stops
+/// reading a large response would otherwise hold the connection, its task and the entry's file
+/// open for good. Per write, not in total, so a slow download is not cut off.
+struct SendTimeout<S> {
+    inner: S,
+    timeout: Duration,
+    /// Running while a write is pending; reset by any progress.
+    stalled: Option<Pin<Box<Sleep>>>,
+}
+
+impl<S> SendTimeout<S> {
+    fn new(inner: S, timeout: Duration) -> Self {
+        Self {
+            inner,
+            timeout,
+            stalled: None,
+        }
+    }
+
+    /// Passes a write's result through, or fails it once it has been pending for the timeout.
+    fn watch<T>(&mut self, cx: &mut Context<'_>, poll: Poll<io::Result<T>>) -> Poll<io::Result<T>> {
+        if poll.is_ready() {
+            self.stalled = None;
+            return poll;
+        }
+        let timeout = self.timeout;
+        let stalled = self
+            .stalled
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
+        match stalled.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the client stopped reading the response",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for SendTimeout<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for SendTimeout<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let poll = Pin::new(&mut self.inner).poll_write(cx, buf);
+        self.watch(cx, poll)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let poll = Pin::new(&mut self.inner).poll_write_vectored(cx, bufs);
+        self.watch(cx, poll)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let poll = Pin::new(&mut self.inner).poll_flush(cx);
+        self.watch(cx, poll)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 
