@@ -5,8 +5,8 @@ for Gradle and Maven, written in Rust. It is a drop-in replacement for the Gradl
 which reaches end of life after December 31, 2026.
 
 > [!WARNING]
-> mammoth-cache is pre-alpha. It serves Gradle builds from memory today; disk and bucket storage,
-> Maven, authentication and metrics are on the way. See
+> mammoth-cache is pre-alpha. It serves Gradle and Maven builds from memory today; disk and bucket
+> storage, the config file, authentication and most metrics are on the way. See
 > [feature status](user/README.md#feature-status).
 
 ## Why mammoth-cache

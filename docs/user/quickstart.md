@@ -1,14 +1,23 @@
 # Quickstart
 
-This page gets a node running on your machine and checks that it stores and serves an entry. There
-are no published releases yet, so both ways below build from source.
+This page gets a node running on your machine and checks that it stores and serves an entry.
 
 Today a node keeps entries in memory only (1 GiB), listens on port 5071, which is the Build Cache
 Node's port, and has no authentication. Everything is lost when it stops.
 
 ## With Docker
 
-Build the image from a clone of the repository, then run it:
+There is no release yet, but every change to `main` publishes an `edge` image for linux/amd64 and
+linux/arm64:
+
+```sh
+docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:edge
+```
+
+The image runs as a non-root user on a distroless base, and listens on `0.0.0.0:5071`. `edge`
+changes with every merge; pin a `sha-<commit>` tag if you need the same build twice.
+
+To build the image yourself from a clone of the repository:
 
 ```sh
 git clone https://github.com/nevzheng/mammoth-cache.git
@@ -17,12 +26,9 @@ docker build -t mammoth-cache .
 docker run --rm -p 5071:5071 mammoth-cache
 ```
 
-The image runs as a non-root user on a distroless base, and listens on `0.0.0.0:5071`.
-
 > [!NOTE]
-> Published images are planned: `ghcr.io/nevzheng/mammoth-cache:<version>` for each release, for
-> linux/amd64 and linux/arm64, and an `edge` tag built from `main`. Until the first release, build
-> the image yourself.
+> From the first release, each version is published as `ghcr.io/nevzheng/mammoth-cache:<version>`,
+> with `:latest` following the newest release.
 
 ## From source
 
@@ -47,8 +53,9 @@ These two variables are temporary. Once the [config file](configuration.md) land
 moves to `listen` and the log level to `[log]`.
 
 > [!NOTE]
-> Release binaries are planned for each release: static Linux binaries for x86_64 and aarch64, and
-> a macOS arm64 binary, with checksums and build attestations.
+> From the first release, each GitHub release carries static Linux binaries for x86_64 and
+> aarch64 and a macOS arm64 binary, with `SHA256SUMS` and build attestations you can check with
+> `gh attestation verify <file> -R nevzheng/mammoth-cache`.
 
 ## Check it works
 

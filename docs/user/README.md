@@ -6,10 +6,10 @@ after December 31, 2026. Point your builds at it the way you pointed them at the
 and they reuse task and module outputs that other builds have already produced.
 
 > [!WARNING]
-> mammoth-cache is pre-alpha. The Gradle protocol works today with an in-memory cache, but there is
-> no release yet, and the disk and bucket tiers, the Maven routes, the config file, authentication
-> and metrics are still being built. Each page says what works now and what is planned. Don't run
-> it in production yet.
+> mammoth-cache is pre-alpha. The Gradle and Maven protocols work today with an in-memory cache, and
+> an `edge` image is published from `main`, but there is no release yet. The disk and bucket tiers,
+> the config file, authentication and most metrics are still being built. Each page says what works
+> now and what is planned. Don't run it in production yet.
 
 ## What it does
 
@@ -34,7 +34,7 @@ refills from the bucket as it serves. Without one, a single node works like the 
 | Client                                                                                                 | Versions                        | Status    |
 | ------------------------------------------------------------------------------------------------------ | ------------------------------- | --------- |
 | Gradle's built-in [HTTP build cache](https://docs.gradle.org/current/userguide/build_cache.html)       | 7.6 to 9.x                      | Available |
-| [Apache Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/) | 1.2.0 and later, on Maven 3.9.x | Planned   |
+| [Apache Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/) | 1.2.0 and later, on Maven 3.9.x | Available |
 
 Develocity's own Gradle plugin connector and Maven extension are not supported. Bazel remote
 caching is out of scope; [bazel-remote](https://github.com/buchgr/bazel-remote) already serves it
@@ -49,13 +49,15 @@ well.
 | In-memory tier (1 GiB, fixed for now)                   | Available | [Configuration](configuration.md)    |
 | `/ping`, `/livez`, `/readyz`                            | Available | [Health checks](health.md)           |
 | Admin status, `/v1/serverStatus`                        | Available | [Health checks](health.md)           |
-| Maven routes, `/maven/{path}`                           | Planned   | [Maven](maven.md)                    |
+| Maven routes, `/maven/{path}`                           | Available | [Maven](maven.md)                    |
 | `mammoth.toml` config file                              | Planned   | [Configuration](configuration.md)    |
 | Disk and bucket tiers                                   | Planned   | [Configuration](configuration.md)    |
 | Users, tokens and scopes                                | Planned   | [Authentication](authentication.md)  |
 | TLS                                                     | Planned   | [Configuration](configuration.md)    |
-| Prometheus metrics at `/metrics`                        | Planned   | [Metrics](metrics.md)                |
-| Release binaries and container images                   | Planned   | [Quickstart](quickstart.md)          |
+| Request metrics at `/metrics`                           | Available | [Metrics](metrics.md)                |
+| `edge` container image from `main`                      | Available | [Quickstart](quickstart.md)          |
+| Full metrics catalog                                    | Planned   | [Metrics](metrics.md)                |
+| Release binaries and versioned images                   | Planned   | [Quickstart](quickstart.md)          |
 
 ## Where to go next
 

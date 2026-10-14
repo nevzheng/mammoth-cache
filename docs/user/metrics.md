@@ -1,9 +1,10 @@
 # Metrics
 
 > [!NOTE]
-> Metrics are planned: `/metrics` answers `501 Not Implemented` today. The catalog below is the
-> contract from design doc [0004](../design/0004-metrics.md); names and labels won't change without
-> a breaking release.
+> Two metrics are exported today: `mammoth_http_requests_total` and
+> `mammoth_gradle_requests_total`. The rest of the catalog below is the contract from design doc
+> [0004](../design/0004-metrics.md) and arrives with the features it measures. Names and labels
+> won't change without a breaking release.
 
 mammoth-cache exports Prometheus metrics at `/metrics` on the main port. The node exports raw
 counters, gauges and histograms only. Hit rates, request rates and dashboards are computed by

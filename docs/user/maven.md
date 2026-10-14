@@ -1,11 +1,10 @@
 # Maven
 
 > [!NOTE]
-> Maven support is planned. Its contract is written
-> ([`maven-build-cache.v1.yaml`](https://github.com/nevzheng/mammoth-cache/blob/main/api/openapi/maven-build-cache.v1.yaml))
-> but the `/maven/` routes are not served yet. This page describes how setup will work.
+> The `/maven/` routes are served today, from memory and without authentication. The acceptance
+> suite that runs real Maven builds against the node in CI is still to come.
 
-mammoth-cache will support the
+mammoth-cache supports the
 [Apache Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/),
 version 1.2.0 and later, on Maven 3.9.x. Maven 4 is added once it is generally available. The
 Develocity Maven extension is not supported: it needs a Develocity licence and server.

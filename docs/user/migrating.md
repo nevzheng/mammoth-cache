@@ -5,7 +5,7 @@ points users at Develocity Edge. mammoth-cache is an open-source alternative for
 self-hosted node without Develocity.
 
 > [!WARNING]
-> mammoth-cache is pre-alpha. Today it can stand in for a BCN in a trial (Gradle protocol, memory
+> mammoth-cache is pre-alpha. Today it can stand in for a BCN in a trial (Gradle and Maven, memory
 > only, no authentication), but not in production: the disk tier, config file and authentication
 > are still planned. This page describes the full migration as designed, so you can plan it.
 

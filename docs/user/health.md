@@ -28,7 +28,7 @@ error naming it.
 ```yaml
 containers:
   - name: mammoth
-    image: mammoth-cache # build it yourself until releases are published
+    image: ghcr.io/nevzheng/mammoth-cache:edge # a version tag once releases exist
     ports:
       - containerPort: 5071
     livenessProbe:
