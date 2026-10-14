@@ -1,16 +1,18 @@
 # Deployment
 
 mammoth-cache is built to run as a few stateless nodes behind a load balancer, often on Kubernetes.
-Each node serves one port, plain HTTP by default. The proxy in front terminates TLS and routes
-requests, and an optional bucket shares entries between nodes. This page covers what to set up
-around the nodes. Design doc [0013](../design/0013-deployment.md) has the reasoning. The project
+Each node serves one HTTP port (5071), plain HTTP by default, and with `protocols.reapi` on a
+second, gRPC port (6011) for the [REAPI cache](reapi.md). The proxy in front terminates TLS and
+routes requests, and an optional bucket shares entries between nodes. This page covers what to set
+up around the nodes. Design doc [0013](../design/0013-deployment.md) has the reasoning. The project
 ships no Helm chart or manifests: the snippets below are what to put in your own.
 
 ```mermaid
 flowchart LR
-    clients["Gradle and Maven"] -- HTTPS --> lb["Ingress or load balancer<br/>TLS, body size, hashing"]
-    lb -- HTTP :5071 --> a["node A"]
-    lb -- HTTP :5071 --> b["node B"]
+    clients["Gradle, Maven, Bazel"] -- HTTPS --> lb["Ingress or load balancer<br/>TLS, body size, hashing"]
+    grpc["REAPI clients, optional"] -- "HTTP/2" --> lb
+    lb -- "HTTP :5071, gRPC :6011" --> a["node A"]
+    lb -- "HTTP :5071, gRPC :6011" --> b["node B"]
     a --> bucket[("bucket")]
     b --> bucket
 ```
@@ -159,6 +161,11 @@ securityContext:
 env:
   - name: MAMMOTH_CONFIG
     value: /etc/mammoth/mammoth.toml
+ports:
+  - name: http
+    containerPort: 5071
+  - name: grpc # only with protocols.reapi = true
+    containerPort: 6011
 resources:
   limits:
     memory: 3Gi # with memory.size = "2GiB"
@@ -172,7 +179,9 @@ volumeMounts:
     mountPath: /var/lib/mammoth
 ```
 
-Probes are on [Health checks](health.md#kubernetes).
+Probes are on [Health checks](health.md#kubernetes); they stay on the HTTP port, since both ports
+open and close together. Give the gRPC port its own `Service` port, and route it through a
+gRPC-aware balancer as [REAPI networking](reapi.md#networking-and-load-balancing) describes.
 
 ## Bucket access
 
@@ -235,7 +244,9 @@ their cache. Details and the alert to set are on [Health checks](health.md#bucke
 On `SIGTERM` the node drains in place of a `preStop` hook, which the distroless image can't run:
 `/readyz` turns `503` while `/livez` stays `200`, it keeps serving for `shutdown_delay`, then it
 stops accepting, finishes requests in flight, flushes the bucket upload queue and exits within
-`shutdown_timeout`. Keep `terminationGracePeriodSeconds` above `shutdown_timeout`.
+`shutdown_timeout`. The gRPC port drains on the same clock: after `shutdown_delay` it sends `GOAWAY`
+so clients reconnect through the balancer to another node, and calls in flight finish within the
+same `shutdown_timeout`. Keep `terminationGracePeriodSeconds` above `shutdown_timeout`.
 
 The settings are in the `[server]` section (see [Configuration](configuration.md#server)):
 

@@ -32,7 +32,9 @@ stored over one is a hit over the other, so Bazel can move between them without 
 ## Configure the client
 
 Every client needs the cache address and, with [authentication](authentication.md) on, a token.
-Reads need `cache:read` and uploads `cache:write`; a read-only token suits developer machines.
+Reads need `cache:read` and uploads `cache:write`. A read-only token suits developer machines, but
+tell the client not to upload, or every build logs `PERMISSION_DENIED` on each store: for Bazel,
+`--noremote_upload_local_results`.
 
 **Bazel**, in `.bazelrc`:
 
@@ -41,10 +43,11 @@ build --remote_cache=grpcs://cache.example.com:6011
 build --remote_header=Authorization=Bearer <token>
 ```
 
-A `--credential_helper` works as well. `--remote_download_minimal` (build without the bytes) is
-safe: the node answers an action result as a miss when any output it lists has been evicted,
-including any file inside an output directory (one whose `Tree` is over 4 MiB, tens of thousands of
-files, is not checked).
+A `--credential_helper` works as well. Leave `--remote_cache_compression` off: the node advertises
+no compressors yet, so there is nothing for the flag to use. `--remote_download_minimal` (build
+without the bytes) is safe: the node answers an action result as a miss when any output it lists has
+been evicted, including any file inside an output directory (one whose `Tree` is over 4 MiB, tens of
+thousands of files, is not checked).
 
 **Buck2**, in `.buckconfig`, with the execution platform set to run locally and use the remote
 cache:
