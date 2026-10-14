@@ -2,9 +2,20 @@
 
 [Introduction](README.md)
 
+[Philosophy](philosophy.md)
+
 ## User guide
 
-- [User guide](user/README.md)
+- [Overview](user/README.md)
+- [Quickstart](user/quickstart.md)
+- [Gradle](user/gradle.md)
+- [Maven](user/maven.md)
+- [Migrating from the Build Cache Node](user/migrating.md)
+- [Configuration reference](user/configuration.md)
+- [Authentication](user/authentication.md)
+- [Health checks and status](user/health.md)
+- [Metrics](user/metrics.md)
+- [Custom builds](user/custom-builds.md)
 
 ## Design
 

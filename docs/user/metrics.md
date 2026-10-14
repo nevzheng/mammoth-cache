@@ -1,0 +1,105 @@
+# Metrics
+
+> [!NOTE]
+> Metrics are planned: `/metrics` answers `501 Not Implemented` today. The catalog below is the
+> contract from design doc [0004](../design/0004-metrics.md); names and labels won't change without
+> a breaking release.
+
+mammoth-cache exports Prometheus metrics at `/metrics` on the main port. The node exports raw
+counters, gauges and histograms only. Hit rates, request rates and dashboards are computed by
+Prometheus, so the node keeps no history and a restart simply resets counters.
+
+## Scraping
+
+Metrics are open by default, like the Build Cache Node's:
+
+```yaml
+scrape_configs:
+  - job_name: mammoth
+    static_configs:
+      - targets: ["cache.example.com:5071"]
+```
+
+With `[metrics] require_auth = true`, give Prometheus its own user with only the `metrics:read`
+scope (see [Authentication](authentication.md)), so its token can't read or write the cache:
+
+```yaml
+    authorization:
+      credentials_file: /etc/prometheus/mammoth-token
+```
+
+## Catalog
+
+Every metric starts with `mammoth_`. `tier` is `memory`, `disk` or `bucket`. No label ever holds a
+cache key, a token or a user name.
+
+### Cache outcomes
+
+| Metric                                 | Type      | Labels                                              | Meaning                                                    |
+| -------------------------------------- | --------- | --------------------------------------------------- | ---------------------------------------------------------- |
+| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                    | Loads by outcome; `tier` served the hit, empty on a miss   |
+| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `error`) | Stores by outcome; `too_large` were accepted and dropped   |
+| `mammoth_cache_entry_size_bytes`       | histogram |                                                     | Size of each stored entry                                  |
+| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                              | Entries whose checksum didn't match; served as misses      |
+
+### Per tier
+
+| Metric                                | Type      | Labels                                    | Meaning                                |
+| ------------------------------------- | --------- | ----------------------------------------- | -------------------------------------- |
+| `mammoth_tier_reads_total`            | counter   | `tier`, `result` (`hit`, `miss`, `error`) | Reads against a tier                   |
+| `mammoth_tier_read_duration_seconds`  | histogram | `tier`                                    | Time to first byte from a tier         |
+| `mammoth_tier_writes_total`           | counter   | `tier`, `result` (`ok`, `error`)          | Writes to a tier                       |
+| `mammoth_tier_write_duration_seconds` | histogram | `tier`                                    | Time to write an entry to a tier       |
+| `mammoth_tier_read_bytes_total`       | counter   | `tier`                                    | Bytes read from a tier                 |
+| `mammoth_tier_written_bytes_total`    | counter   | `tier`                                    | Bytes written to a tier                |
+| `mammoth_tier_promotions_total`       | counter   | `from`, `to`                              | Entries copied up a tier after a hit   |
+| `mammoth_tier_evictions_total`        | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits  |
+| `mammoth_bucket_upload_queue_entries` | gauge     |                                           | Stores waiting to upload to the bucket |
+
+### Current population
+
+| Metric                                  | Type  | Labels | Meaning                                                     |
+| --------------------------------------- | ----- | ------ | ----------------------------------------------------------- |
+| `mammoth_tier_entries`                  | gauge | `tier` | Entries held, for `memory` and `disk`                       |
+| `mammoth_tier_size_bytes`               | gauge | `tier` | Bytes held, for `memory` and `disk`                         |
+| `mammoth_tier_capacity_bytes`           | gauge | `tier` | Configured limit, for `memory` and `disk`                   |
+| `mammoth_tier_oldest_entry_age_seconds` | gauge | `tier` | Age of the least recently used entry: how much history fits |
+| `mammoth_disk_free_bytes`               | gauge |        | Free space on the disk tier's file system                   |
+
+The bucket's population isn't reported, because counting it means listing the bucket. Use the
+cloud provider's metrics.
+
+### Serving
+
+| Metric                                  | Type      | Labels                              | Meaning                                |
+| --------------------------------------- | --------- | ----------------------------------- | -------------------------------------- |
+| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route, status and client   |
+| `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by major.minor version |
+| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response  |
+| `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                  |
+| `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by `reason`      |
+| `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build         |
+
+`route` is the route template, such as `/cache/{key}`. `client` is `gradle`, `maven` or `other`,
+from the `User-Agent`. The standard `process_*` metrics are exported too.
+
+## Useful queries
+
+```promql
+# Hit rate over 5 minutes
+sum(rate(mammoth_cache_lookups_total{result="hit"}[5m]))
+  / sum(rate(mammoth_cache_lookups_total[5m]))
+
+# Share of hits served from memory
+sum(rate(mammoth_cache_lookups_total{result="hit",tier="memory"}[5m]))
+  / sum(rate(mammoth_cache_lookups_total{result="hit"}[5m]))
+
+# Oversized stores dropped per second
+sum(rate(mammoth_cache_stores_total{result="too_large"}[5m]))
+
+# p99 time to first byte from the bucket
+histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bucket{tier="bucket"}[5m])))
+```
+
+If `mammoth_tier_oldest_entry_age_seconds` for the disk is shorter than the life of a typical
+feature branch, the disk is too small for your builds.
