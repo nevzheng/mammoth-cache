@@ -35,7 +35,7 @@ jobs:
           fi
       - &checkout
         if: steps.token.outputs.set == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -43,7 +43,7 @@ jobs:
         if: steps.token.outputs.set == 'true'
         run: rustup toolchain install
       - if: steps.token.outputs.set == 'true'
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@8921286633dfa0c4020f7f30bd1c14fe19cbb10e # v0.5.142
         with:
           command: release
         env:
@@ -60,7 +60,7 @@ jobs:
       - *checkout
       - *toolchain
       - if: steps.token.outputs.set == 'true'
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@8921286633dfa0c4020f7f30bd1c14fe19cbb10e # v0.5.142
         with:
           command: release-pr
         env:
