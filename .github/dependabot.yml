@@ -5,8 +5,9 @@
 # Security updates open as soon as an advisory lands, skip the cooldown, and are batched by the
 # `*-security` groups (only Cargo and GitHub Actions get security updates from Dependabot).
 #
-# Runtime base images are pinned by digest (OpenSSF Scorecard "Pinned-Dependencies"); Dependabot keeps
-# the digest current along with the tag.
+# Actions are pinned to commit SHAs and runtime base images by digest (OpenSSF Scorecard
+# "Pinned-Dependencies"); Dependabot keeps each SHA or digest current along with its version
+# comment or tag.
 #
 # Not covered here on purpose:
 # - The Rust toolchain. Its version lives in rust-toolchain.toml, MODULE.bazel and the Dockerfile
