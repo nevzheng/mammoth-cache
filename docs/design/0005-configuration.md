@@ -40,7 +40,7 @@ This doc covers the file's shape and rules. Auth is in [0002](0002-authenticatio
 - One file is the whole configuration. Read once, never rewritten.
 - Familiar to BCN users: same concepts, same defaults where they apply.
 - Human units (`10GiB`, `30d`), not bare MiB or hours.
-- Validated before use, with a published JSON Schema for editor support.
+- Validated before use, and documented key by key.
 - No secrets in the file.
 
 ### Non-goals
@@ -55,7 +55,6 @@ This doc covers the file's shape and rules. Auth is in [0002](0002-authenticatio
 ### Example
 
 ```toml
-#:schema https://nevzheng.github.io/mammoth-cache/schema/mammoth.schema.json
 # mammoth.toml
 version = 1
 listen = "0.0.0.0:5071"
@@ -114,12 +113,8 @@ access_log = true
 - **Validation:** unknown keys, wrong types, unparseable units and contradictions (an L1 entry
   limit above the overall entry limit, `write = "sync"` with no bucket) are errors at startup.
   `mammoth config check` runs the same validation without starting the server.
-- **Schema:** TOML has no schema language of its own, but it shares JSON's data model, so the file
-  is described by a JSON Schema. The schema is generated from the Rust config types (for example
-  with `schemars`), so it cannot drift from the parser, and published with the API contracts.
-  Editors with Taplo ("Even Better TOML") or tombi validate and complete the file through the
-  `#:schema` line or a SchemaStore entry for `mammoth.toml`. CI checks the example configs with
-  `taplo check --schema`.
+- **Reference:** every key is documented in the user guide with its type, default and meaning.
+  There is no machine-readable schema; `mammoth config check` is the validator.
 - **Units:** sizes use binary suffixes (`KiB`, `MiB`, `GiB`, `TiB`), durations `s`, `m`, `h`, `d`.
 - **Secrets:** the file holds token hashes, which are not secrets. Bucket credentials come from the
   cloud's credential chain (see [0003](0003-architecture.md)). Nothing in the file needs to be kept
@@ -163,8 +158,8 @@ pod when the certificate changes.
 
 - **YAML,** like the BCN's `config.yaml`: familiar to BCN users and Kubernetes manifests, but full
   of surprises (implicit types, the "Norway problem", significant indentation). TOML is the Rust
-  ecosystem's usual format, has one obvious way to write each value, and maps onto JSON Schema just
-  as well. The migration table covers the change of format.
+  ecosystem's usual format, has one obvious way to write each value. The migration table covers the
+  change of format.
 - **BCN's file as is:** keys in bare MiB and hours, no place for the memory and bucket tiers, and
   password hashes. A translation table serves migrating users better.
 - **Environment variable overrides for every key** (bazel-remote, fosterstack/cache): convenient
