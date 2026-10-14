@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 use metrics::{describe_counter, describe_gauge, describe_histogram, gauge};
 use metrics_exporter_prometheus::{BuildError, Matcher, PrometheusBuilder, PrometheusHandle};
 
+use crate::cache::CacheStatus;
+
 /// The commit the binary was built from, from `MAMMOTH_REVISION` at build time.
 const REVISION: &str = match option_env!("MAMMOTH_REVISION") {
     Some(revision) => revision,
@@ -118,8 +120,28 @@ pub fn test_recorder() -> PrometheusHandle {
 /// The exposition for one scrape, with fresh `process_*` values.
 #[must_use]
 pub fn render(handle: &PrometheusHandle) -> String {
+    render_with(handle, None)
+}
+
+/// [`render`], with the local tiers' population from `status` set first, so the gauges are as
+/// current as the scrape.
+#[must_use]
+pub fn render_with(handle: &PrometheusHandle, status: Option<&CacheStatus>) -> String {
+    if let Some(status) = status {
+        record_population(status);
+    }
     process().collect();
     handle.render()
+}
+
+#[allow(clippy::cast_precision_loss)] // Gauges; exact below 2^53.
+fn record_population(status: &CacheStatus) {
+    for (tier, usage) in &status.tiers {
+        let tier = tier.as_str();
+        gauge!("mammoth_tier_entries", "tier" => tier).set(usage.entries as f64);
+        gauge!("mammoth_tier_size_bytes", "tier" => tier).set(usage.size_bytes as f64);
+        gauge!("mammoth_tier_capacity_bytes", "tier" => tier).set(usage.capacity_bytes as f64);
+    }
 }
 
 fn process() -> &'static metrics_process::Collector {

@@ -218,19 +218,19 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_tier_entries",
         kind: Kind::Gauge,
         labels: &[Label("tier", Some(&["memory", "disk"]))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_size_bytes",
         kind: Kind::Gauge,
         labels: &[Label("tier", Some(&["memory", "disk"]))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_capacity_bytes",
         kind: Kind::Gauge,
         labels: &[Label("tier", Some(&["memory", "disk"]))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_oldest_entry_age_seconds",
@@ -820,6 +820,18 @@ async fn workload_moves_the_live_counters() {
         ),
         MISSES
     );
+    // Population, as of the scrape: the disk holds every stored entry.
+    let population = |name, tier| after.count(name, &[("tier", tier)]);
+    assert_eq!(population("mammoth_tier_entries", "disk"), STORED);
+    assert_eq!(population("mammoth_tier_capacity_bytes", "disk"), 1 << 20);
+    assert!(
+        population("mammoth_tier_size_bytes", "disk") >= 64 + 3 * i64::try_from(ENTRY).unwrap()
+    );
+    assert_eq!(
+        population("mammoth_tier_capacity_bytes", "memory"),
+        i64::try_from(MEMORY_CAPACITY).unwrap()
+    );
+    assert!(population("mammoth_tier_entries", "memory") >= 1);
 }
 
 #[tokio::test]

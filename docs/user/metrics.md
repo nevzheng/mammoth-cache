@@ -6,11 +6,12 @@
 > `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total` (memory tier),
 > `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
 > `mammoth_bucket_uploads_total`, `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`,
-> `mammoth_disk_free_bytes`, `mammoth_build_info`, the `mammoth_tls_*` metrics, `mammoth_tier_up`,
-> `mammoth_tier_reads_total` and `mammoth_tier_writes_total` for the bucket tier only, and the
-> standard `process_*` metrics. The rest of the catalog below is the contract from design doc
-> [0004](../design/0004-metrics.md) and arrives with the features it measures. Names and labels
-> won't change without a breaking release.
+> `mammoth_disk_free_bytes`, `mammoth_tier_entries`, `mammoth_tier_size_bytes`,
+> `mammoth_tier_capacity_bytes`, `mammoth_build_info`, the `mammoth_tls_*` metrics,
+> `mammoth_tier_up`, `mammoth_tier_reads_total` and `mammoth_tier_writes_total` for the bucket tier
+> only, and the standard `process_*` metrics. The rest of the catalog below is the contract from
+> design doc [0004](../design/0004-metrics.md) and arrives with the features it measures. Names and
+> labels won't change without a breaking release.
 
 mammoth-cache exports Prometheus metrics at `/metrics` on the main port. The node exports raw
 counters, gauges and histograms only. Hit rates, request rates and dashboards are computed by
@@ -77,8 +78,9 @@ cache key, a token or a user name.
 | `mammoth_tier_oldest_entry_age_seconds` | gauge | `tier` | Age of the least recently used entry: how much history fits |
 | `mammoth_disk_free_bytes`               | gauge |        | Free space on the disk tier's file system                   |
 
-The bucket's population isn't reported, because counting it means listing the bucket. Use the
-cloud provider's metrics.
+The population gauges are read when Prometheus scrapes, so they are as current as the scrape.
+`mammoth_tier_oldest_entry_age_seconds` is not exported yet. The bucket's population isn't reported,
+because counting it means listing the bucket. Use the cloud provider's metrics.
 
 ### Serving
 
