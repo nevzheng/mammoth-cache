@@ -9,7 +9,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from mammoth_e2e import tools
 
@@ -211,6 +211,8 @@ class MavenProject:
         return BuildResult(argv=tuple(argv), returncode=code, output=output)
 
 
+type Download = Literal["all", "toplevel", "minimal"]
+
 _PROCESSES = re.compile(r"INFO: \d+ process(?:es)?: (?P<kinds>[^.]*)\.")
 
 
@@ -250,6 +252,7 @@ class BazelProject:
     credentials: Credentials | None = None
     auth_in_header: bool = False  # Bearer via --remote_header instead of user:token in the URL
     upload: bool = True
+    download: Download = "toplevel"  # Bazel's default since 7
 
     @classmethod
     def create(cls, workdir: Path, version: str, cache_url: str) -> BazelProject:
@@ -258,16 +261,58 @@ class BazelProject:
         (root / "lib" / "salt.txt").write_text(uuid.uuid4().hex + "\n")
         return cls(root=root, version=version, cache_url=cache_url)
 
+    @property
+    def grpc(self) -> bool:
+        return self.cache_url.startswith(("grpc://", "grpcs://"))
+
     def touch_app(self) -> None:
         source = self.root / "app" / "app.txt"
         source.write_text(source.read_text() + uuid.uuid4().hex + "\n")
+
+    def add_blob(self, name: str, size: int, deps: tuple[str, ...] = ()) -> str:
+        """Adds `//gen:{name}`, a genrule writing `size` bytes derived from the salt and `deps`.
+
+        Returns its label. The bytes are deterministic, so a rebuild that executes it again
+        writes the same output, and they are unique to this copy of the project.
+        """
+        package = self.root / "gen"
+        package.mkdir(exist_ok=True)
+        build = package / "BUILD.bazel"
+        srcs = ", ".join(f'"{d}"' for d in ("//lib:salt.txt", *deps))
+        locations = " ".join(f"$(execpaths {d})" for d in ("//lib:salt.txt", *deps))
+        # `yes` repeats the inputs' digest, so any size from 0 up is one `head -c`. Genrules run
+        # with pipefail and `yes` dies of SIGPIPE, hence the `|| true`.
+        build.write_text(
+            (build.read_text() if build.exists() else "") + f"genrule(\n"
+            f'    name = "{name}",\n'
+            f"    srcs = [{srcs}],\n"
+            f'    outs = ["{name}.out"],\n'
+            f'    cmd = "(yes \\"$$(cat {locations} | sha256sum)\\" || true)'
+            f' | head -c {size} > $@",\n'
+            f'    visibility = ["//visibility:public"],\n'
+            f")\n"
+        )
+        lib = self.root / "lib" / "BUILD.bazel"
+        if "exports_files" not in lib.read_text():
+            lib.write_text(lib.read_text() + 'exports_files(["salt.txt"])\n')
+        return f"//gen:{name}"
+
+    def outputs(self) -> dict[str, bytes]:
+        """Every file under `bazel-bin`, by path relative to it, from the last build."""
+        bin_dir = self.root / "bazel-bin"
+        return {
+            str(p.relative_to(bin_dir)): p.read_bytes()
+            for p in sorted(bin_dir.rglob("*.out"))
+            if p.is_file()
+        }
 
     def remote_cache_flags(self) -> list[str]:
         url = self.cache_url
         flags: list[str] = []
         if self.credentials is not None:
             token = self.credentials.token.get_secret_value()
-            if self.auth_in_header:
+            # A grpc:// URL has no place for credentials; Bazel only sends headers there.
+            if self.auth_in_header or self.grpc:
                 flags.append(f"--remote_header=Authorization=Bearer {token}")
             else:
                 scheme, _, rest = url.partition("://")
@@ -275,6 +320,7 @@ class BazelProject:
         flags += [
             f"--remote_cache={url}",
             f"--remote_upload_local_results={str(self.upload).lower()}",
+            f"--remote_download_{self.download}",
         ]
         return flags
 
@@ -304,3 +350,94 @@ class BazelProject:
         env["HOME"] = str(cache / "bazel-home")  # no ~/.bazelrc or credential helpers
         code, output = _run(argv, self.root, env, timeout)
         return BazelResult(argv=tuple(argv), returncode=code, output=output)
+
+
+# Buck2 prefixes each line of its summary with a timestamp in brackets.
+_BUCK2_COMMANDS = re.compile(
+    r"^(?:\[[^\]]*\] )?Commands: (?P<total>\d+) "
+    r"\(cached: (?P<cached>\d+), remote: (?P<remote>\d+), local: (?P<local>\d+)\)",
+    re.MULTILINE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Buck2Result(BuildResult):
+    def commands(self) -> dict[str, int]:
+        """The build's command summary: `total`, `cached`, `remote` and `local`."""
+        found = list(_BUCK2_COMMANDS.finditer(self.output))
+        return {k: int(v) for k, v in found[-1].groupdict().items()} if found else {}
+
+    def remote_hits(self) -> int:
+        return self.commands().get("cached", 0)
+
+    def executed(self) -> int:
+        return self.commands().get("local", 0)
+
+
+@dataclass(slots=True)
+class Buck2Project:
+    """A copy of the Buck2 fixture (its own rules, no prelude), built by one Buck2 release.
+
+    Every build ends with `buck2 clean`, which stops the daemon and empties `buck-out`, so the
+    next build's cached actions came from the remote cache. (A fresh isolation directory would
+    not do: it changes the scratch path in each action's environment, and so its digest.)
+    """
+
+    root: Path
+    version: str
+    address: str  # grpc://host:port
+    credentials: Credentials | None = None
+    upload: bool = True
+
+    @classmethod
+    def create(cls, workdir: Path, version: str, address: str) -> Buck2Project:
+        root = workdir / "buck2"
+        shutil.copytree(FIXTURES / "buck2", root)
+        (root / "salt.txt").write_text(uuid.uuid4().hex + "\n")
+        return cls(root=root, version=version, address=address)
+
+    def touch_app(self) -> None:
+        source = self.root / "app.txt"
+        source.write_text(source.read_text() + uuid.uuid4().hex + "\n")
+
+    def add_blob(self, name: str, size: int) -> str:
+        """Adds `//:{name}`, writing `size` bytes derived from the salt. Returns its label."""
+        build = self.root / "BUCK"
+        build.write_text(
+            build.read_text() + f'\nblob(name = "{name}", size = {size}, srcs = ["salt.txt"])\n'
+        )
+        return f"//:{name}"
+
+    def _config(self) -> str:
+        lines = [
+            "[buck2_re_client]",
+            *(f"{k}_address = {self.address}" for k in ("engine", "action_cache", "cas")),
+            "tls = false",
+        ]
+        if self.credentials is not None:
+            # Expanded from the daemon's environment, so the token is never in a file.
+            lines.append("http_headers = Authorization: Bearer $MAMMOTH_E2E_BUCK2_TOKEN")
+        lines += ["", "[mammoth]", f"upload = {str(self.upload).lower()}", ""]
+        return "\n".join(lines)
+
+    def build(self, *targets: str, timeout: float = 600.0) -> Buck2Result:
+        binary = tools.buck2_binary(self.version)
+        (self.root / ".buckconfig.local").write_text(self._config())
+        env = os.environ.copy()
+        home = tools.cache_dir() / "buck2-home"  # no ~/.buckconfig; the daemons' state
+        home.mkdir(exist_ok=True)
+        env["HOME"] = str(home)
+        if self.credentials is not None:
+            env["MAMMOTH_E2E_BUCK2_TOKEN"] = self.credentials.token.get_secret_value()
+        argv = [
+            str(binary),
+            "build",
+            "--console=simple",
+            "--no-interactive-console",
+            *(targets or ("//:lib", "//:app")),
+        ]
+        try:
+            code, output = _run(argv, self.root, env, timeout)
+        finally:
+            _run([str(binary), "clean"], self.root, env, 120.0)
+        return Buck2Result(argv=tuple(argv), returncode=code, output=output)

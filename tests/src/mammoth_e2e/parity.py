@@ -6,7 +6,12 @@ over all three (ByteStream with random offsets and limits), asks `FindMissingBlo
 reads action results over both. Every answer is compared with a model of the CAS and the AC.
 
 Over gRPC, an action result whose outputs are not all in the CAS is a miss, so a client that trusts
-it never asks for a blob that is gone; over HTTP the stored bytes are served as they are.
+it never asks for a blob that is gone; over HTTP the stored bytes are served as they are. Results
+may list output directories, as `Tree` blobs whose files are in the CAS.
+
+Batches carry up to eight blobs, some corrupt, and batches past the size limit are refused whole.
+`FindMissingBlobs` also gets thousands of digests at once, `QueryWriteStatus` must agree with the
+model, and calls switch between instance names, which the node accepts and ignores.
 """
 
 from __future__ import annotations
@@ -35,6 +40,8 @@ OK, INVALID_ARGUMENT, NOT_FOUND = (
 )
 WAYS = ("http", "batch", "bytestream")
 SIZES = st.one_of(st.integers(0, 64), st.integers(0, 4096), st.integers(50_000, 600_000))
+MAX_BATCH = 4 * 1024 * 1024 - 256 * 1024  # max_batch_total_size_bytes
+INSTANCES = st.sampled_from(["", "main", "ci/linux-x86_64"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,10 +112,24 @@ class ParityModel(RuleBasedStateMachine):
     def start(self) -> None:
         assert self.target.reapi_address, "the target has no reapi_address"
 
+    # Seeding both bundles means every rule can run from the first step; with them empty,
+    # Hypothesis discards so many rule choices that it fails its filter_too_much health check.
+
+    @initialize(target=blobs, size=SIZES, seed=st.text("0123456789abcdef", min_size=4, max_size=4))
+    def first_blob(self, size: int, seed: str) -> Blob:
+        return self.blob(size, seed)
+
+    @initialize(target=actions, seed=st.text("0123456789abcdef", max_size=8))
+    def first_action(self, seed: str) -> Action:
+        return self.action(seed)
+
     # Blobs
 
     @rule(target=blobs, size=SIZES, seed=st.text("0123456789abcdef", min_size=4, max_size=4))
     def new_blob(self, size: int, seed: str) -> Blob:
+        return self.blob(size, seed)
+
+    def blob(self, size: int, seed: str) -> Blob:
         """A blob nobody has stored: salted, except the empty one."""
         if size == 0:
             return Blob(b"")
@@ -195,27 +216,139 @@ class ParityModel(RuleBasedStateMachine):
         expected = {(b.hash, b.size) for b in found if b.hash not in self.cas}
         assert missing == expected, f"FindMissingBlobs said {missing}, the model {expected}"
 
+    @rule(found=st.lists(blobs, max_size=8), unknown=st.integers(500, 3000))
+    def find_missing_many(self, found: list[Blob], unknown: int) -> None:
+        """A large build asks about thousands of digests in one call."""
+        fresh = [sha256(self.salt + b"/unknown/%d" % i) for i in range(unknown)]
+        digests = [self.digest(b) for b in found]
+        digests += [self.grpc.s.re.Digest(hash=h, size_bytes=1) for h in fresh]
+        missing = self.grpc.find_missing(digests)
+        expected = {(b.hash, b.size) for b in found if b.hash not in self.cas}
+        expected |= {(h, 1) for h in fresh}
+        assert missing == expected, f"FindMissingBlobs missed {len(expected ^ missing)} digests"
+
+    @rule(
+        drawn=st.lists(blobs, min_size=1, max_size=8),
+        corrupt=st.sets(st.integers(0, 7)),
+    )
+    def batch_upload(self, drawn: list[Blob], corrupt: set[int]) -> None:
+        """Each blob in a batch gets its own status; a corrupt one fails alone."""
+        # Deduplicated here rather than with `unique_by`, which a small bundle makes Hypothesis
+        # filter until it fails its health check.
+        found = list({b.hash: b for b in drawn}.values())
+        if sum(b.size for b in found) > MAX_BATCH:
+            return
+        items: list[tuple[Message, bytes]] = []
+        bad: set[int] = set()
+        for i, blob in enumerate(found):
+            data = blob.data
+            if i in corrupt and blob.size:
+                data = bytes([data[0] ^ 0x01]) + data[1:]
+                bad.add(i)
+            items.append((self.digest(blob), data))
+        codes = self.grpc.batch_update(items)
+        for i, (blob, code) in enumerate(zip(found, codes, strict=True)):
+            if i not in bad:
+                assert code == OK, f"{blob}: batch item answered {code}"
+                self.cas.add(blob.hash)
+            elif blob.hash not in self.cas:
+                assert code == INVALID_ARGUMENT, f"{blob}: corrupt batch item answered {code}"
+
+    @rule(found=st.lists(blobs, min_size=1, max_size=8))
+    def batch_read_many(self, found: list[Blob]) -> None:
+        if sum(b.size for b in found) > MAX_BATCH:
+            return
+        answers = self.grpc.batch_read([self.digest(b) for b in found])
+        for blob, (code, data) in zip(found, answers, strict=True):
+            if blob.hash in self.cas:
+                assert (code, data) == (OK, blob.data), f"{blob}: batch read code {code}"
+            else:
+                assert code == NOT_FOUND, f"{blob}: batch read code {code}"
+
+    @rule(found=st.lists(blobs, max_size=4), claimed=st.integers(MAX_BATCH + 1, 2**40))
+    def batch_read_too_big(self, found: list[Blob], claimed: int) -> None:
+        """A batch read that could not fit in a response is refused whole, before any lookup."""
+        digests = [self.digest(b) for b in found]
+        digests.append(self.grpc.s.re.Digest(hash=sha256(self.salt), size_bytes=claimed))
+        code, _ = attempt(lambda: self.grpc.batch_read(digests))
+        assert code == grpc.StatusCode.INVALID_ARGUMENT, f"oversized batch read answered {code}"
+
+    @rule(seed=st.text("0123456789abcdef", min_size=4, max_size=4))
+    def batch_upload_too_big(self, seed: str) -> None:
+        """A batch upload past max_batch_total_size_bytes is refused whole with INVALID_ARGUMENT,
+        as REAPI specifies (BATCH_TOO_LARGE, like a batch read), and stores none of its blobs."""
+        half = MAX_BATCH // 2 + 64 * 1024
+        fresh = [
+            Blob(self.salt + blobs.payload(half, f"{self.salt.decode()}/big/{seed}/{i}"))
+            for i in range(2)
+        ]
+        code, _ = attempt(lambda: self.grpc.batch_update([(self.digest(b), b.data) for b in fresh]))
+        assert code == grpc.StatusCode.INVALID_ARGUMENT, f"oversized batch update answered {code}"
+        missing = self.grpc.find_missing([self.digest(b) for b in fresh])
+        assert missing == {(b.hash, b.size) for b in fresh}, "a refused batch stored a blob"
+
+    @rule(blob=blobs)
+    def query_write_status(self, blob: Blob) -> None:
+        """Uploads are not resumable: a blob is committed whole or not at all."""
+        committed, complete = self.grpc.query_write_status(self.digest(blob))
+        if blob.hash in self.cas:
+            assert (committed, complete) == (blob.size, True), f"{blob}: {committed}, {complete}"
+        else:
+            assert (committed, complete) == (0, False), f"{blob}: {committed}, {complete}"
+
+    @rule(instance=INSTANCES)
+    def switch_instance(self, instance: str) -> None:
+        """Every instance name maps to the same cache (doc 0016)."""
+        self.grpc.instance = instance
+
     # Action results
 
     @rule(target=actions, seed=st.text("0123456789abcdef", max_size=8))
     def new_action(self, seed: str) -> Action:
+        return self.action(seed)
+
+    def action(self, seed: str) -> Action:
         command = self.salt + b"/action/" + seed.encode()
         return Action(sha256(command), len(command))
+
+    @rule(target=blobs, files=st.lists(blobs, max_size=4))
+    def new_tree(self, files: list[Blob]) -> Blob:
+        """A `Tree` of one directory, as a blob. Only files the CAS holds, so that walking the
+        tree or not (doc 0016, open question) gives the same answer: nothing is ever evicted."""
+        re = self.grpc.s.re
+        held = [b for b in {b.hash: b for b in files}.values() if b.hash in self.cas]
+        # An empty file named after the salt (the empty blob is always present) keeps this run's
+        # trees apart from every other run's.
+        nodes = [re.FileNode(name=self.salt.decode(), digest=self.digest(Blob(b"")))]
+        nodes += [re.FileNode(name=f"f{i}", digest=self.digest(b)) for i, b in enumerate(held)]
+        root = re.Directory(files=nodes)
+        return Blob(re.Tree(root=root).SerializeToString(deterministic=True))
 
     @rule(
         action=actions,
         outputs=st.lists(blobs, max_size=3),
+        trees=st.lists(blobs, max_size=2),
         stdout=st.none() | blobs,
         exit_code=st.integers(0, 2),
         way=st.sampled_from(("http", "grpc")),
     )
-    def store_result(
-        self, action: Action, outputs: list[Blob], stdout: Blob | None, exit_code: int, way: str
+    def store_result(  # noqa: PLR0913, PLR0917 - one argument per drawn part of the result
+        self,
+        action: Action,
+        outputs: list[Blob],
+        trees: list[Blob],
+        stdout: Blob | None,
+        exit_code: int,
+        way: str,
     ) -> None:
         re = self.grpc.s.re
         result = re.ActionResult(
             output_files=[
                 re.OutputFile(path=f"out/{i}", digest=self.digest(b)) for i, b in enumerate(outputs)
+            ],
+            output_directories=[
+                re.OutputDirectory(path=f"dir/{i}", tree_digest=self.digest(t))
+                for i, t in enumerate(trees)
             ],
             exit_code=exit_code,
         )
@@ -243,6 +376,7 @@ class ParityModel(RuleBasedStateMachine):
             return
         digest = re.Digest(hash=action.hash, size_bytes=action.size)
         referenced = [f.digest.hash for f in stored.output_files] if stored else []
+        referenced += [d.tree_digest.hash for d in stored.output_directories] if stored else []
         if stored is not None and stored.HasField("stdout_digest"):
             referenced.append(stored.stdout_digest.hash)
         complete = stored is not None and all(h in self.cas for h in referenced)

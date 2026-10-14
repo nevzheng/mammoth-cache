@@ -33,6 +33,8 @@ send_timeout = "60s" # drop a client that stops reading a response this long; pe
 [tls]
 cert = "/etc/mammoth/tls/tls.crt" # PEM chain, server certificate first; re-read every minute
 key = "/etc/mammoth/tls/tls.key" # PEM private key, unencrypted
+generate = false # true: write a self-signed pair to cert and key at startup if neither exists
+hostnames = [] # names for a generated certificate; empty for the hostname, localhost and loopback
 
 # Limits for every tier.
 [limits]
@@ -47,7 +49,7 @@ eviction = "s3-fifo" # or lru, w-tinylfu, sieve, fifo
 # L2: disk. Optional; without it the node keeps entries in memory only.
 [disk]
 path = "/var/lib/mammoth" # required; one directory per node
-size = "10GiB" # bytes of entries kept on disk; at least limits.max_entry_size
+size = "10GiB" # bytes of entries kept on disk, or "max-available" for the volume less the buffer
 free_space_buffer = "1GiB" # free space to keep on the volume
 max_entry_age = "30d" # optional; evict entries older than this
 

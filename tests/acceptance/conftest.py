@@ -37,6 +37,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Bazel version lines (default: 7,8,9)",
     )
     group.addoption(
+        "--buck2",
+        default=os.environ.get("MAMMOTH_E2E_BUCK2", "latest"),
+        help="Buck2 releases: dated tags or latest (default: latest)",
+    )
+    group.addoption(
         "--maven-extension",
         default=os.environ.get("MAMMOTH_E2E_MAVEN_EXTENSION", "1.2,latest"),
         help="Maven Build Cache Extension version lines (default: 1.2,latest)",
@@ -54,6 +59,10 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         lines = _split(str(config.getoption("--bazel")))
         resolved = sorted({versions.bazel(line) for line in lines})
         metafunc.parametrize("bazel_version", resolved, scope="module")
+    if "buck2_version" in metafunc.fixturenames:
+        lines = _split(str(config.getoption("--buck2")))
+        resolved = sorted({versions.buck2(line) for line in lines})
+        metafunc.parametrize("buck2_version", resolved, scope="module")
     if "maven_versions" in metafunc.fixturenames:
         mavens = {versions.maven(line) for line in _split(str(config.getoption("--maven")))}
         extensions = {

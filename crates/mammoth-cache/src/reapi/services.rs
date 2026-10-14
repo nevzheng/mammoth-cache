@@ -46,7 +46,7 @@ use super::{
     status,
 };
 use crate::{
-    cache::{Admission, Cache, CacheError, upload_error},
+    cache::{self, Admission, Cache, CacheError, upload_error},
     store::{self, Tier},
 };
 
@@ -813,11 +813,7 @@ impl std::error::Error for UploadError {}
 /// The status for a failed store, finding an [`UploadError`] inside the storage error.
 fn upload_status(blob: &Blob, error: &CacheError) -> Status {
     let upload = match error {
-        // `cache::upload_error` wraps the `UploadError`; it is the wrapper's source.
-        CacheError::Upload(e) => e
-            .get_ref()
-            .and_then(|e| std::error::Error::source(e))
-            .and_then(|e| e.downcast_ref::<UploadError>()),
+        CacheError::Upload(e) => cache::find::<UploadError>(e),
         CacheError::TooLarge { .. } | CacheError::Unavailable(_) | CacheError::Internal(_) => None,
     };
     match upload {

@@ -130,6 +130,41 @@ key = "/etc/mammoth/tls/tls.key"
   certificates, ACME, or TLS version or cipher settings: TLS 1.2 and 1.3 with rustls's defaults.
   Put a proxy in front for any of those.
 
+### A self-signed certificate
+
+For a trial, a lab or a LAN with no internal CA, let the node make its own certificate:
+
+```toml
+[tls]
+cert = "/var/lib/mammoth/tls/tls.crt"
+key = "/var/lib/mammoth/tls/tls.key"
+generate = true
+hostnames = ["cache.lan", "10.0.0.5"] # optional; defaults to the hostname, localhost and loopback
+```
+
+At startup, if neither file exists, the node writes a self-signed ECDSA P-256 certificate valid for
+397 days, and its key readable by the node only. If both exist it loads them as usual, so the
+certificate stays the same across restarts and clients only need to trust it once; put the paths
+on a persistent volume (the disk tier's volume works). If only one exists, startup fails rather than
+overwrite it. To make a new certificate, for new hostnames or when it nears expiry, delete both
+files and restart. The node logs a warning at startup with the certificate's path and SHA-256
+fingerprint, and `mammoth_tls_certificate_expiry_seconds` shows when it expires.
+
+Clients refuse the certificate until they trust it. Copy the certificate file (never the key) to
+each client, then either:
+
+- **Import it into the JVM trust store** of every Gradle or Maven JVM. This keeps verification on:
+
+  ```sh
+  keytool -importcert -cacerts -storepass changeit -noprompt -alias mammoth-cache -file tls.crt
+  ```
+
+  Check the fingerprint `keytool -printcert -file tls.crt` prints against the node's log. For Bazel,
+  pass `--tls_certificate=tls.crt`; for curl, `--cacert tls.crt`.
+- **Or tell Gradle not to verify it**, with `allowUntrustedServer = true` on the remote cache in
+  `settings.gradle(.kts)` (see [Gradle](gradle.md)). Anyone on the network path can then
+  impersonate the node, so keep this to a trial.
+
 ## Memory and disk sizing
 
 - **Memory.** `memory.size`, plus allocator overhead and bodies in flight, must fit under the
@@ -137,7 +172,8 @@ key = "/etc/mammoth/tls/tls.key"
   limit.
 - **Disk.** Put `disk.path` on a PersistentVolumeClaim (a StatefulSet) to keep the disk tier warm
   across restarts: the node indexes the files already there when it starts. An `emptyDir` works too
-  but starts cold. Set `disk.size` below the volume size, leaving room for `disk.free_space_buffer`.
+  but starts cold. Set `disk.size = "max-available"` to use the volume less
+  `disk.free_space_buffer`, or a size below that if the volume holds anything else.
   Each `disk.path` serves one process, and a second pod on the same volume fails to start. With a
   ReadWriteOnce volume, use a StatefulSet, or a Deployment with the `Recreate` strategy, so a
   rolling update doesn't start the new pod while the old one still holds the directory.

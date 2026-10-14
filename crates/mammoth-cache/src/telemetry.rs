@@ -172,7 +172,8 @@ const HELP: &[(Kind, &str, &str)] = {
         (
             Counter,
             "mammoth_cache_stores_total",
-            "Stores by outcome; too_large entries were accepted and dropped.",
+            "Stores by outcome; too_large entries were accepted and dropped, client_error \
+             uploads failed on the client's side.",
         ),
         (
             Histogram,

@@ -49,6 +49,10 @@ without the bytes) is safe: the node answers an action result as a miss when any
 been evicted, including any file inside an output directory (one whose `Tree` is over 4 MiB, tens of
 thousands of files, is not checked).
 
+Unlike the HTTP cache, Bazel fails the build when it cannot reach a gRPC cache or its token is
+refused ("Failed to query remote execution capabilities"), so keep the node behind a load balancer
+with more than one replica. A token without `cache:write` only warns on each upload.
+
 **Buck2**, in `.buckconfig`, with the execution platform set to run locally and use the remote
 cache:
 

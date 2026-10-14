@@ -103,7 +103,7 @@ const CATALOG: &[Metric] = &[
         kind: Kind::Counter,
         labels: &[Label(
             "result",
-            Some(&["stored", "exists", "too_large", "error"]),
+            Some(&["stored", "exists", "too_large", "client_error", "error"]),
         )],
         live: true,
     },
@@ -1180,5 +1180,125 @@ fn parser_reads_labels_and_histograms() {
     assert_eq!(
         scrape.count("quoted", &[("route", "/cache/{key}"), ("q", "a\"b")]),
         1
+    );
+}
+
+/// An upload that breaks off on the client's side counts as `client_error`, not as a storage
+/// `error`.
+#[tokio::test]
+async fn a_broken_upload_is_a_client_error() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = three_tier_app(dir.path(), authenticator()).await;
+    let before = scrape(&app).await;
+    let chunks: Vec<Result<Vec<u8>, std::io::Error>> = vec![
+        Ok(vec![0xAB; 100]),
+        Err(std::io::Error::other("connection reset")),
+    ];
+    let request = Request::put("/cache/a3f5e1c09b2d4e7f8a1b6c3d5e9f0b01")
+        .header(header::USER_AGENT, GRADLE_AGENT)
+        .header(header::CONTENT_LENGTH, 1000)
+        .body(Body::from_stream(futures_util::stream::iter(chunks)))
+        .unwrap();
+    let response = send(&app, request).await;
+    assert!(response.status().is_client_error(), "{}", response.status());
+    let after = scrape(&app).await;
+    let delta = |result| {
+        after.count("mammoth_cache_stores_total", &[("result", result)])
+            - before.count("mammoth_cache_stores_total", &[("result", result)])
+    };
+    assert_eq!(delta("client_error"), 1);
+    assert_eq!(delta("error"), 0);
+}
+
+/// `gradle_version` comes from a header anyone can send, so it labels only Gradle requests that
+/// got past authentication, and only versions in range: other requests mint no series.
+#[tokio::test]
+async fn gradle_versions_are_bounded() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = three_tier_app(dir.path(), authenticator()).await;
+    let series = |scrape: &Scrape| {
+        scrape
+            .samples_of("mammoth_gradle_requests_total")
+            .map(|(_, labels, _)| labels["gradle_version"].clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let before = scrape(&app).await;
+    let get = |path: String, version: String, auth: Option<&str>| {
+        let mut request = Request::get(path).header("x-gradle-version", version);
+        if let Some(auth) = auth {
+            request = request.header(header::AUTHORIZATION, auth);
+        }
+        send(&app, request.body(Body::empty()).unwrap())
+    };
+    for i in 0..50 {
+        // Off the Gradle route, refused, and out of range.
+        get("/nope".to_owned(), format!("{i}.{i}"), None).await;
+        get(
+            "/cache/a3f5e1c09b2d4e7f8a1b6c3d5e9f0c01".to_owned(),
+            format!("{}.{i}", i % 20 + 1),
+            Some("Bearer wrong"),
+        )
+        .await;
+        get(
+            "/cache/a3f5e1c09b2d4e7f8a1b6c3d5e9f0c01".to_owned(),
+            format!("{}.{}", 1000 + i, i),
+            None,
+        )
+        .await;
+    }
+    let after = scrape(&app).await;
+    let new: BTreeSet<_> = series(&after)
+        .difference(&series(&before))
+        .cloned()
+        .collect();
+    assert!(new.iter().all(|v| v == "other"), "{new:?}");
+}
+
+/// `disk.size = "max-available"` sizes the disk tier from the volume holding `disk.path`, less
+/// the free space buffer, and `/metrics` reports the resolved capacity.
+#[cfg(unix)]
+#[tokio::test]
+async fn max_available_disk_capacity_is_the_volume_less_the_buffer() {
+    let _serial = serial().await;
+    let handle = recorder();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("not-yet-created");
+    let file = dir.path().join("mammoth.toml");
+    std::fs::write(
+        &file,
+        format!(
+            "version = 1\n[disk]\npath = {:?}\nsize = \"max-available\"\n\
+             free_space_buffer = \"1MiB\"\n",
+            path.display().to_string()
+        ),
+    )
+    .unwrap();
+    let config = mammoth_cache::config::Config::load(&file).unwrap();
+    let disk = config.disk.as_ref().unwrap();
+
+    let capacity = config.resolve_disk_size(disk).unwrap().bytes();
+    let stats = rustix::fs::statvfs(dir.path()).unwrap();
+    assert_eq!(capacity, stats.f_blocks * stats.f_frsize - (1 << 20));
+
+    let store = DiskStore::open(DiskConfig {
+        path: disk.path.clone(),
+        capacity_bytes: capacity,
+        max_entry_age: None,
+        free_space_buffer: disk.free_space_buffer.bytes(),
+    })
+    .await
+    .unwrap();
+    let cache = Cache::builder()
+        .bounded_tier(Arc::new(MemoryStore::new(1 << 20)))
+        .bounded_tier(Arc::new(store))
+        .build();
+    let app = router_with_auth(Arc::new(cache), Some(handle), Arc::new(authenticator()));
+    assert_eq!(
+        scrape(&app)
+            .await
+            .count("mammoth_tier_capacity_bytes", &[("tier", "disk")]),
+        i64::try_from(capacity).unwrap()
     );
 }

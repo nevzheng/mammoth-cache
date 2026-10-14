@@ -55,12 +55,12 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 
 #### Cache outcomes
 
-| Metric                                 | Type      | Labels                                              | Meaning                                                                 |
-| -------------------------------------- | --------- | --------------------------------------------------- | ----------------------------------------------------------------------- |
-| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                    | Loads by outcome; `tier` is the tier that served a hit, empty on a miss |
-| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `error`) | Stores by outcome; `too_large` entries were accepted and dropped        |
-| `mammoth_cache_entry_size_bytes`       | histogram |                                                     | Size of each stored entry                                               |
-| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                              | Entries whose checksum did not match; served as misses                  |
+| Metric                                 | Type      | Labels                                                              | Meaning                                                                                                              |
+| -------------------------------------- | --------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                                    | Loads by outcome; `tier` is the tier that served a hit, empty on a miss                                              |
+| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `client_error`, `error`) | Stores by outcome; `too_large` entries were accepted and dropped; `client_error` uploads failed on the client's side |
+| `mammoth_cache_entry_size_bytes`       | histogram |                                                                     | Size of each stored entry                                                                                            |
+| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                                              | Entries whose checksum did not match; served as misses                                                               |
 
 #### Per tier
 
@@ -119,7 +119,9 @@ Only with `[tls]` set; defined in [0014](0014-tls.md).
 
 `route` is the route template (`/cache/{key}`), never the requested path. `client` is `gradle`,
 `maven` or `other`, from the `User-Agent` prefix (`Gradle/`, `Apache-Maven/`). `gradle_version` is
-the major and minor version from `X-Gradle-Version` (`8.10`), or `other` if it does not parse.
+the major and minor version from `X-Gradle-Version` (`8.10`), or `other` if it does not parse or
+is out of range (major 1 to 20, minor below 100). It is recorded only on `/cache/{key}` and only
+for requests that passed authentication, so an anonymous client cannot mint series.
 Neither is trusted: clients choose them, so they label metrics and logs and nothing else, and there
 is no list of supported clients. Standard `process_*`
 metrics (memory, CPU, file descriptors) are exported too.

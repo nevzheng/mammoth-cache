@@ -71,8 +71,8 @@ on gRPC.
 |     | so nothing checks they are documented, unique or stable   |                                       |
 | 5   | axum's own rejections answer in plain text, not AIP-193:  | `Path<String>`, `Query<_>` extractors |
 |     | a `Path<String>` that is not UTF-8 after decoding         |                                       |
-|     | (`/cache/%FF`), a malformed `/readyz` query (inferred     |                                       |
-|     | from axum 0.8's rejection types, not yet reproduced)      |                                       |
+|     | (`/cache/%FF`, also on Maven and Bazel paths) and a       |                                       |
+|     | duplicated `/readyz` query key; reproduced                |                                       |
 | 6   | A panic in a handler drops the connection instead of      | no `CatchPanicLayer`                  |
 |     | answering `500 INTERNAL`                                  |                                       |
 | 7   | Logging lives inside the mappings, twice, with different  | both mappings                         |
@@ -81,6 +81,9 @@ on gRPC.
 |     | status is `501`; not listed in 0001's exception table     |                                       |
 | 9   | `ErrorInfo` reasons are pattern-checked by the OpenAPI    | `api/openapi/common.yaml`             |
 |     | contract test (#38), but the set of reasons is not        |                                       |
+| 10  | `POST` and `PUT` on `/ping`, `/livez`, `/readyz`,         | `http/mod.rs` ops and `/v1` routes    |
+|     | `/metrics` and `/v1/serverStatus` answer `405` with an    |                                       |
+|     | empty body                                                |                                       |
 
 None of these breaks a supported client today: Gradle, Maven and Bazel read status codes only.
 They matter for operators, scripts and the next protocol.
@@ -284,11 +287,14 @@ The status-code overrides for today's HTTP protocols:
 Every HTTP `401` also carries the Basic challenge header; that is a header, not a status override.
 Gradle's accept-and-drop stays a success path in the handler, not an error.
 
-- **Rejections and panics.** Handlers take a thin `Path` wrapper whose rejection is
-  `INVALID_ARGUMENT` with the protocol's key reason, a `Query` wrapper likewise, and the router
-  gets `CatchPanicLayer` rendering `500 INTERNAL`. A last-resort `map_response` layer rewrites any
-  4xx/5xx without a JSON body, so a future gap degrades to a generic AIP-193 body rather than
-  plain text.
+- **Rejections and panics.** Handlers take a per-protocol key extractor whose rejection is
+  `INVALID_ARGUMENT` with the protocol's key reason. `/readyz` reads `verbose` as a flag from the
+  raw query, so it has no query rejection and no `INVALID_QUERY` reason. The ops and `/v1` routes
+  get a `405` fallback with an AIP-193 body (gap 10), and the router gets `CatchPanicLayer`
+  rendering `500 INTERNAL`. A last-resort `map_response` layer rewrites any 4xx/5xx without a JSON
+  body at the same status: `404` as `ROUTE_NOT_FOUND`, `405` as `METHOD_NOT_ALLOWED`, any other
+  4xx as `INVALID_REQUEST`, any 5xx as `INTERNAL`. The router fuzz test should prove that layer
+  never fires; it is there so a future gap degrades to AIP-193 rather than plain text.
 - **Logging** happens once, where the response is rendered, at a level chosen by code: client
   errors at `debug`, `UNAVAILABLE` at `warn`, `INTERNAL` at `error` with the `source` chain.
 
@@ -311,11 +317,19 @@ REAPI layers its own rules on top, and those win where they speak:
 - **Not errors at all.** `FindMissingBlobs` answers with a list, and a `ByteStream.Write` of a blob
   that already exists finishes early with its full `committed_size` (the spec's rule for an
 uncompressed upload; this server refuses compressors) rather than an error.
+- **Streams that have started.** A storage or integrity failure after the first `Read` chunk is
+  `INTERNAL`, which Bazel retries. `DATA_LOSS` never crosses the wire: before the first chunk the
+  read answers as a miss, after it the stream fails as `INTERNAL`.
 - **Where the spec allows a choice, the client's behaviour decides.** An oversized blob is
   `INVALID_ARGUMENT`, not `RESOURCE_EXHAUSTED`, because Bazel retries the latter (0016).
 - **Rendering.** The `ErrorInfo` detail is built with `tonic-types` (`Status::with_error_details`),
   the gRPC richer-error-model helpers, in place of the hand-encoded `google.rpc` protos in
   `reapi/status.rs`.
+
+Known, deliberate deviations: `QueryWriteStatus` on an unknown upload returns `committed_size: 0`
+rather than `NOT_FOUND` (clients restart the upload either way, and none depends on `NOT_FOUND`);
+`BatchUpdateBlobs` has no check on the batch's total size, so a batch a little over the advertised
+limit is accepted. Adding that check changes a code, so it is a separate change.
 
 Clients such as Bazel and Buck2 read the code; `ErrorInfo` is for people and tools reading the
 error. That is why the reasons match the HTTP ones: an operator sees `ENTRY_TOO_LARGE` in both.
@@ -331,6 +345,8 @@ bold.
 | `ENTRY_NOT_FOUND`             | `NOT_FOUND`                    | 404  | **`key`**, the bare name, on   |
 |                               |                                |      | all protocols                  |
 | `ROUTE_NOT_FOUND`             | `NOT_FOUND`                    | 404  |                                |
+| `INVALID_REQUEST`             | `INVALID_ARGUMENT`             | 4xx* | (status kept as sent; fallback |
+|                               |                                |      | rewrite only)                  |
 | `ENTRY_TOO_LARGE`             | **`INVALID_ARGUMENT`**         | 413* | `maxEntryBytes`, `entryBytes`  |
 |                               | (HTTP body was `OUT_OF_RANGE`) |      |                                |
 | `DIGEST_MISMATCH`             | `INVALID_ARGUMENT`             | 400  | **`key`** (HTTP sent `digest`) |
@@ -392,7 +408,8 @@ code stays `413`.
 
 ## Plan
 
-Each step is one PR that keeps CI green.
+Each step is one or more PRs that keep CI green. Before step 2, a status-pin test records the
+HTTP status and gRPC code of every error scenario on main; every later step must pass it unchanged.
 
 1. This doc, Accepted, with the catalogue and the two renames.
 2. Core: `cache::Error` as canonical code, typed detail and `anyhow` context, `thiserror` on the
@@ -401,8 +418,9 @@ Each step is one PR that keeps CI green.
    the full reason list in `api/openapi/common.yaml` (today only a pattern and examples).
    Both adapters render through it, which fixes gaps 1 to 4, 7 and 9. No status code changes; the
    two gRPC reasons are renamed.
-4. Rejections and panics: `Path`/`Query` wrappers, `CatchPanicLayer`, the fallback layer and the
-   router fuzz test (gaps 5 and 6).
+4. Rejections and panics: key extractors, the `/readyz` raw query, `405` fallbacks on the ops and
+   `/v1` routes, `CatchPanicLayer`, the fallback layer and the router fuzz test (gaps 5, 6
+   and 10).
 5. Parity: the proptest and the `ParityModel` reason check.
 6. Add the `405` row to 0001's exception table (gap 8), update 0001's
    error example to `INVALID_ARGUMENT` (gap 2b), and list the reasons in the user docs.

@@ -28,7 +28,7 @@ use std::{
 
 use futures_util::{StreamExt, future, stream};
 use tokio::{
-    sync::{Notify, mpsc},
+    sync::{Notify, mpsc, watch},
     task::JoinHandle,
 };
 
@@ -365,8 +365,28 @@ pub fn upload_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) 
 }
 
 fn is_upload_error(e: &io::Error) -> bool {
-    e.get_ref()
-        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<UploadFailed>)
+    find::<UploadFailed>(e).is_some()
+}
+
+/// Finds an error of type `T` anywhere in `e`'s chain, such as a marker wrapped in context.
+///
+/// `io::Error::source` skips the error an `io::Error` wraps and goes straight to that error's
+/// source, so this steps into every `io::Error` it meets with `get_ref` instead.
+pub fn find<T: std::error::Error + 'static>(e: &io::Error) -> Option<&T> {
+    let mut next: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(current) = next {
+        if let Some(found) = current.downcast_ref::<T>() {
+            return Some(found);
+        }
+        next = match current
+            .downcast_ref::<io::Error>()
+            .and_then(io::Error::get_ref)
+        {
+            Some(inner) => Some(inner),
+            None => current.source(),
+        };
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -669,7 +689,7 @@ impl Cache {
             blob
         } else {
             match self.gate.promotion(key) {
-                Some(guard) => promote(key, tier, blob, above, guard),
+                Some(promotion) => promote(key, tier, blob, above, promotion),
                 // A client is storing the key now; its copy is the one to keep.
                 None => blob,
             }
@@ -763,6 +783,8 @@ impl Cache {
             }
             Ok(StoreOutcome::Exists) => Some("exists"),
             Ok(StoreOutcome::Dropped) | Err(CacheError::TooLarge { .. }) => None,
+            // The client's fault, such as a dropped connection, not the node's.
+            Err(CacheError::Upload(_)) => Some("client_error"),
             Err(_) => Some("error"),
         };
         if let Some(result) = counted {
@@ -785,6 +807,10 @@ impl Cache {
             Admission::Reject(e) => return Err(e),
         }
         let immutable = key.namespace().is_immutable();
+        // A promotion in progress shows the entry exists; an immutable one need not wait for it.
+        if immutable && self.gate.promoting(key) && self.head(key).await?.is_some() {
+            return Ok(StoreOutcome::Exists);
+        }
         // Racing stores of an immutable key may carry different bytes (a task that is not
         // reproducible), so they write one at a time, and the later ones find the first's copy.
         // A later one writes only if the first failed.
@@ -1046,14 +1072,14 @@ async fn bucket_read<'a, T>(
 }
 
 /// Copies a hit from a lower tier into the tiers `above` it while it streams to the client. Each
-/// copy is written in the background and abandoned if it falls behind the client.
-/// `guard` holds off stores of the key until every copy is done.
+/// copy is written in the background and abandoned if it falls behind the client, or when a store
+/// of the key stops the promotion. Its guard holds off stores of the key until every copy is done.
 fn promote(
     key: &CacheKey,
     from: Tier,
     blob: Blob,
     above: &[TierHandle],
-    guard: gate::Guard,
+    promotion: gate::Promotion,
 ) -> Blob {
     if above.is_empty() {
         return blob;
@@ -1068,11 +1094,12 @@ fn promote(
         return blob;
     }
     let (body, copies) = tee(blob.body, above.len(), tee::Mode::Lossy, Some(size));
-    let guard = Arc::new(guard);
+    let guard = Arc::new(promotion.guard);
     for (handle, copy) in above.into_iter().zip(copies) {
         let store = handle.store.clone();
         let key = key.clone();
         let guard = guard.clone();
+        let copy = abortable(copy, promotion.abort.clone());
         tokio::spawn(async move {
             let _guard = guard;
             let to = store.tier();
@@ -1093,6 +1120,25 @@ fn promote(
         });
     }
     Blob { size, body }
+}
+
+/// `body`, failing as abandoned once `abort` turns `true`, so the tier writing it stops and cleans
+/// up as for a copy that fell behind.
+fn abortable(body: ByteStream, abort: watch::Receiver<bool>) -> ByteStream {
+    stream::unfold(Some((body, abort)), |state| async move {
+        let (mut body, mut abort) = state?;
+        let item = tokio::select! {
+            biased;
+            // The sender lives as long as the promotion's guard, which outlives this copy.
+            _ = abort.wait_for(|abort| *abort) => None,
+            item = body.next() => Some(item?),
+        };
+        match item {
+            Some(item) => Some((item, Some((body, abort)))),
+            None => Some((Err(tee::abandoned()), None)),
+        }
+    })
+    .boxed()
 }
 
 /// Uploads stored entries to the bucket, reading each one back from the deepest local tier.
@@ -1227,8 +1273,7 @@ fn limit_stream(body: ByteStream, limit: u64, drain: bool, received: Arc<AtomicU
 }
 
 fn is_too_large(e: &io::Error) -> bool {
-    e.get_ref()
-        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<EntryTooLarge>)
+    find::<EntryTooLarge>(e).is_some()
 }
 
 #[cfg(test)]
@@ -1241,6 +1286,78 @@ mod tests {
 
     fn key(s: &str) -> CacheKey {
         CacheKey::gradle(s).unwrap()
+    }
+
+    /// Context around an error, the way a tier adds it: an `io::Error` whose inner error has the
+    /// wrapped error as its source.
+    #[derive(Debug)]
+    struct Context(io::Error);
+
+    impl fmt::Display for Context {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("while storing")
+        }
+    }
+
+    impl std::error::Error for Context {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    fn wrapped(e: io::Error) -> io::Error {
+        io::Error::new(e.kind(), Context(e))
+    }
+
+    fn classify(e: io::Error) -> &'static str {
+        match CacheError::from(e) {
+            CacheError::TooLarge { .. } => "too large",
+            CacheError::Upload(_) => "upload",
+            CacheError::Unavailable(_) => "unavailable",
+            CacheError::Internal(_) => "internal",
+        }
+    }
+
+    #[test]
+    fn classification_by_kind() {
+        let kinds = [
+            (io::ErrorKind::TimedOut, "unavailable"),
+            (io::ErrorKind::WouldBlock, "unavailable"),
+            (io::ErrorKind::Other, "internal"),
+            (io::ErrorKind::PermissionDenied, "internal"),
+            (io::ErrorKind::StorageFull, "internal"),
+            (io::ErrorKind::UnexpectedEof, "internal"),
+        ];
+        for (kind, want) in kinds {
+            assert_eq!(classify(io::Error::new(kind, "x")), want, "{kind:?}");
+            assert_eq!(
+                classify(wrapped(io::Error::new(kind, "x"))),
+                want,
+                "wrapped {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classification_finds_the_upload_marker() {
+        assert_eq!(classify(upload_error("reset")), "upload");
+        assert_eq!(classify(wrapped(upload_error("reset"))), "upload");
+        assert_eq!(classify(wrapped(wrapped(upload_error("reset")))), "upload");
+    }
+
+    #[test]
+    fn find_reaches_markers_through_context() {
+        let too_large = || io::Error::other(EntryTooLarge);
+        assert!(is_too_large(&too_large()));
+        assert!(is_too_large(&wrapped(too_large())));
+        assert!(is_too_large(&wrapped(wrapped(too_large()))));
+        assert!(!is_too_large(&io::Error::other("plain")));
+        assert!(!is_too_large(&upload_error("reset")));
+
+        // Past the marker to its own source, the way adapters downcast their upload errors.
+        let deep = wrapped(upload_error(Context(io::Error::other("deep"))));
+        assert!(find::<UploadFailed>(&deep).is_some());
+        assert!(find::<Context>(&deep).is_some());
     }
 
     fn body(chunks: &[&'static [u8]]) -> ByteStream {
@@ -1843,6 +1960,63 @@ mod tests {
             assert_eq!(read_all(hit.blob).await, b"from elsewhere");
             eventually_has(t.disk.as_ref(), &k).await;
             eventually_has(t.memory.as_ref(), &k).await;
+        }
+
+        /// A read that stalls part way holds a promotion open. A store of the key must not wait
+        /// for the client: a mutable store stops the promotion, and an immutable one, which the
+        /// promotion shows exists, answers at once.
+        #[tokio::test]
+        async fn a_stalled_download_does_not_hold_up_stores() {
+            let t = tiers().await;
+            // A memory tier that takes the entry, so its hit is promoted.
+            let memory: MemoryStore =
+                MemoryStore::with_config(crate::store::memory::MemoryConfig {
+                    max_entry_bytes: 1 << 20,
+                    ..crate::store::memory::MemoryConfig::new(4 << 20)
+                })
+                .unwrap();
+            let cache = Arc::new(
+                Cache::builder()
+                    .bounded_tier(Arc::new(memory))
+                    .bounded_tier(t.disk.clone())
+                    .build(),
+            );
+            let big = vec![9_u8; 512 * 1024];
+            for k in [
+                CacheKey::maven("v1/g/a/buildinfo.xml").unwrap(),
+                key("5a11ed"),
+            ] {
+                t.disk
+                    .put(
+                        &k,
+                        None,
+                        stream::iter([Ok(Bytes::from(big.clone()))]).boxed(),
+                    )
+                    .await
+                    .unwrap();
+                // The client takes the first chunk, then stops reading.
+                let hit = cache.get(&k).await.unwrap().unwrap();
+                assert_eq!(hit.tier, Tier::Disk);
+                let mut stalled = hit.blob.body;
+                stalled.next().await.unwrap().unwrap();
+                assert!(cache.gate.promoting(&k));
+
+                let stored = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cache.put(&k, Some(3), body(&[b"new"])),
+                )
+                .await
+                .expect("the store waited for the stalled download")
+                .unwrap();
+                if k.namespace().is_immutable() {
+                    assert_eq!(stored, StoreOutcome::Exists);
+                } else {
+                    assert_eq!(stored, StoreOutcome::Stored);
+                    let hit = cache.get(&k).await.unwrap().unwrap();
+                    assert_eq!(read_all(hit.blob).await, b"new");
+                }
+                drop(stalled);
+            }
         }
 
         #[tokio::test]

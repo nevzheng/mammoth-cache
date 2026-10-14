@@ -46,8 +46,8 @@ use tokio::{
 };
 
 use super::{
-    Blob, BlobStore, BoundedStore, BoxFuture, ByteStream, HealthCheck, HealthProblem, PutOutcome,
-    Tier, TierUsage,
+    Blob, BlobStore, BoundedStore, BoxFuture, ByteStream, HealthCheck, HealthProblem, IoContext,
+    PutOutcome, Tier, TierUsage,
     meta::{Checksum, EntryMeta, unix_now},
 };
 use crate::key::CacheKey;
@@ -408,6 +408,40 @@ fn available_bytes(path: &Path) -> io::Result<u64> {
     Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
 }
 
+/// The total size of the filesystem holding `path`, or its nearest existing parent when `path`
+/// doesn't exist yet. `disk.size = "max-available"` sizes the tier from it.
+///
+/// # Errors
+///
+/// If the filesystem can't be read.
+pub fn volume_bytes(path: &Path) -> io::Result<u64> {
+    let mut existing = path;
+    while !existing.exists() {
+        match existing.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => existing = parent,
+            _ => {
+                existing = Path::new(".");
+                break;
+            }
+        }
+    }
+    total_bytes(existing)
+}
+
+#[cfg(unix)]
+fn total_bytes(path: &Path) -> io::Result<u64> {
+    let stats = rustix::fs::statvfs(path)?;
+    Ok(stats.f_blocks.saturating_mul(stats.f_frsize))
+}
+
+#[cfg(not(unix))]
+fn total_bytes(_path: &Path) -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "disk.size = \"max-available\" is supported on Unix only",
+    ))
+}
+
 #[cfg(not(unix))]
 fn available_bytes(_path: &Path) -> io::Result<u64> {
     Err(io::ErrorKind::Unsupported.into())
@@ -570,7 +604,7 @@ impl Inner {
                 self.lock().remove_generation(key, generation);
                 return Ok(None);
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e).context("opening the entry file"),
         };
         // The file is checked against its own header and trailer, not the index: a PUT may have
         // replaced it since the lookup, and the new entry is as good an answer as the old one.
@@ -589,7 +623,7 @@ impl Inner {
             let mut buf = BytesMut::zeroed(usize::try_from(size).map_err(io::Error::other)? + 4);
             if let Err(e) = file.read_exact(&mut buf).await {
                 if e.kind() != io::ErrorKind::UnexpectedEof {
-                    return Err(e);
+                    return Err(e).context("reading the entry file");
                 }
                 self.damaged(key, generation, "length").await;
                 return Ok(None);
@@ -619,7 +653,7 @@ impl Inner {
                 self.damaged(key, generation, "length").await;
                 return Ok(None);
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e).context("reading the entry file"),
         };
         file.seek(io::SeekFrom::Start(body_start)).await?;
 
@@ -674,7 +708,10 @@ impl Inner {
             }
         };
         let path = self.entry_path(key);
-        if let Err(e) = rename_into_place(&tmp, &path).await {
+        if let Err(e) = rename_into_place(&tmp, &path)
+            .await
+            .context("moving the entry file into place")
+        {
             let _ = fs::remove_file(&tmp).await;
             return Err(e);
         }
@@ -724,12 +761,16 @@ impl Inner {
         header.extend_from_slice(key_bytes);
 
         let mut out = EntryFile {
-            file: fs::File::create(path).await?,
+            file: fs::File::create(path)
+                .await
+                .context("creating the temp file")?,
             offset: 0,
             last: Bytes::new(),
             room_made: false,
         };
-        self.append(&mut out, Bytes::from(header)).await?;
+        self.append(&mut out, Bytes::from(header))
+            .await
+            .context("writing the entry file")?;
 
         let mut size = 0_u64;
         let mut checksum = Checksum::EMPTY;
@@ -737,15 +778,23 @@ impl Inner {
             let chunk = chunk?;
             checksum = checksum.update(&chunk);
             size += chunk.len() as u64;
-            self.append(&mut out, chunk).await?;
+            self.append(&mut out, chunk)
+                .await
+                .context("writing the entry file")?;
         }
         let file_len = entry_len(key, size);
         let trailer = Bytes::copy_from_slice(&checksum.0.to_le_bytes());
-        self.append(&mut out, trailer).await?;
+        self.append(&mut out, trailer)
+            .await
+            .context("writing the entry file")?;
         let unhinted = (size_hint != Some(size)).then_some(size);
         if let Err(e) = finish(&mut out.file, unhinted).await {
-            self.recover(&mut out, e).await?;
-            finish(&mut out.file, unhinted).await?;
+            self.recover(&mut out, e)
+                .await
+                .context("writing the entry file")?;
+            finish(&mut out.file, unhinted)
+                .await
+                .context("writing the entry file")?;
         }
 
         let meta = EntryMeta {
@@ -1497,7 +1546,14 @@ mod tests {
         std_fs::create_dir_all(shard.parent().unwrap()).unwrap();
         std_fs::write(&shard, b"in the way").unwrap();
 
-        assert!(store.put(&key, None, body(&[b"bytes"])).await.is_err());
+        let err = store.put(&key, None, body(&[b"bytes"])).await.unwrap_err();
+        // The error says what failed and keeps the file system's kind, which the cache maps.
+        assert!(
+            err.to_string()
+                .starts_with("moving the entry file into place: "),
+            "{err}"
+        );
+        assert_ne!(err.kind(), io::ErrorKind::Other, "{err}");
         assert_eq!(store.head(&key).await.unwrap(), None);
         assert_eq!(std_fs::read_dir(dir.path().join("tmp")).unwrap().count(), 0);
     }

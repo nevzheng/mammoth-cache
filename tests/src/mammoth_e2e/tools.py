@@ -1,4 +1,4 @@
-"""Downloads and caches client distributions (Gradle, Maven) for the acceptance suite."""
+"""Downloads and caches the client distributions the acceptance suite builds with."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import platform
 import shutil
 import tempfile
 import zipfile
+from compression import zstd
 from pathlib import Path
 
 from mammoth_e2e import net
@@ -78,6 +79,29 @@ def bazel_binary(version: str) -> Path:
     with net.stream(url) as response, tmp.open("wb") as f:
         for chunk in response.iter_bytes():
             f.write(chunk)
+    tmp.chmod(0o755)
+    tmp.rename(dest)
+    return dest
+
+
+def buck2_binary(version: str) -> Path:
+    """The Buck2 release binary for this platform, downloaded once from GitHub releases."""
+    triple = {
+        ("linux", "x86_64"): "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64"): "aarch64-unknown-linux-gnu",
+        ("darwin", "x86_64"): "x86_64-apple-darwin",
+        ("darwin", "arm64"): "aarch64-apple-darwin",
+    }[platform.system().lower(), platform.machine().lower()]
+    dest = cache_dir() / "dists" / f"buck2-{version}-{triple}"
+    if dest.is_file():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    url = f"https://github.com/facebook/buck2/releases/download/{version}/buck2-{triple}.zst"
+    tmp = dest.with_suffix(f".{os.getpid()}.part")
+    with net.stream(url) as response, tmp.open("wb") as f:
+        decompressor = zstd.ZstdDecompressor()
+        for chunk in response.iter_bytes():
+            f.write(decompressor.decompress(chunk))
     tmp.chmod(0o755)
     tmp.rename(dest)
     return dest

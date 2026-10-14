@@ -4,10 +4,11 @@
 #
 #   docker compose -f deploy/compose/compose.yaml up --build
 #
-# Nodes: `mammoth` (port 5071, REAPI gRPC on 6011) needs credentials for everything; `mammoth-open` (5073) lets
+# Nodes: `mammoth` (port 5071, REAPI gRPC on 6011) needs credentials for everything; `mammoth-open` (5073, gRPC on 6013) lets
 # anonymous requests read; `mammoth-proxied` sits behind nginx, on 8080 with the documented proxy
 # settings and on 8081 with nginx's defaults. `mammoth-memory` (5074), `mammoth-memory-disk` (5075)
-# and `mammoth-memory-bucket` (5076) run the other tier topologies. Profiles: `multi` adds
+# and `mammoth-memory-bucket` (5076) run the other tier topologies; `mammoth-max-available` (5077)
+# sizes its disk tier from a 64 MiB tmpfs. Profiles: `multi` adds
 # `mammoth-2` (5072) on the same bucket; `observe` adds Grafana (3000). MAMMOTH_IMAGE picks the image under test, for example
 # ghcr.io/nevzheng/mammoth-cache:edge. MAMMOTH_CONFIG_DIR swaps in other config files.
 
@@ -44,6 +45,7 @@ services:
     <<: *mammoth
     ports:
       - "${MAMMOTH_OPEN_PORT:-5073}:5071"
+      - "${MAMMOTH_OPEN_REAPI_PORT:-6013}:6011"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-open.toml:/etc/mammoth/mammoth.toml:ro
       - mammoth-open-disk:/var/lib/mammoth
@@ -70,6 +72,19 @@ services:
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory-disk.toml:/etc/mammoth/mammoth.toml:ro
       - mammoth-memory-disk-disk:/var/lib/mammoth
+
+  # disk.size = "max-available" on a tmpfs of a known size. tests/e2e/test_disk_sizing.py.
+  mammoth-max-available:
+    <<: *mammoth
+    ports:
+      - "${MAMMOTH_MAX_AVAILABLE_PORT:-5077}:5071"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/max-available.toml:/etc/mammoth/mammoth.toml:ro
+      - type: tmpfs
+        target: /var/lib/mammoth
+        tmpfs:
+          size: 67108864 # 64 MiB
+          mode: 01777
 
   mammoth-memory-bucket:
     <<: *mammoth

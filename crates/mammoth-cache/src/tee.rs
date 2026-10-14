@@ -183,14 +183,13 @@ impl std::fmt::Display for Abandoned {
 
 impl std::error::Error for Abandoned {}
 
-fn abandoned() -> io::Error {
+pub(crate) fn abandoned() -> io::Error {
     io::Error::other(Abandoned)
 }
 
 /// Whether a store failed because its copy was cut short, which says nothing about the store.
 pub(crate) fn is_abandoned(e: &io::Error) -> bool {
-    e.get_ref()
-        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<Abandoned>)
+    crate::cache::find::<Abandoned>(e).is_some()
 }
 
 fn receiver_stream(rx: mpsc::Receiver<Bytes>, aborted: Arc<AtomicBool>) -> ByteStream {

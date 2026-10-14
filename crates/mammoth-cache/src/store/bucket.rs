@@ -36,7 +36,7 @@ use object_store::{
 };
 use url::Url;
 
-use super::{Blob, BlobStore, BoxFuture, ByteStream, PutOutcome, Tier};
+use super::{Blob, BlobStore, BoxFuture, ByteStream, IoContext, PutOutcome, Tier};
 use crate::key::CacheKey;
 
 /// The smallest multipart part S3 accepts, and the default threshold for switching to multipart.
@@ -191,7 +191,7 @@ impl BucketStore {
                 }))
             }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(io::Error::other(e)),
+            Err(e) => Err(io::Error::other(e)).context("reading the object"),
         }
     }
 
@@ -199,7 +199,7 @@ impl BucketStore {
         match self.store.head(&self.location(key)).await {
             Ok(meta) => Ok(Some(meta.size)),
             Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(io::Error::other(e)),
+            Err(e) => Err(io::Error::other(e)).context("checking for the object"),
         }
     }
 
@@ -219,7 +219,8 @@ impl BucketStore {
                 self.store
                     .put(&location, payload)
                     .await
-                    .map_err(io::Error::other)?;
+                    .map_err(io::Error::other)
+                    .context("uploading the object")?;
                 return Ok(PutOutcome::Stored);
             };
             let chunk = chunk?;
@@ -231,11 +232,16 @@ impl BucketStore {
             .store
             .put_multipart(&location)
             .await
-            .map_err(io::Error::other)?;
+            .map_err(io::Error::other)
+            .context("starting a multipart upload")?;
         let mut writer = WriteMultipart::new_with_chunk_size(upload, self.multipart_threshold);
         match upload_rest(&mut writer, buffered, body).await {
             Ok(()) => {
-                writer.finish().await.map_err(io::Error::other)?;
+                writer
+                    .finish()
+                    .await
+                    .map_err(io::Error::other)
+                    .context("finishing a multipart upload")?;
                 Ok(PutOutcome::Stored)
             }
             Err(e) => {
@@ -322,7 +328,8 @@ async fn upload_rest(
         writer
             .wait_for_capacity(UPLOAD_CONCURRENCY)
             .await
-            .map_err(io::Error::other)?;
+            .map_err(io::Error::other)
+            .context("uploading a part")?;
         writer.put(chunk?);
     }
     Ok(())

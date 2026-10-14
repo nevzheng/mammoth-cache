@@ -13,7 +13,7 @@ use std::{
 use axum::{
     body::{Body, Bytes, HttpBody},
     extract::{MatchedPath, Request},
-    http::{HeaderMap, Method},
+    http::{HeaderMap, Method, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -58,7 +58,8 @@ impl Client {
 }
 
 /// The `gradle_version` label: major and minor from `X-Gradle-Version` (`8.10.2` becomes `8.10`),
-/// `other` if it does not parse, or `None` without the header.
+/// `other` if it does not parse or is out of range, or `None` without the header. The range (major
+/// 1 to 20, minor below 100) bounds the series a client can create to about 2,000.
 #[must_use]
 pub fn gradle_version(headers: &HeaderMap) -> Option<String> {
     let value = headers
@@ -66,16 +67,28 @@ pub fn gradle_version(headers: &HeaderMap) -> Option<String> {
         .to_str()
         .unwrap_or_default();
     let mut parts = value.split(['.', '-', '+']);
-    let numeric = |s: &&str| !s.is_empty() && s.len() <= 4 && s.bytes().all(|b| b.is_ascii_digit());
-    let label = match (parts.next(), parts.next()) {
-        (Some(major), Some(minor)) if numeric(&major) && numeric(&minor) => {
-            format!("{major}.{minor}")
-        }
-        (Some(major), None) if numeric(&major) => format!("{major}.0"),
+    let number = |s: &str, range: std::ops::RangeInclusive<u32>| {
+        let digits = !s.is_empty() && s.len() <= 4 && s.bytes().all(|b| b.is_ascii_digit());
+        // Parsed, so `08` and `8` are one series.
+        digits
+            .then(|| s.parse::<u32>().ok())
+            .flatten()
+            .filter(|n| range.contains(n))
+    };
+    let major = parts.next().and_then(|m| number(m, 1..=20));
+    let minor = match parts.next() {
+        None => Some(0),
+        Some(minor) => number(minor, 0..=99),
+    };
+    let label = match (major, minor) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}"),
         _ => "other".to_owned(),
     };
     Some(label)
 }
+
+/// The route Gradle stores and loads entries on: the only one labelled by Gradle version.
+const GRADLE_ROUTE: &str = "/cache/{key}";
 
 fn method_label(method: &Method) -> &'static str {
     match *method {
@@ -99,7 +112,9 @@ pub(super) async fn record(request: Request, next: Next) -> Response {
         .map_or_else(|| "unmatched".to_owned(), |p| p.as_str().to_owned());
     let method = method_label(request.method());
     let client = Client::from_headers(request.headers());
-    let gradle_version = gradle_version(request.headers());
+    let gradle_version = (route == GRADLE_ROUTE)
+        .then(|| gradle_version(request.headers()))
+        .flatten();
     let serving = Serving::start(route.clone(), method);
 
     let response = next.run(request).await;
@@ -112,7 +127,12 @@ pub(super) async fn record(request: Request, next: Next) -> Response {
         "client" => client.as_str(),
     )
     .increment(1);
-    if let Some(version) = gradle_version {
+    // Only for clients that got past authentication: the header is anyone's to choose.
+    let refused = matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    );
+    if let Some(version) = gradle_version.filter(|_| !refused) {
         metrics::counter!("mammoth_gradle_requests_total", "gradle_version" => version)
             .increment(1);
     }
@@ -221,6 +241,12 @@ mod tests {
         assert_eq!(version("9.0-rc-1").as_deref(), Some("9.0"));
         assert_eq!(version("9").as_deref(), Some("9.0"));
         assert_eq!(version("lol; DROP").as_deref(), Some("other"));
+        // Leading zeros fold into one series, and versions out of range into `other`.
+        assert_eq!(version("08.010").as_deref(), Some("8.10"));
+        assert_eq!(version("0.1").as_deref(), Some("other"));
+        assert_eq!(version("21.0").as_deref(), Some("other"));
+        assert_eq!(version("8.100").as_deref(), Some("other"));
+        assert_eq!(version("9999.9999").as_deref(), Some("other"));
         assert_eq!(gradle_version(&HeaderMap::new()), None);
     }
 }

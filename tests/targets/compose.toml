@@ -10,6 +10,7 @@ proxy_defaults_url = "http://localhost:8081" # the same nginx on its defaults
 # switched on here in the PR that builds it. Known: config, auth, disk, bucket, bazel, reapi.
 features = ["config", "auth", "disk", "bucket", "bazel", "reapi"]
 reapi_address = "localhost:6011" # [reapi] listen on the mammoth service
+open_reapi_address = "localhost:6013" # and on mammoth-open
 
 # Must match deploy/compose/config/*.toml.
 max_entry_size = 16_777_216 # [limits] max_entry_size = "16MiB"
@@ -52,8 +53,10 @@ username = "admin"
 token = "mmc_e2eAdminTokenNotSecretUsedOnlyInTests04"
 scopes = ["admin:read"]
 
-# Tier topologies besides the full one (deploy/compose/config/topology-*.toml).
+# Tier topologies besides the full one (deploy/compose/config/topology-*.toml), and the
+# max-available node (deploy/compose/config/max-available.toml).
 [topologies]
 memory = "http://localhost:5074"
 memory-disk = "http://localhost:5075"
 memory-bucket = "http://localhost:5076"
+max-available = "http://localhost:5077" # disk.size = "max-available" on a 64 MiB tmpfs

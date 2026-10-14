@@ -45,12 +45,12 @@ cache key, a token or a user name.
 
 ### Cache outcomes
 
-| Metric                                 | Type      | Labels                                              | Meaning                                                    |
-| -------------------------------------- | --------- | --------------------------------------------------- | ---------------------------------------------------------- |
-| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                    | Loads by outcome; `tier` served the hit, empty on a miss   |
-| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `error`) | Stores by outcome; `too_large` were accepted and dropped   |
-| `mammoth_cache_entry_size_bytes`       | histogram |                                                     | Size of each stored entry                                  |
-| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                              | Entries whose checksum didn't match; served as misses      |
+| Metric                                 | Type      | Labels                                                              | Meaning                                                                                                                        |
+| -------------------------------------- | --------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                                    | Loads by outcome; `tier` served the hit, empty on a miss                                                                       |
+| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `client_error`, `error`) | Stores by outcome; `too_large` were accepted and dropped; `client_error` failed on the client's side, such as a dropped upload |
+| `mammoth_cache_entry_size_bytes`       | histogram |                                                                     | Size of each stored entry                                                                                                      |
+| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                                              | Entries whose checksum didn't match; served as misses                                                                          |
 
 ### Per tier
 
@@ -106,10 +106,12 @@ because counting it means listing the bucket. Use the cloud provider's metrics.
 method, such as `FindMissingBlobs`, or `other` for one the node does not serve, and `code` the gRPC
 status, such as `NOT_FOUND`. Every call is counted, including those refused for their credentials
 (`UNAUTHENTICATED`, `PERMISSION_DENIED`, also counted in `mammoth_auth_failures_total`), and those
-the client cancelled before the status (`CANCELLED`). `client` is
-`gradle`, `maven` or `other`, from the `User-Agent`. `revision` is the commit an official build came
-from, and `unknown` for a build from source. The standard `process_*` metrics (memory, CPU, file
-descriptors) are exported too.
+the client cancelled before the status (`CANCELLED`). `client` is `gradle`, `maven` or `other`, from
+the `User-Agent`. `gradle_version` is the major and minor version from `X-Gradle-Version`, on
+`/cache/{key}` requests that passed authentication, or `other` if it does not parse or is out of
+range (major 1 to 20, minor below 100). `revision` is the commit an official build came from, and
+`unknown` for a build from source. The standard `process_*` metrics (memory, CPU, file descriptors)
+are exported too.
 
 ### TLS
 
