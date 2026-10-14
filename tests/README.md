@@ -86,11 +86,16 @@ CAS, compare every answer with a dictionary of what was stored, and check every 
 `api/openapi/`. With `auth`, a second machine sends requests as anonymous, each user over Basic and
 Bearer, and a wrong token, and checks each gets exactly what its scopes allow and that a refused
 store changes nothing; give users their `scopes` and set `anonymous_scopes` in the profile.
-`test_model.py` also checks that counters never go down and that `mammoth_http_requests_total` moved
-by exactly the requests each sequence sent, so nothing else may send cache requests to the node
-during the run. On a stack the harness controls, a third machine restarts the node and stops the
-bucket at random; with a disk, nothing the model holds may be lost and nothing may answer 5xx.
-`test_edges.py` pins contract edge cases; known bugs there are strict xfails.
+`test_model.py` also checks that counters never go down, that `mammoth_http_requests_total` moved by
+exactly the requests each sequence sent, and that every hit, miss, store and refusal moved
+`mammoth_cache_lookups_total`, `mammoth_cache_stores_total` or `mammoth_auth_failures_total` once,
+with the right label. Nothing else may send cache requests to the node during the run. On a stack
+the harness controls, a third machine restarts the node and stops the bucket at random; with a disk,
+nothing the model holds may be lost and nothing may answer 5xx. `test_races.py` races concurrent
+stores of one key (an immutable key keeps the body whose store answered `201`, a mutable one ends
+with one whole body) and breaks uploads part way (never served, and the next store of the key still
+succeeds); `MAMMOTH_E2E_RACE_EXAMPLES` sets its examples (default 12). `test_edges.py` pins contract
+edge cases; known bugs there are strict xfails.
 
 `MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40), and
 `MAMMOTH_E2E_CHAOS_EXAMPLES` the restart and outage machine (default 6).
