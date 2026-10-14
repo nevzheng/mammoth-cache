@@ -30,10 +30,12 @@ for users.
 ### Non-goals
 
 - Choosing the Rust HTTP framework. That is a separate decision.
-- Bazel REAPI (remote execution and the gRPC cache). Out of scope; bazel-remote already serves
-  it well. Bazel's plain HTTP cache is served, off by default; see
-  [0012](0012-bazel-http-cache-and-protocol-switches.md).
-- A gRPC server. The admin API is shaped so one can be added later without changes.
+- Remote execution (REAPI's `Execution` service). Out of scope: mammoth-cache is a cache, not a
+  remote build system. Bazel's plain HTTP cache is served, off by default; see
+  [0012](0012-bazel-http-cache-and-protocol-switches.md). The REAPI gRPC cache, without
+  execution, is designed in [0016](0016-reapi-cache.md).
+- A gRPC admin API. The admin API is shaped so one can be added later without changes. The only
+  gRPC server is the REAPI cache adapter ([0016](0016-reapi-cache.md)).
 
 ## Design
 
@@ -147,7 +149,8 @@ The docs site publishes all OpenAPI documents, including the one generated from 
   checks and the option of gRPC later.
 - **Code-first specs (generated from handlers).** Ties the contract to the framework and lets it
   drift; the Gradle contract must never drift.
-- **gRPC plus HTTP from the start.** Only worth it alongside Bazel REAPI, which is out of scope.
+- **gRPC plus HTTP from the start.** Only worth it alongside the REAPI cache, which came later
+  ([0016](0016-reapi-cache.md)) on its own listener.
 
 ## Open questions
 

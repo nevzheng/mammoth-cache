@@ -37,5 +37,5 @@
   - [0013: Running behind load balancers and on Kubernetes](design/0013-deployment.md)
   - [0014: Optional built-in TLS](design/0014-tls.md)
   - [0015: Metrics rollout and testing](design/0015-metrics-rollout-and-testing.md)
-  - [0016: Cache-only REAPI over gRPC (draft)](design/0016-reapi-cache.md)
+  - [0016: Cache-only REAPI over gRPC](design/0016-reapi-cache.md)
   - [Investigations](design/investigations.md)

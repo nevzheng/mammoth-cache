@@ -2,20 +2,17 @@
 
 ## Status
 
-Draft (proposed, post-1.0, not scheduled). Nothing here is planned work yet.
-
-The scope statements elsewhere still say REAPI is out of scope:
-[0001](0001-api-contracts.md), [0008](0008-supported-clients.md),
-[0012](0012-bazel-http-cache-and-protocol-switches.md), and the user guide
-([overview](../user/README.md), [Bazel](../user/bazel.md), [migrating](../user/migrating.md)).
-They stay that way unless this doc is accepted; accepting it means updating them in the same
-change.
+Accepted (2026-10-14). Nevin widened the scope from a post-1.0 proposal to building it now. The
+cache services are in scope; remote execution stays out permanently (see "Why this is still a
+cache"). Docs [0001](0001-api-contracts.md), [0008](0008-supported-clients.md) and
+[0012](0012-bazel-http-cache-and-protocol-switches.md) point here. The user guide says REAPI is
+unsupported until the adapter ships.
 
 ## Summary
 
-mammoth-cache would serve the cache half of Bazel's
+mammoth-cache serves the cache half of Bazel's
 [Remote Execution API](https://github.com/bazelbuild/remote-apis) (REAPI v2) over gRPC:
-`Capabilities`, `ActionCache`, `ContentAddressableStorage` and `ByteStream`. It would not serve
+`Capabilities`, `ActionCache`, `ContentAddressableStorage` and `ByteStream`. It does not serve
 `Execution`, so it never runs a build action. The adapter reuses the `bazel-ac` and `bazel-cas`
 namespaces of the Bazel HTTP cache ([0012](0012-bazel-http-cache-and-protocol-switches.md)), so an
 entry written over HTTP is a hit over gRPC and the reverse. It is built on tonic, listens on its own
@@ -26,7 +23,7 @@ the HTTP routes, and is off by default behind `[protocols] reapi`.
 
 [0012](0012-bazel-http-cache-and-protocol-switches.md) added Bazel's plain HTTP cache and ruled
 out REAPI, both remote execution and the gRPC cache, mainly on cost: a second server stack,
-streaming, batch calls and the hardening bazel-remote already has. That still holds for 1.0.
+streaming, batch calls and the hardening bazel-remote already has.
 
 What it leaves out is every build tool that only speaks REAPI. Buck2, Pants, sbt 2 and Please have
 no HTTP cache client; for them a cache server means a REAPI server (per the project's protocol
@@ -46,7 +43,8 @@ and their CI, and why this stays a cache. It does not change the HTTP adapter.
 - Serve the REAPI v2 cache services well enough for Bazel, Buck2, Pants, sbt 2 and Please to use
   mammoth-cache as a remote cache with local execution.
 - Share entries with the Bazel HTTP cache: same namespaces, same keys, same bytes.
-- Keep the core and the tiers unchanged apart from one existence check (see Design).
+- Keep the core and the tiers unchanged: the adapter uses the core's existing `get`, `head`,
+  `admit` and `put`.
 - Keep it opt-in: off by default, and when off, no gRPC listener exists.
 - Prove each target client with a real-client test in CI before calling it supported.
 
@@ -165,17 +163,17 @@ With only one on, the other's entries simply stay unused until they are evicted.
 bazel-remote does by default. Separate caches per instance would mean a new key dimension in every
 tier for a feature nobody has asked for; it can be added later by prefixing the key.
 
-### Core change: existence checks
+### Existence checks
 
 `FindMissingBlobs` and the `ActionResult` output check need "is this key present?" for many keys at
-once, without reading the bytes. The core today has `get` and `put`. This adds `contains(keys)`,
-answered tier by tier: L1 and L2 from their in-memory indexes, then L3 (the bucket) with a `HEAD`
-for the keys still missing, bounded in parallel. A bucket that is down or in its cooldown
-([0003](0003-architecture.md) and the bucket outage behaviour) counts as "not present" for its
-keys, never as an error, matching the rule that a bucket outage never fails a request. A blob
-reported present that then turns out to be gone is the normal cache race; the client re-uploads.
+once, without reading the bytes. The core's `head` already answers that for one key, tier by tier:
+L1 and L2 from their indexes, then the bucket. The adapter runs it for each distinct digest, a
+bounded number at a time, and counts a stored size that differs from the digest's as missing. A
+bucket that is down or cooling down answers "not present" at once, never an error, matching the
+rule that a bucket outage never fails a request. A blob reported present that is then evicted is
+the normal cache race; the client uploads it again.
 
-The Bazel HTTP adapter doesn't need `contains`, but its `HEAD` handler can use it.
+A batched `head` in the core, one bucket listing for many keys, is a possible later optimization.
 
 ### Action result validation
 
@@ -186,9 +184,10 @@ cached, and the client runs the action. This is what bazel-remote does by defaul
 makes build without the bytes safe. It is only the direct references: walking every `Tree` to every
 file would read and decode whole directory trees on every hit (see Open questions).
 
-`UpdateActionResult` stores the bytes it was given without checking the CAS, because clients
-upload outputs before the result and a check there costs a round trip on every write for little
-gain. An `ActionResult` that doesn't decode is rejected with `INVALID_ARGUMENT` on both paths.
+`UpdateActionResult` stores the result without checking the CAS, because clients upload outputs
+before the result and a check there costs a round trip on every write for little gain. A stored
+entry that doesn't decode as an `ActionResult` (written over HTTP by something other than Bazel) is
+logged and answered as a miss.
 
 The HTTP adapter keeps 0012's choice of not validating, because Bazel's HTTP client downloads
 outputs on every hit anyway.
@@ -372,9 +371,8 @@ deployment guide gains the load balancer section above; the configuration refere
 
 ## Alternatives considered
 
-- **Keep REAPI out (status quo).** Cheapest, and right for 1.0. It leaves Buck2, Pants, sbt 2 and
-  Please users without an option and keeps Bazel on the slower HTTP path. This doc proposes doing
-  it after 1.0 rather than never.
+- **Keep REAPI out.** Cheapest. It leaves Buck2, Pants, sbt 2 and Please users without an option
+  and keeps Bazel on the slower HTTP path.
 - **Full REAPI including `Execution`.** Makes mammoth-cache a remote build system: workers,
   scheduling, sandboxing. Out of scope permanently; BuildBuddy, Buildbarn, NativeLink and others
   do this.
@@ -404,4 +402,3 @@ deployment guide gains the load balancer section above; the configuration refere
 - **Conformance.** Whether
   [remote-apis-testing](https://github.com/bazelbuild/remote-apis-testing) or bazel-remote's test
   suite can run against mammoth-cache in addition to the real-client jobs.
-- **When.** Not scheduled. Revisit after 1.0, once Gradle and Maven support is settled.

@@ -33,8 +33,9 @@ clients is the only way to keep a support claim honest.
 - Develocity clients: the Develocity Gradle plugin's build cache connector, the Develocity Maven
   extension and sbt-develocity. Their protocol is undocumented, and the Maven extension needs a
   Develocity licence and server anyway.
-- Bazel REAPI (remote execution and the gRPC cache), which is out of scope for the project.
-  Bazel's HTTP cache is covered in [0012](0012-bazel-http-cache-and-protocol-switches.md).
+- Remote execution (REAPI's `Execution` service), which is out of scope for the project. Bazel's
+  HTTP cache is covered in [0012](0012-bazel-http-cache-and-protocol-switches.md); the REAPI gRPC
+  cache and its clients (Bazel, Buck2, Pants, sbt 2, Please) in [0016](0016-reapi-cache.md).
 - Detecting or allow-listing clients by `User-Agent`.
 
 ## Design
