@@ -22,6 +22,40 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// An entry's bytes, streamed in chunks. Blobs are never buffered whole on the way through.
 pub type ByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + 'static>>;
 
+/// What a tier was doing when an `io::Error` happened, as `"<what>: <error>"`.
+///
+/// The wrapped error keeps the original's kind, which is what the cache classifies by (`503` for a
+/// timeout, `500` otherwise), and the original stays reachable as the source, so markers inside it
+/// are still found.
+#[derive(Debug)]
+struct Context {
+    what: &'static str,
+    source: io::Error,
+}
+
+impl fmt::Display for Context {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.what, self.source)
+    }
+}
+
+impl std::error::Error for Context {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Adds what a tier was doing to an `io::Error` without changing its kind.
+pub(crate) trait IoContext<T> {
+    fn context(self, what: &'static str) -> io::Result<T>;
+}
+
+impl<T> IoContext<T> for io::Result<T> {
+    fn context(self, what: &'static str) -> io::Result<T> {
+        self.map_err(|source| io::Error::new(source.kind(), Context { what, source }))
+    }
+}
+
 /// A storage tier, in lookup order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Tier {
@@ -151,4 +185,20 @@ pub struct HealthProblem {
     pub message: String,
     /// `ErrorInfo.metadata` entries.
     pub metadata: Vec<(&'static str, String)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_keeps_the_kind_and_the_source() {
+        let failed: io::Result<()> = Err(io::Error::new(io::ErrorKind::StorageFull, "no space"));
+        let err = failed.context("writing the entry file").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(err.to_string(), "writing the entry file: no space");
+        let source = err.get_ref().and_then(|e| e.source()).unwrap();
+        assert_eq!(source.to_string(), "no space");
+        assert!(source.downcast_ref::<io::Error>().is_some());
+    }
 }
