@@ -3,13 +3,33 @@
 Everything that defines how mammoth-cache looks lives in this folder. The docs site reads its
 colors, logo and favicon from here, so rebranding means editing these files only.
 
-| File           | What it is                                                   |
-| -------------- | ------------------------------------------------------------ |
-| `palette.json` | Color tokens for light and dark themes. The source of truth. |
-| `palette.css`  | The tokens as CSS custom properties. Generated; do not edit. |
-| `palette.sh`   | Regenerates `palette.css` from `palette.json` (needs `jq`).  |
-| `logo.svg`     | Placeholder wordmark.                                        |
-| `favicon.svg`  | Placeholder square mark for browser tabs.                    |
+| File                                 | What it is                                                   |
+| ------------------------------------ | ------------------------------------------------------------ |
+| `palette.json`                       | Color tokens for light and dark themes. The source of truth. |
+| `palette.css`                        | The tokens as CSS custom properties. Generated; do not edit. |
+| `palette.sh`                         | Regenerates `palette.css` from `palette.json` (needs `jq`).  |
+| `logo*.svg`, `mark*.svg`, `favicon*` | The mascot and logo; see [Logo variants](#logo-variants).    |
+| `social-preview.*`                   | 1280×640 card for link previews (GitHub social preview).     |
+
+## Logo variants
+
+The mascot is a mammoth, drawn as a flat silhouette with a peaked head dome, sloping back, shaggy
+fringe and a big curved tusk.
+
+| File                  | Use for                                            | Background           |
+| --------------------- | -------------------------------------------------- | -------------------- |
+| `logo.svg`            | Mark plus "mammoth" wordmark: README, site header  | Light                |
+| `logo-dark.svg`       | The same lockup in the dark-mode orange            | Dark                 |
+| `mark.svg`            | App icon, avatars: cream mammoth on orange square  | Any                  |
+| `mark-dark.svg`       | App icon for dark surfaces: orange on dark square  | Dark                 |
+| `mark-silhouette.svg` | Mammoth only, brand orange                         | Light or transparent |
+| `mark-mono.svg`       | Mammoth only, `currentColor`; tint it with CSS     | Any (print, badges)  |
+| `favicon.svg`         | Browser tabs; `mark.svg` without the eye           | Any                  |
+| `favicon-32.png`      | PNG fallback for `favicon.svg`                     | Any                  |
+| `social-preview.png`  | Upload in the repository settings (Social preview) | n/a                  |
+
+The docs site shows `logo.svg` in light themes and `logo-dark.svg` in dark ones, and uses the
+favicon. The root README switches between the two logos with the reader's color scheme.
 
 ## Palette
 
@@ -44,17 +64,26 @@ below that in light mode, so use it for large text, icons and fills, and `link` 
 
 1. Edit `palette.json`.
 2. Run `branding/palette.sh` to regenerate `palette.css`.
-3. Replace `logo.svg` or `favicon.svg` if needed, keeping the file names.
+3. Replace the logo files if needed, keeping the file names.
 
 The docs build checks that `palette.css` matches `palette.json`.
 
-## Mascot
+## Keep it our own
 
-The mascot will be a mammoth. It is not drawn yet; `logo.svg` is a placeholder wordmark.
-
-The mammoth is a nod to Gradle's elephant, but it must be clearly our own: a different silhouette,
-pose and colors, with no tracing or reuse of Gradle's artwork. Gradle's elephant logo is a
-registered trademark, and Gradle's
+The mammoth nods to Gradle's elephant but must stay clearly distinct from it. Gradle's logo is a
+registered trademark, and its
 [trademark guidelines](https://gradle.com/legal/gradle-trademark-usage-guidelines/) don't allow
-using it, or anything easily confused with it, without written permission. When mentioning Gradle,
-use its name in plain text and don't imply endorsement.
+look-alikes without written permission. The mammoth was drawn from scratch, not traced or adapted
+from Gradle's artwork. Keep any changes within these rules:
+
+- **Unmistakably a mammoth:** high domed head, back sloping down to the hips, shaggy fur and big
+  curved tusks.
+- **Faces left**, in its own pose.
+- **Our palette only:** colors from `palette.json`, never Gradle's.
+- **No reuse** of Gradle's shapes, outlines or proportions.
+
+When mentioning Gradle, use its name in plain text and don't imply endorsement.
+
+Two earlier concepts (a walking mammoth carrying a cache block, and a front-facing badge) were
+dropped; they remain in the history of
+[pull request #1](https://github.com/nevzheng/mammoth-cache/pull/1).

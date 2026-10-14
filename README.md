@@ -1,5 +1,10 @@
 # mammoth-cache
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="branding/logo-dark.svg">
+  <img alt="mammoth-cache" src="branding/logo.svg" width="320">
+</picture>
+
 A fast, open-source remote build cache node for Gradle, written in Rust. Early days: nothing to run
 yet.
 
