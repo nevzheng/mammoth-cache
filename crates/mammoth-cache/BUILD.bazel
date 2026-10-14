@@ -1,0 +1,71 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# The [lints] table from Cargo.toml (inherited from the workspace), applied to rustc and clippy.
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
+
+# Sets CARGO_PKG_VERSION (read with env!) from the workspace Cargo.toml, which release-plz bumps,
+# so Bazel and Cargo builds report the same version.
+genrule(
+    name = "cargo_env",
+    srcs = ["//:Cargo.toml"],
+    outs = ["cargo.env"],
+    cmd = "sed -n 's/^version = \"\\(.*\\)\"/CARGO_PKG_VERSION=\\1/p' $< | head -n 1 > $@",
+)
+
+rust_library(
+    name = "mammoth_cache",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_root = "src/lib.rs",
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env_files = [":cargo_env"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "mammoth",
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env_files = [":cargo_env"],
+    deps = [":mammoth_cache"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "unit_test",
+    size = "small",
+    aliases = aliases(normal_dev = True),
+    crate = ":mammoth_cache",
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    rustc_env_files = [":cargo_env"],
+    deps = all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "http_test",
+    size = "small",
+    srcs = ["tests/http.rs"],
+    aliases = aliases(normal_dev = True),
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    deps = [":mammoth_cache"] + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+rust_doc_test(
+    name = "doc_test",
+    crate = ":mammoth_cache",
+)

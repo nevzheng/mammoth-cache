@@ -19,3 +19,8 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: buildifier
+        name: buildifier
+        entry: bazel run @buildifier_prebuilt//:buildifier -- -lint=warn
+        language: system
+        files: (^|/)(BUILD\.bazel|MODULE\.bazel|.*\.bzl)$

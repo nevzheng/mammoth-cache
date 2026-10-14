@@ -1,0 +1,36 @@
+# Bazel settings shared by every contributor and CI. Put machine-specific settings (a disk cache,
+# a remote cache, a registry mirror) in user.bazelrc, which is git-ignored.
+
+common --enable_bzlmod
+# Cargo.lock pins the crates and MODULE.bazel pins exact module versions. A MODULE.bazel.lock would
+# also record a digest of Cargo.lock, so every Dependabot or release-plz bump would need a Bazel run.
+common --lockfile_mode=off
+
+# Match `cargo build`: warnings are errors in CI only (see --config=ci).
+build --@rules_rust//rust/settings:rustfmt.toml=//:rustfmt.toml
+build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+build --incompatible_strict_action_env
+
+test --test_output=errors
+
+# `bazel build --config=lint //...` runs clippy and rustfmt over every Rust target.
+build:lint --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:lint --output_groups=+clippy_checks
+build:lint --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:lint --output_groups=+rustfmt_checks
+
+# Same flags as the Cargo CI jobs (RUSTFLAGS=-Dwarnings).
+common:ci --@rules_rust//rust/settings:extra_rustc_flag=-Dwarnings
+common:ci --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+common:ci --color=yes
+common:ci --curses=no
+common:ci --show_progress_rate_limit=5
+build:ci --verbose_failures
+
+# Optimized build, the Bazel counterpart of Cargo's `dist` profile.
+build:release --compilation_mode=opt
+build:release --@rules_rust//rust/settings:lto=thin
+build:release --@rules_rust//rust/settings:codegen_units=1
+build:release --strip=always
+
+try-import %workspace%/user.bazelrc

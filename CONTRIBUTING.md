@@ -78,13 +78,46 @@ for a branch, then force-push.
 
 ## Building and testing
 
-mammoth-cache is pre-alpha. Cargo is the source of truth today; a [Bazel](https://bazel.build/)
-build (bzlmod and `rules_rust`) will come later and read the same `Cargo.toml` and `Cargo.lock`.
-The toolchain is pinned in `rust-toolchain.toml`, and the minimum supported Rust version is 1.85.
+mammoth-cache is pre-alpha. It builds with [Bazel](https://bazel.build/) (bzlmod and
+[`rules_rust`](https://bazelbuild.github.io/rules_rust/)) and with Cargo. Bazel is the primary
+build; Cargo stays fully supported for rust-analyzer, quick iteration and custom feature builds.
+
+Install [Bazelisk](https://github.com/bazelbuild/bazelisk) as `bazel`; it reads `.bazelversion` and
+fetches the pinned Bazel. Bazel downloads the Rust toolchain itself, so no `rustup` is needed for a
+Bazel build.
+
+```sh
+bazel build //...
+bazel test //...
+bazel run //crates/mammoth-cache:mammoth   # listens on 0.0.0.0:5071; override with MAMMOTH_ADDR
+bazel build --config=lint //...            # clippy and rustfmt over every Rust target
+```
+
+With Cargo, the toolchain is pinned in `rust-toolchain.toml`, and the minimum supported Rust version
+is 1.85.
 
 ```sh
 cargo build
-cargo run --bin mammoth   # listens on 0.0.0.0:5071; override with MAMMOTH_ADDR
+cargo run --bin mammoth
+```
+
+### How the two builds stay in step
+
+- **Dependencies:** `Cargo.toml` and `Cargo.lock` are the source of truth. Add a crate with
+  `cargo add`; Bazel's crate_universe reads both files on the next build. No BUILD file changes are
+  needed unless you add a new crate to the workspace.
+- **Lints:** the `[workspace.lints]` table in `Cargo.toml` applies to Bazel's rustc and clippy too,
+  and `clippy.toml` and `rustfmt.toml` are shared.
+- **Rust version:** `MODULE.bazel` repeats the version in `rust-toolchain.toml`. Bump both together;
+  `scripts/check-toolchain-sync.sh` fails CI when they differ.
+- **New source files** are picked up by the `glob` in each crate's `BUILD.bazel`. A new
+  integration test under `tests/` needs its own `rust_test` target.
+
+Put machine-specific Bazel settings, such as a disk cache or registry mirror, in a git-ignored
+`user.bazelrc` at the repository root:
+
+```sh
+echo 'common --disk_cache=~/.cache/bazel-disk' >> user.bazelrc
 ```
 
 A container image is built from the `Dockerfile`; pushing a `v*` tag publishes it to
@@ -107,6 +140,9 @@ prek install
 CI runs these checks on every pull request, with warnings treated as errors:
 
 ```sh
+bazel test --config=ci --config=lint //...   # build, test, clippy, rustfmt (Linux and macOS)
+bazel run @buildifier_prebuilt//:buildifier -- -mode=check -lint=warn -r "$PWD"
+scripts/check-toolchain-sync.sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --locked
