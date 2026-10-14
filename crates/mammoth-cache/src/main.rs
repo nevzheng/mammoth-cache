@@ -4,6 +4,7 @@ use mammoth_cache::{
     auth,
     cache::{BucketWrite, Cache},
     config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
+    server::{self, ServerSettings},
     store::{
         bucket::{BucketConfig, BucketStore},
         disk::{DiskConfig, DiskStore},
@@ -179,16 +180,28 @@ async fn serve(config: Config) -> io::Result<()> {
     let metrics = PrometheusBuilder::new()
         .install_recorder()
         .map_err(io::Error::other)?;
-    axum::serve(
-        listener,
-        mammoth_cache::router_with(
-            Arc::new(cache),
-            Some(metrics),
-            Arc::new(auth),
-            config.protocols,
-        ),
-    )
-    .with_graceful_shutdown(shutdown_signal())
+    let cache = Arc::new(cache);
+    let app = mammoth_cache::router_with(
+        cache.clone(),
+        Some(metrics),
+        Arc::new(auth),
+        config.protocols,
+    );
+    let settings = ServerSettings {
+        shutdown_delay: config.server.shutdown_delay.0,
+        shutdown_timeout: config.server.shutdown_timeout.0,
+        idle_timeout: config.server.idle_timeout.0,
+        body_read_timeout: config.server.body_read_timeout.0,
+    };
+    server::serve(listener, app, cache, settings, async {
+        shutdown_signal().await;
+        // A second signal skips the drain.
+        tokio::spawn(async {
+            shutdown_signal().await;
+            tracing::warn!("second shutdown signal; exiting without draining");
+            std::process::exit(130);
+        });
+    })
     .await
 }
 
@@ -209,6 +222,7 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
             path: disk.path.clone(),
             capacity_bytes: disk.size.bytes(),
             max_entry_age: disk.max_entry_age.map(|age| age.0),
+            free_space_buffer: disk.free_space_buffer.bytes(),
         })
         .await?;
         builder = builder.bounded_tier(Arc::new(store));
@@ -257,5 +271,5 @@ async fn shutdown_signal() {
         () = ctrl_c => "interrupt",
         () = terminate => "SIGTERM",
     };
-    tracing::info!(signal = name, "shutting down; finishing requests in flight");
+    tracing::info!(signal = name, "shutdown signal received");
 }

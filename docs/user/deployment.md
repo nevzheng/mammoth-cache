@@ -6,11 +6,6 @@ an optional bucket shares entries between nodes. This page covers what to set up
 Design doc [0013](../design/0013-deployment.md) has the reasoning. The project ships no Helm chart
 or manifests: the snippets below are what to put in your own.
 
-> [!NOTE]
-> The server-side half of that plan is planned, not built: draining on shutdown, readiness checks
-> for the disk, and connection timeouts. Sections that depend on it say so. Everything an operator
-> configures in front of the node applies today.
-
 ```mermaid
 flowchart LR
     clients["Gradle and Maven"] -- HTTPS --> lb["Ingress or load balancer<br/>TLS, body size, hashing"]
@@ -31,7 +26,7 @@ included. Several proxies refuse or cut off large uploads by default, so check t
 | ingress-nginx   | 1 MiB body limit, `413`         | `nginx.ingress.kubernetes.io/proxy-body-size: "0"`     |
 | ingress-nginx   | Buffers the whole body to disk  | `proxy-request-buffering: "off"` (optional)            |
 | ingress-nginx   | 60 s read and send timeouts     | `proxy-read-timeout` and `proxy-send-timeout: "300"`   |
-| AWS ALB         | 60 s idle timeout               | Keep it below the node's idle timeout (75 s, planned)  |
+| AWS ALB         | 60 s idle timeout               | Keep it below the node's idle timeout (75 s)           |
 | Google Cloud LB | 30 s backend timeout            | `BackendConfig` `timeoutSec` above the longest upload  |
 | Envoy / Istio   | Body-buffering filters cap size | Keep buffering filters off this route                  |
 
@@ -123,25 +118,24 @@ Probes are on [Health checks](health.md#kubernetes).
 
 ## Shutdown and timeouts
 
-> [!NOTE]
-> Planned in design doc [0013](../design/0013-deployment.md). Today the node stops at once on
-> `SIGINT`, and handling `SIGTERM` is in review, so a rolling update can cut uploads in flight.
-
-On `SIGTERM` the node will drain in place of a `preStop` hook, which the distroless image can't run:
+On `SIGTERM` the node drains in place of a `preStop` hook, which the distroless image can't run:
 `/readyz` turns `503` while `/livez` stays `200`, it keeps serving for `shutdown_delay`, then it
 stops accepting, finishes requests in flight, flushes the bucket upload queue and exits within
 `shutdown_timeout`. Keep `terminationGracePeriodSeconds` above `shutdown_timeout`.
 
-The settings will go in a new `[server]` section:
+The settings are in the `[server]` section (see [Configuration](configuration.md#server)):
 
-| Key                   | Default | Meaning                                                                |
-| --------------------- | ------- | ---------------------------------------------------------------------- |
-| `shutdown_delay`      | `5s`    | Keep serving after `SIGTERM` while load balancers remove the node      |
-| `shutdown_timeout`    | `25s`   | Deadline for the whole drain; below Kubernetes' default 30 s           |
-| `header_read_timeout` | `30s`   | Close a connection whose request headers don't arrive in time          |
-| `idle_timeout`        | `75s`   | Close idle keep-alive connections; must exceed the load balancer's     |
-| `body_read_timeout`   | `60s`   | Abort an upload that sends nothing for this long (per read, not total) |
-| `trusted_proxies`     | `[]`    | CIDRs whose `X-Forwarded-For` the access log trusts                    |
+| Key                 | Default | Meaning                                                                        |
+| ------------------- | ------- | ------------------------------------------------------------------------------ |
+| `shutdown_delay`    | `5s`    | Keep serving after `SIGTERM` while load balancers remove the node              |
+| `shutdown_timeout`  | `25s`   | Deadline for the whole drain; below Kubernetes' default 30 s                   |
+| `idle_timeout`      | `75s`   | Close a connection that sends no request headers this long; above the LB's     |
+| `body_read_timeout` | `60s`   | Abort an upload that sends nothing for this long (per read, not total)         |
+
+`idle_timeout` also bounds how long a client may take to send request headers: hyper starts that
+timer as soon as a keep-alive connection goes idle, so a shorter header timeout would close idle
+connections before the load balancer does. `trusted_proxies`, for `X-Forwarded-For` in the access
+log, comes with the access log.
 
 There is deliberately no total request timeout, since a 100 MiB entry over a slow CI link is
 legitimate. Behind a Google Cloud load balancer, whose idle timeout is 600 s, raise `idle_timeout`

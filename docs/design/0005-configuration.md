@@ -68,6 +68,12 @@ bazel = false
 cert = "/etc/mammoth/tls.crt"
 key = "/etc/mammoth/tls.key"
 
+[server] # connection timeouts and shutdown (doc 0013)
+shutdown_delay = "5s" # keep serving after SIGTERM while load balancers notice
+shutdown_timeout = "25s" # finish requests and queued uploads within this
+idle_timeout = "75s" # above the load balancer's idle timeout
+body_read_timeout = "60s" # per read, not in total
+
 [limits]
 max_entry_size = "100MiB" # BCN cache.maxArtifactSize
 

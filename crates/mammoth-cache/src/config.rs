@@ -38,6 +38,9 @@ pub struct Config {
     /// The address the server listens on.
     #[serde(default = "default_listen")]
     pub listen: SocketAddr,
+    /// Connection timeouts and shutdown (design doc 0013).
+    #[serde(default)]
+    pub server: Server,
     /// TLS settings; absent to serve plain HTTP.
     pub tls: Option<Tls>,
     /// Which client protocols are served.
@@ -62,6 +65,33 @@ pub struct Config {
     /// Logging.
     #[serde(default)]
     pub log: Log,
+}
+
+/// `[server]`: how connections are timed out and how the node shuts down.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Server {
+    /// After a shutdown signal, how long to keep serving while load balancers notice that
+    /// `/readyz` fails.
+    pub shutdown_delay: HumanDuration,
+    /// From the shutdown signal, how long to wait for requests and bucket uploads to finish.
+    pub shutdown_timeout: HumanDuration,
+    /// How long a connection may wait for, and take to send, its next request's headers. Must
+    /// exceed the load balancer's idle timeout.
+    pub idle_timeout: HumanDuration,
+    /// How long an upload may send nothing before it is abandoned. Per read, not in total.
+    pub body_read_timeout: HumanDuration,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            shutdown_delay: HumanDuration(Duration::from_secs(5)),
+            shutdown_timeout: HumanDuration(Duration::from_secs(25)),
+            idle_timeout: HumanDuration(Duration::from_secs(75)),
+            body_read_timeout: HumanDuration(Duration::from_secs(60)),
+        }
+    }
 }
 
 /// `[tls]`.
@@ -456,6 +486,22 @@ impl Config {
         {
             return Err("bucket.upload_queue must be at least 1".to_owned());
         }
+        let server = &self.server;
+        for (name, value) in [
+            ("shutdown_timeout", server.shutdown_timeout),
+            ("idle_timeout", server.idle_timeout),
+            ("body_read_timeout", server.body_read_timeout),
+        ] {
+            if value.0.is_zero() {
+                return Err(format!("server.{name} must be above zero"));
+            }
+        }
+        if server.shutdown_delay >= server.shutdown_timeout {
+            return Err(format!(
+                "server.shutdown_delay ({}) must be below server.shutdown_timeout ({})",
+                server.shutdown_delay, server.shutdown_timeout
+            ));
+        }
         if self.tls.is_some() {
             return Err("[tls] is not supported yet; terminate TLS in a proxy for now".to_owned());
         }
@@ -574,6 +620,18 @@ impl FromStr for HumanDuration {
     }
 }
 
+impl fmt::Display for HumanDuration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let secs = self.0.as_secs();
+        for (unit, size) in [("d", 24 * 60 * 60), ("h", 60 * 60), ("m", 60)] {
+            if secs != 0 && secs.is_multiple_of(size) {
+                return write!(f, "{}{unit}", secs / size);
+            }
+        }
+        write!(f, "{secs}s")
+    }
+}
+
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         String::deserialize(deserializer)?
@@ -681,6 +739,36 @@ mod tests {
         assert_eq!(ci.scopes, [Scope::CacheRead, Scope::CacheWrite]);
         assert_eq!(ci.token_hashes[0].0[0], 0x9f);
         assert_eq!(config.log.format, LogFormat::Text);
+    }
+
+    #[test]
+    fn server_settings_have_defaults_and_are_checked() {
+        let server = parse(MINIMAL).unwrap().server;
+        assert_eq!(server.shutdown_delay.0, Duration::from_secs(5));
+        assert_eq!(server.shutdown_timeout.0, Duration::from_secs(25));
+        assert_eq!(server.idle_timeout.0, Duration::from_secs(75));
+        assert_eq!(server.body_read_timeout.0, Duration::from_mins(1));
+
+        let custom = parse("version = 1\n[server]\nidle_timeout = \"11m\"\n").unwrap();
+        assert_eq!(custom.server.idle_timeout.0, Duration::from_mins(11));
+        let cases = [
+            (
+                "version = 1\n[server]\nshutdown_delay = \"30s\"\n",
+                "server.shutdown_delay (30s) must be below server.shutdown_timeout (25s)",
+            ),
+            (
+                "version = 1\n[server]\nidle_timeout = \"0s\"\n",
+                "server.idle_timeout must be above zero",
+            ),
+            (
+                "version = 1\n[server]\nheader_read_timeout = \"30s\"\n",
+                "unknown field `header_read_timeout`",
+            ),
+        ];
+        for (text, expected) in cases {
+            let error = parse(text).unwrap_err();
+            assert!(error.contains(expected), "{error:?} lacks {expected:?}");
+        }
     }
 
     #[test]
