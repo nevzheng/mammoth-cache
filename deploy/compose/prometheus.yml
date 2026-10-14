@@ -1,5 +1,5 @@
-# Scrapes every mammoth node and SeaweedFS. A missing node (mammoth-2 outside the `multi` profile)
-# shows as a down target and is harmless.
+# Scrapes every mammoth node, SeaweedFS and a Locust run on the host (tests/load). A missing node
+# (mammoth-2 outside the `multi` profile) or no Locust run shows as a down target and is harmless.
 global:
   scrape_interval: 1s
   evaluation_interval: 1s
@@ -8,7 +8,12 @@ scrape_configs:
   - job_name: mammoth
     static_configs:
       - targets: ["mammoth:5071", "mammoth-open:5071", "mammoth-proxied:5071", "mammoth-2:5071"]
+      - targets: ["mammoth-memory:5071", "mammoth-memory-disk:5071", "mammoth-memory-bucket:5071"]
 
   - job_name: seaweedfs
     static_configs:
       - targets: ["seaweedfs:9324"]
+
+  - job_name: locust
+    static_configs:
+      - targets: ["host.docker.internal:9646"]

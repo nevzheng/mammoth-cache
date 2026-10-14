@@ -9,6 +9,7 @@ acceptance suite are [0008](../docs/design/0008-supported-clients.md).
 | `e2e/`            | The image's HTTP surface, metrics and storage tiers, on the Compose stack     |
 | `acceptance/`     | Real Gradle, Maven (Build Cache Extension) and Bazel builds against the image |
 | `e2e/properties/` | Property tests: the node against a model and the OpenAPI contracts            |
+| `load/`           | Locust load runs: simulated Gradle, Maven and Bazel clients                   |
 | `src/`            | `mammoth_e2e`, the typed harness both suites import                           |
 | `targets/`        | Target profiles: where the system under test is and what tests may do to it   |
 
@@ -29,6 +30,21 @@ uv run pytest acceptance/test_bazel.py --bazel 8
 `MAMMOTH_IMAGE=ghcr.io/nevzheng/mammoth-cache:edge` tests a published image instead.
 `--keep-stack` leaves the stack running afterwards; `docker compose -p mammoth-e2e -f
 ../deploy/compose/compose.yaml --profile observe up -d` adds Grafana on port 3000.
+
+## Load
+
+```sh
+uv run locust -f load/locustfile.py --headless --target targets/compose.toml --up --run smoke
+uv run locust -f load/locustfile.py --target targets/compose.toml   # web UI on :8089
+```
+
+`--run` picks the shape (`smoke`, `steady`, `ramp`, `spike`, or `warm`, which stores 100k entries
+first), `--rate` the peak lookups a second
+and `--mix` the Gradle:Maven:Bazel weights. The run fails when p99 passes `--max-p99-ms` or failures
+pass `--max-fail-ratio`. `--processes -1` uses every core; one process tops out near 1,500
+requests a second. While it runs, Prometheus on port 9090 scrapes its `locust_*` metrics.
+`--up` starts the stack first; `docker compose -p mammoth-e2e -f ../deploy/compose/compose.yaml
+down -v` stops it.
 
 ## Checks
 
@@ -70,8 +86,13 @@ CAS, compare every answer with a dictionary of what was stored, and check every 
 `api/openapi/`. With `auth`, a second machine sends requests as anonymous, each user over Basic and
 Bearer, and a wrong token, and checks each gets exactly what its scopes allow and that a refused
 store changes nothing; give users their `scopes` and set `anonymous_scopes` in the profile.
+`test_model.py` also checks that counters never go down and that `mammoth_http_requests_total` moved
+by exactly the requests each sequence sent, so nothing else may send cache requests to the node
+during the run. On a stack the harness controls, a third machine restarts the node and stops the
+bucket at random; with a disk, nothing the model holds may be lost and nothing may answer 5xx.
 `test_edges.py` pins contract edge cases; known bugs there are strict xfails.
 
-`MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40).
+`MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40), and
+`MAMMOTH_E2E_CHAOS_EXAMPLES` the restart and outage machine (default 6).
 `MAMMOTH_E2E_CONTRACTS` points at another `api/openapi/` when testing a different build. A failure
 prints the shortest sequence of requests that reproduces it.

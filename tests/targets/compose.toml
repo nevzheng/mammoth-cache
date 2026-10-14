@@ -50,3 +50,9 @@ scopes = ["metrics:read"]
 username = "admin"
 token = "mmc_e2eAdminTokenNotSecretUsedOnlyInTests04"
 scopes = ["admin:read"]
+
+# Tier topologies besides the full one (deploy/compose/config/topology-*.toml).
+[topologies]
+memory = "http://localhost:5074"
+memory-disk = "http://localhost:5075"
+memory-bucket = "http://localhost:5076"

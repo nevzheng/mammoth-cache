@@ -193,8 +193,66 @@ fn set_bucket_gauge(up: bool) {
     metrics::gauge!("mammoth_tier_up", "tier" => "bucket").set(if up { 1.0 } else { 0.0 });
 }
 
-fn count_bucket(metric: &'static str, result: &'static str) {
-    metrics::counter!(metric, "tier" => "bucket", "result" => result).increment(1);
+/// Counts a read against a tier and how long the tier took to answer it.
+fn record_read<T>(tier: Tier, started: Instant, result: &io::Result<Option<T>>) {
+    let result = match result {
+        Ok(Some(_)) => "hit",
+        Ok(None) => "miss",
+        Err(_) => "error",
+    };
+    metrics::counter!("mammoth_tier_reads_total", "tier" => tier.as_str(), "result" => result)
+        .increment(1);
+    metrics::histogram!("mammoth_tier_read_duration_seconds", "tier" => tier.as_str())
+        .record(started.elapsed().as_secs_f64());
+}
+
+/// Counts a write to a tier, how long it took and the bytes it wrote. A write that failed because
+/// of its body (the client's upload failed, it was too large, or its copy was cut short) says
+/// nothing about the tier and is not counted.
+fn record_write(
+    tier: Tier,
+    started: Instant,
+    outcome: Result<&PutOutcome, &io::Error>,
+    bytes: u64,
+) {
+    let result = match outcome {
+        Ok(_) => "ok",
+        Err(e) if is_upload_error(e) || is_too_large(e) || tee::is_abandoned(e) => return,
+        Err(_) => "error",
+    };
+    metrics::counter!("mammoth_tier_writes_total", "tier" => tier.as_str(), "result" => result)
+        .increment(1);
+    metrics::histogram!("mammoth_tier_write_duration_seconds", "tier" => tier.as_str())
+        .record(started.elapsed().as_secs_f64());
+    if outcome.is_ok_and(|outcome| *outcome == PutOutcome::Stored) {
+        metrics::counter!("mammoth_tier_written_bytes_total", "tier" => tier.as_str())
+            .increment(bytes);
+    }
+}
+
+/// Counts the bytes read from `tier` as the entry streams out.
+fn metered(tier: Tier, blob: Blob) -> Blob {
+    let counter = metrics::counter!("mammoth_tier_read_bytes_total", "tier" => tier.as_str());
+    let body = blob.body.inspect(move |chunk| {
+        if let Ok(chunk) = chunk {
+            counter.increment(chunk.len() as u64);
+        }
+    });
+    Blob {
+        size: blob.size,
+        body: Box::pin(body),
+    }
+}
+
+/// Writes an entry to a store, timing it from the start of the write.
+async fn timed_put(
+    store: &dyn BlobStore,
+    key: &CacheKey,
+    size_hint: Option<u64>,
+    body: ByteStream,
+) -> (Instant, io::Result<PutOutcome>) {
+    let started = Instant::now();
+    (started, store.put(key, size_hint, body).await)
 }
 
 /// Counts a bucket upload skipped because the bucket is cooling down after a failure. Logged at
@@ -559,8 +617,11 @@ impl Cache {
     pub async fn get(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
         for (depth, handle) in self.tiers.iter().enumerate() {
             let tier = handle.store.tier();
-            match handle.store.get(key).await {
-                Ok(Some(blob)) => return Ok(Some(self.hit(key, tier, blob, depth))),
+            let started = Instant::now();
+            let result = handle.store.get(key).await;
+            record_read(tier, started, &result);
+            match result {
+                Ok(Some(blob)) => return Ok(Some(self.hit(key, tier, metered(tier, blob), depth))),
                 Ok(None) => {}
                 Err(error) => tracing::warn!(%key, %tier, %error, "tier read failed; skipping"),
             }
@@ -568,6 +629,7 @@ impl Cache {
         if let Some(bucket) = &self.bucket
             && let Some(blob) = bucket_read(bucket, key, "get", || bucket.store.get(key)).await
         {
+            let blob = metered(Tier::Bucket, blob);
             return Ok(Some(self.hit(key, Tier::Bucket, blob, self.tiers.len())));
         }
         self.count_lookup(None);
@@ -611,7 +673,10 @@ impl Cache {
     /// Returns an entry's size without reading it. `Ok(None)` is a miss, as for [`get`](Self::get).
     pub async fn head(&self, key: &CacheKey) -> Result<Option<u64>, CacheError> {
         for handle in &self.tiers {
-            match handle.store.head(key).await {
+            let started = Instant::now();
+            let result = handle.store.head(key).await;
+            record_read(handle.store.tier(), started, &result);
+            match result {
                 Ok(Some(size)) => return Ok(Some(size)),
                 Ok(None) => {}
                 Err(error) => {
@@ -753,14 +818,22 @@ impl Cache {
             None,
         );
         let secondary = others.iter().zip(copies).map(|(store, copy)| async move {
-            (store.tier(), store.put(key, declared_size, copy).await)
+            let (started, outcome) = timed_put(store.as_ref(), key, declared_size, copy).await;
+            (store.tier(), started, outcome)
         });
-        let (result, secondary) = future::join(
-            primary.put(key, declared_size, body),
+        let ((started, result), secondary) = future::join(
+            timed_put(primary.as_ref(), key, declared_size, body),
             future::join_all(secondary),
         )
         .await;
-        self.record_writes(key, primary.tier(), result.as_ref(), secondary);
+        let written = received.load(Ordering::Relaxed);
+        self.record_writes(
+            key,
+            (primary.tier(), started),
+            result.as_ref(),
+            secondary,
+            written,
+        );
 
         match result {
             Ok(outcome) => {
@@ -782,18 +855,21 @@ impl Cache {
         }
     }
 
-    /// Logs and counts the outcomes of one store's writes, given the primary tier's result.
+    /// Logs and counts the outcomes of one store's writes of `written` bytes, given the primary
+    /// tier's result.
     fn record_writes(
         &self,
         key: &CacheKey,
-        primary: Tier,
+        (primary, started): (Tier, Instant),
         result: Result<&PutOutcome, &io::Error>,
-        secondary: Vec<(Tier, io::Result<PutOutcome>)>,
+        secondary: Vec<(Tier, Instant, io::Result<PutOutcome>)>,
+        written: u64,
     ) {
         // A secondary write's outcome says something about its tier only when the body was
         // good, which the primary's success shows.
         if result.is_ok() {
-            for (tier, outcome) in secondary {
+            for (tier, started, outcome) in secondary {
+                record_write(tier, started, outcome.as_ref(), written);
                 match (tier, outcome) {
                     (Tier::Bucket, outcome) => {
                         // A sync upload counts like a background one. Its failure still answers
@@ -802,7 +878,7 @@ impl Cache {
                         let result = if outcome.is_ok() { "ok" } else { "error" };
                         metrics::counter!("mammoth_bucket_uploads_total", "result" => result)
                             .increment(1);
-                        self.record_bucket_write(key, outcome.as_ref());
+                        self.record_bucket_health(key, outcome.as_ref());
                     }
                     (_, Ok(_)) => {}
                     (tier, Err(error)) => {
@@ -811,30 +887,21 @@ impl Cache {
                 }
             }
         }
-        if primary == Tier::Bucket {
-            // A failed primary write may be the client's fault, so only success is recorded.
-            match result {
-                Ok(_) => self.record_bucket_write(key, result),
-                Err(e) if is_upload_error(e) => {}
-                Err(_) => count_bucket("mammoth_tier_writes_total", "error"),
-            }
+        // A failed primary write may be the client's fault; `record_write` tells them apart.
+        record_write(primary, started, result, written);
+        if primary == Tier::Bucket && result.is_ok() {
+            self.record_bucket_health(key, result);
         }
     }
 
-    /// Counts an inline write to the bucket and records it in the bucket's health.
-    fn record_bucket_write(&self, key: &CacheKey, outcome: Result<&PutOutcome, &io::Error>) {
+    /// Records an inline write to the bucket in the bucket's health.
+    fn record_bucket_health(&self, key: &CacheKey, outcome: Result<&PutOutcome, &io::Error>) {
         let Some(bucket) = &self.bucket else {
             return;
         };
         match outcome {
-            Ok(_) => {
-                bucket.health.succeeded();
-                count_bucket("mammoth_tier_writes_total", "ok");
-            }
-            Err(error) => {
-                bucket.health.failed("put", key, error);
-                count_bucket("mammoth_tier_writes_total", "error");
-            }
+            Ok(_) => bucket.health.succeeded(),
+            Err(error) => bucket.health.failed("put", key, error),
         }
     }
 
@@ -949,6 +1016,7 @@ async fn bucket_read<'a, T>(
         return None;
     }
     let timeout = health.limits.timeout;
+    let started = Instant::now();
     let result = tokio::time::timeout(timeout, read())
         .await
         .unwrap_or_else(|_| {
@@ -957,16 +1025,14 @@ async fn bucket_read<'a, T>(
                 format!("no answer within {timeout:?}"),
             ))
         });
+    record_read(Tier::Bucket, started, &result);
     match result {
         Ok(found) => {
             health.succeeded();
-            let result = if found.is_some() { "hit" } else { "miss" };
-            count_bucket("mammoth_tier_reads_total", result);
             found
         }
         Err(error) => {
             health.failed(op, key, &error);
-            count_bucket("mammoth_tier_reads_total", "error");
             None
         }
     }
@@ -1003,7 +1069,9 @@ fn promote(
         tokio::spawn(async move {
             let _guard = guard;
             let to = store.tier();
-            match store.put(&key, Some(size), copy).await {
+            let (started, outcome) = timed_put(store.as_ref(), &key, Some(size), copy).await;
+            record_write(to, started, outcome.as_ref(), size);
+            match outcome {
                 Ok(PutOutcome::Stored) => {
                     metrics::counter!(
                         "mammoth_tier_promotions_total",
@@ -1097,20 +1165,23 @@ async fn upload(
         return;
     }
     let outcome = match source.get(key).await {
-        Ok(Some(blob)) => match bucket.put(key, Some(blob.size), blob.body).await {
-            Ok(_) => {
-                health.succeeded();
-                count_bucket("mammoth_tier_writes_total", "ok");
-                "ok"
+        Ok(Some(blob)) => {
+            let size = blob.size;
+            let (started, outcome) = timed_put(bucket, key, Some(size), blob.body).await;
+            record_write(Tier::Bucket, started, outcome.as_ref(), size);
+            match outcome {
+                Ok(_) => {
+                    health.succeeded();
+                    "ok"
+                }
+                // The body comes from a local tier, so a failure is the bucket's. The bucket's
+                // health logs it.
+                Err(error) => {
+                    health.failed("put", key, &error);
+                    "error"
+                }
             }
-            // The body comes from a local tier, so a failure is the bucket's. The bucket's health
-            // logs it.
-            Err(error) => {
-                health.failed("put", key, &error);
-                count_bucket("mammoth_tier_writes_total", "error");
-                "error"
-            }
-        },
+        }
         Ok(None) => {
             tracing::debug!(%key, "entry left the local tiers before its upload");
             "skipped"

@@ -187,7 +187,7 @@ const HELP: &[(Kind, &str, &str)] = {
         (
             Histogram,
             "mammoth_tier_read_duration_seconds",
-            "Time to first byte from a tier.",
+            "Time for a tier to answer a read.",
         ),
         (Counter, "mammoth_tier_writes_total", "Writes to a tier."),
         (

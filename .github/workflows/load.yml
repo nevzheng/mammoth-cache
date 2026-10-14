@@ -1,0 +1,73 @@
+name: load
+
+# Locust load runs against the image on the Compose stack (docs/design/0011). Advisory: numbers
+# from shared runners are noisy, so a failed threshold shows red here but blocks nothing.
+on:
+  pull_request:
+    paths:
+      - crates/**
+      - tests/load/**
+      - tests/src/mammoth_e2e/traffic.py
+      - .github/workflows/load.yml
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      run:
+        description: Shape of the run
+        type: choice
+        options: [smoke, steady, ramp, spike, warm]
+        default: steady
+      rate:
+        description: Peak lookups a second (0 for the run's default)
+        default: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    uses: ./.github/workflows/image.yml
+
+  load:
+    needs: image
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pull requests get the smoke run; nightly steady, spike and warm; dispatch its input.
+        run: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && '["smoke"]'
+          || github.event_name == 'schedule' && '["steady", "spike", "warm"]'
+          || format('["{0}"]', inputs.run)) }}
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: mammoth-image
+          path: ${{ runner.temp }}
+      - run: docker load --input "$RUNNER_TEMP/mammoth-image.tar"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          working-directory: tests
+      - run: uv sync --locked
+      - name: locust ${{ matrix.run }}
+        run: >-
+          uv run locust -f load/locustfile.py --headless --only-summary --processes -1
+          --target targets/compose.toml --up --run "${{ matrix.run }}" --rate "${RATE:-0}"
+          --csv "$RUNNER_TEMP/load/${{ matrix.run }}" --html "$RUNNER_TEMP/load/${{ matrix.run }}.html"
+        env:
+          RATE: ${{ inputs.rate }}
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: load-${{ matrix.run }}
+          path: ${{ runner.temp }}/load/

@@ -1,0 +1,28 @@
+# A tier topology for tests/e2e/test_topologies.py: memory and the bucket, no disk.
+# Anonymous requests may read and write, so the tests exercise the tiers, not auth.
+version = 1
+listen = "0.0.0.0:5071"
+
+[limits]
+max_entry_size = "16MiB"
+
+[memory]
+size = "256MiB"
+max_entry_size = "8MiB"
+
+[bucket]
+url = "s3://mammoth-e2e/topology-memory-bucket/"
+region = "us-east-1"
+endpoint = "http://seaweedfs:8333"
+
+[protocols]
+gradle = true
+maven = true
+bazel = true
+
+[auth]
+anonymous = ["cache:read", "cache:write"]
+
+[log]
+level = "info"
+format = "text"

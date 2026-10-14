@@ -61,3 +61,23 @@ def answers_before_body(base_url: str, path: str, headers: dict[str, str], body:
         except TimeoutError:
             early = b""
     return bool(early)
+
+
+def put_whole(base_url: str, path: str, headers: dict[str, str], body: bytes) -> int | None:
+    """PUT all of `body` without `Expect`, as Gradle and Bazel do; the status, or None if broken.
+
+    None means the node closed or reset the connection while the client was still sending: the
+    broken pipe a build tool reports as a failed store.
+    """
+    url = urlsplit(base_url)
+    host, port = url.hostname or "localhost", url.port or 80
+    lines = [f"PUT {path} HTTP/1.1", f"Host: {host}:{port}", "Connection: close"]
+    lines += [f"Content-Length: {len(body)}", *(f"{k}: {v}" for k, v in headers.items())]
+    with socket.create_connection((host, port), timeout=30.0) as sock:
+        try:
+            sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+            sock.sendall(body)
+            head = sock.recv(64)
+        except BrokenPipeError, ConnectionResetError:
+            return None
+    return int(head.split(b" ", 2)[1]) if head else None
