@@ -2,12 +2,12 @@
 //! `/bazel/cas/{digest}` (design doc 0012). Bazel is pointed at it with
 //! `--remote_cache=https://<host>/bazel`.
 //!
-//! Only the plain HTTP cache. Bazel's gRPC Remote Execution API (REAPI) is out of scope: no remote
-//! execution and no gRPC cache.
+//! The REAPI gRPC cache shares these entries (design doc 0016); remote execution is out of scope.
 //!
 //! Digests are SHA-256, Bazel's default `--digest_function`. A CAS upload must hash to its digest,
 //! checked as it streams; one that does not gets `400` and is not stored. Action cache entries are
-//! stored as sent, and a store replaces the entry. An oversized store gets `413`: Bazel only warns
+//! stored as sent, and a store replaces the entry. The empty blob is always present, as over gRPC,
+//! whether or not anyone stored it. An oversized store gets `413`: Bazel only warns
 //! about a failed upload and keeps using the cache.
 
 use std::{fmt, io};
@@ -16,7 +16,7 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, StatusCode, header},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use futures_util::{StreamExt, stream};
 use sha2::{Digest, Sha256};
@@ -52,18 +52,38 @@ pub(super) async fn store_action(
     entries::store(&state, &key, &headers, body).await
 }
 
+/// The SHA-256 of no bytes.
+const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 pub(super) async fn load_blob(
     State(state): State<AppState>,
     Name(digest): Name,
 ) -> Result<Response, ApiError> {
-    entries::load(&state, &CacheKey::bazel(Namespace::BazelCas, &digest)?).await
+    let key = CacheKey::bazel(Namespace::BazelCas, &digest)?;
+    if key.name() == EMPTY_SHA256 {
+        return Ok(empty());
+    }
+    entries::load(&state, &key).await
 }
 
 pub(super) async fn check_blob(
     State(state): State<AppState>,
     Name(digest): Name,
 ) -> Result<Response, ApiError> {
-    entries::check(&state, &CacheKey::bazel(Namespace::BazelCas, &digest)?).await
+    let key = CacheKey::bazel(Namespace::BazelCas, &digest)?;
+    if key.name() == EMPTY_SHA256 {
+        return Ok(empty());
+    }
+    entries::check(&state, &key).await
+}
+
+/// The empty blob, which needs no lookup.
+fn empty() -> Response {
+    let headers = [
+        (header::CONTENT_TYPE, "application/octet-stream"),
+        (header::CONTENT_LENGTH, "0"),
+    ];
+    (headers, Body::empty()).into_response()
 }
 
 pub(super) async fn store_blob(

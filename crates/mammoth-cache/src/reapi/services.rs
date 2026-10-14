@@ -298,7 +298,8 @@ enum Unusable {
 
 impl Services {
     /// The stored action result for `action` if a client can use it: it decodes, and every blob
-    /// it points at is present, including the files inside its output directories. Bazel with
+    /// it points at is present, including the files inside its output directories that it can
+    /// read. Bazel with
     /// `--remote_download_minimal` trusts a hit and fetches the outputs only later, so a result
     /// with any of them evicted must be a miss, for the action to run again. With the result, the
     /// tier it came from.
@@ -345,13 +346,14 @@ impl Services {
             let Some(data) = self.read_all(&tree, false).await? else {
                 return Ok(Err(Unusable::Incomplete));
             };
-            let Ok(decoded) = Tree::decode(data) else {
-                return Ok(Err(Unusable::Corrupt("has a tree that does not decode")));
-            };
-            let Ok(inner) = tree_files(&decoded) else {
-                return Ok(Err(Unusable::Corrupt("has a tree with bad digests")));
-            };
-            files.extend(inner);
+            // A tree the node cannot read says nothing about eviction, and the client stored
+            // it: it is present, which is all that can be checked, as for a large one.
+            match Tree::decode(data).map(|decoded| tree_files(&decoded)) {
+                Ok(Ok(inner)) => files.extend(inner),
+                _ => {
+                    tracing::debug!(key = %action.key, tree = %tree.key, "tree unreadable, not checked");
+                }
+            }
         }
         if !self.missing(files).await?.is_empty() {
             return Ok(Err(Unusable::Incomplete));
@@ -413,8 +415,9 @@ impl ActionCache for Services {
     }
 }
 
-/// Validates a batch read's digests, refusing the whole call if its response could pass the
-/// client's message limit: the blobs' data, plus [`BLOB_OVERHEAD`] for each.
+/// Validates a batch read's digests, refusing the whole call if the blobs' data is past
+/// [`MAX_BATCH_BYTES`], as for an upload, or its response could pass the client's message limit:
+/// the data plus [`BLOB_OVERHEAD`] for each blob.
 fn batch_blobs(digests: &[Digest]) -> Result<Vec<Blob>, Status> {
     let blobs = digests
         .iter()
@@ -423,13 +426,18 @@ fn batch_blobs(digests: &[Digest]) -> Result<Vec<Blob>, Status> {
     let total = blobs.iter().try_fold(0_u64, |total, blob| {
         total.checked_add(blob.size)?.checked_add(BLOB_OVERHEAD)
     });
-    if total.is_none_or(|total| total > CLIENT_MESSAGE_BYTES) {
+    let data = blobs
+        .iter()
+        .try_fold(0_u64, |total, blob| total.checked_add(blob.size));
+    if data.is_none_or(|data| data > MAX_BATCH_BYTES)
+        || total.is_none_or(|total| total > CLIENT_MESSAGE_BYTES)
+    {
         return Err(status::error(
             Reason::BatchTooLarge,
             format!(
-                "The batch's {} blobs would not fit in one {CLIENT_MESSAGE_BYTES}-byte response; \
-                 max_batch_total_size_bytes is {MAX_BATCH_BYTES}. Read fewer at once, or larger \
-                 blobs over ByteStream.",
+                "The batch's {} blobs are past max_batch_total_size_bytes, {MAX_BATCH_BYTES}, or \
+                 would not fit in one {CLIENT_MESSAGE_BYTES}-byte response. Read fewer at once, \
+                 or larger blobs over ByteStream.",
                 blobs.len()
             ),
         ));

@@ -133,6 +133,22 @@ async fn cas_store_then_load() {
     assert_eq!(body_bytes(response).await, blob);
 }
 
+/// The empty blob is always present, as over gRPC, so a client never misses on it.
+#[tokio::test]
+async fn the_empty_blob_is_always_present() {
+    let app = app(BAZEL_ONLY);
+    let uri = format!("/bazel/cas/{}", sha256(b""));
+    let response = send(&app, head(&uri)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_LENGTH], "0");
+    let response = send(&app, get(&uri)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(body_bytes(response).await.is_empty());
+    // Storing it changes nothing.
+    assert!(send(&app, put(&uri, b"")).await.status().is_success());
+    assert_eq!(send(&app, get(&uri)).await.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 async fn cas_rejects_content_that_does_not_match_its_digest() {
     let app = app(BAZEL_ONLY);

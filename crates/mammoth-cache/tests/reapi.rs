@@ -369,23 +369,28 @@ async fn batch_upload_checks_each_blob() {
     assert_eq!(missing, [wrong]);
 }
 
+/// A batch read is refused whole past the advertised `max_batch_total_size_bytes`, even when its
+/// response would fit in a message, as an upload is.
 #[tokio::test]
 async fn batches_are_bounded() {
     let node = Node::open().await;
-    let big = Digest {
-        hash: "a".repeat(64),
-        size_bytes: 5 << 20,
-    };
-    let err = node
-        .cas()
-        .batch_read_blobs(BatchReadBlobsRequest {
-            digests: vec![big],
-            ..Default::default()
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(err.code(), Code::InvalidArgument);
-    assert_eq!(reason(&err), "BATCH_TOO_LARGE");
+    // Past the response limit, and one byte past the advertised one.
+    for size in [5 << 20, (4 << 20) - (256 << 10) + 1] {
+        let big = Digest {
+            hash: "a".repeat(64),
+            size_bytes: size,
+        };
+        let err = node
+            .cas()
+            .batch_read_blobs(BatchReadBlobsRequest {
+                digests: vec![big],
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument, "{size} bytes");
+        assert_eq!(reason(&err), "BATCH_TOO_LARGE");
+    }
 }
 
 #[tokio::test]
@@ -1235,6 +1240,41 @@ async fn action_results_need_the_files_in_their_trees() {
     upload(&node, &[b"nested file"]).await;
     assert_eq!(get().await.unwrap().into_inner(), result);
     assert_eq!(node.cache.status().hits - after.hits, 1);
+}
+
+/// An output directory whose `Tree` the node cannot decode is not checked: the tree blob itself
+/// is present, which is all the node can tell, so the result is a hit.
+#[tokio::test]
+async fn unreadable_trees_are_not_checked() {
+    let node = Node::open().await;
+    let tree = b"\xff";
+    upload(&node, &[tree]).await;
+    let result = ActionResult {
+        output_directories: vec![OutputDirectory {
+            path: "out".to_owned(),
+            tree_digest: Some(digest_of(tree)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let action = digest_of(b"unreadable tree action");
+    node.ac()
+        .update_action_result(UpdateActionResultRequest {
+            action_digest: Some(action.clone()),
+            action_result: Some(result.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let got = node
+        .ac()
+        .get_action_result(GetActionResultRequest {
+            action_digest: Some(action),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(got.into_inner(), result);
 }
 
 /// A stored action result too large to send is a miss, refused before it is read.
