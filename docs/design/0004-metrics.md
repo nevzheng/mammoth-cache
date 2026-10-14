@@ -64,17 +64,21 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 
 #### Per tier
 
-| Metric                                | Type      | Labels                                    | Meaning                                     |
-| ------------------------------------- | --------- | ----------------------------------------- | ------------------------------------------- |
-| `mammoth_tier_reads_total`            | counter   | `tier`, `result` (`hit`, `miss`, `error`) | Reads against a tier                        |
-| `mammoth_tier_read_duration_seconds`  | histogram | `tier`                                    | Time to first byte from a tier              |
-| `mammoth_tier_writes_total`           | counter   | `tier`, `result` (`ok`, `error`)          | Writes to a tier                            |
-| `mammoth_tier_write_duration_seconds` | histogram | `tier`                                    | Time to write an entry to a tier            |
-| `mammoth_tier_read_bytes_total`       | counter   | `tier`                                    | Bytes read from a tier                      |
-| `mammoth_tier_written_bytes_total`    | counter   | `tier`                                    | Bytes written to a tier                     |
-| `mammoth_tier_promotions_total`       | counter   | `from`, `to`                              | Entries copied up a tier after a hit        |
-| `mammoth_tier_evictions_total`        | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits       |
-| `mammoth_bucket_upload_queue_entries` | gauge     |                                           | Stores waiting to be uploaded to the bucket |
+| Metric                                 | Type      | Labels                                    | Meaning                                                             |
+| -------------------------------------- | --------- | ----------------------------------------- | ------------------------------------------------------------------- |
+| `mammoth_tier_reads_total`             | counter   | `tier`, `result` (`hit`, `miss`, `error`) | Reads against a tier                                                |
+| `mammoth_tier_read_duration_seconds`   | histogram | `tier`                                    | Time to first byte from a tier                                      |
+| `mammoth_tier_writes_total`            | counter   | `tier`, `result` (`ok`, `error`)          | Writes to a tier                                                    |
+| `mammoth_tier_write_duration_seconds`  | histogram | `tier`                                    | Time to write an entry to a tier                                    |
+| `mammoth_tier_read_bytes_total`        | counter   | `tier`                                    | Bytes read from a tier                                              |
+| `mammoth_tier_written_bytes_total`     | counter   | `tier`                                    | Bytes written to a tier                                             |
+| `mammoth_tier_promotions_total`        | counter   | `from`, `to`                              | Entries copied up a tier after a hit                                |
+| `mammoth_tier_evictions_total`         | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits                               |
+| `mammoth_bucket_upload_queue_entries`  | gauge     |                                           | Stores waiting to be uploaded to the bucket                         |
+| `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)       | Background uploads by outcome; `skipped` left the local tiers first |
+| `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`)       | Uploads skipped; the entry stays local                              |
+| `mammoth_shutting_down`                | gauge     |                                           | 1 while the node drains ([0013](0013-deployment.md))                |
+| `mammoth_tier_up`                      | gauge     | `tier`                                    | 1 after a tier's last operation succeeded, 0 after it failed        |
 
 #### Current population
 
@@ -88,6 +92,16 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 
 The bucket's population is not reported: counting it means listing the bucket, which is slow and
 costs money. The provider's own metrics cover it.
+
+#### TLS
+
+Only with `[tls]` set; defined in [0014](0014-tls.md).
+
+| Metric                                   | Type    | Labels                        | Meaning                                      |
+| ---------------------------------------- | ------- | ----------------------------- | -------------------------------------------- |
+| `mammoth_tls_certificate_expiry_seconds` | gauge   |                               | When the serving certificate expires, Unix s |
+| `mammoth_tls_reloads_total`              | counter | `result` (`ok`, `error`)      | Renewed certificates swapped in, or refused  |
+| `mammoth_tls_handshake_failures_total`   | counter | `reason` (`error`, `timeout`) | Handshakes that failed, such as plain HTTP   |
 
 #### Serving
 
@@ -122,6 +136,14 @@ sum(rate(mammoth_cache_lookups_total{result="hit",tier="memory"}[5m]))
 histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bucket{tier="bucket"}[5m])))
 ```
 
+### Alerting
+
+The node does not alert, for the same reason it does not aggregate: rules, state and notification
+belong to Prometheus and Alertmanager. The user guide ships recommended alert rules over this
+catalog. A tier outage, the bucket's above all, is visible as `mammoth_tier_up{tier}` and as
+`result="error"` on that tier's reads and writes; it does not fail `/readyz`, which is about the
+node ([0013](0013-deployment.md)).
+
 ### Admin snapshot
 
 `GET /v1/serverStatus` returns the current population per tier and lifetime hit and miss counts, for
@@ -131,8 +153,11 @@ above, so the two never disagree.
 
 ### Verification
 
-A test scrapes `/metrics` from a running server and checks it with `promtool check metrics`, and
-checks that every metric in this catalog is present.
+A hermetic test drives the router through every path that records a metric, scrapes `/metrics` and
+checks the exposition against this catalog: every live metric present with its type and labels, no
+metric outside the catalog, every bounded label value in its set. The end-to-end suite
+([0011](https://github.com/nevzheng/mammoth-cache/pull/27)) scrapes the real image through a real
+Prometheus and checks it with `promtool check metrics`.
 
 ### Implementation
 
@@ -142,12 +167,19 @@ counters plus a sum and a count. Memory is set by the catalog and label cardinal
 traffic. A scrape of `/metrics` reads the current values and renders them as Prometheus text; the
 node keeps no history, and a restart resets counters to zero, which Prometheus's `rate()` handles.
 
-The leaning choice is the [`prometheus-client`](https://crates.io/crates/prometheus-client) crate,
-the official Rust client from the Prometheus project. It has typed metric families, label sets as
-Rust types, and atomic updates without locks. The alternative is the
-[`metrics`](https://crates.io/crates/metrics) facade with `metrics-exporter-prometheus`, which
-allows a different backend later at the cost of a global registry and string-keyed metrics. The
-choice is confirmed when `/metrics` is wired up ([0006](0006-server-framework.md)).
+The node records through the [`metrics`](https://crates.io/crates/metrics) facade and renders
+`/metrics` with `metrics-exporter-prometheus`. The facade keeps the stores free of any exporter
+type and allows a different backend later, at the cost of a global registry and string-keyed
+metrics. Because the names are strings, the catalog test in
+`crates/mammoth-cache/tests/metrics.rs` is what holds the code to this doc: it fails on a
+`mammoth_` metric the catalog does not list, on a wrong type or label set, and on a bounded label
+value outside its set. The alternative was
+[`prometheus-client`](https://crates.io/crates/prometheus-client), whose typed label sets would
+catch the same drift at compile time; it lost because every store already recorded through the
+facade when `/metrics` was wired up.
+
+Rollout order, the hermetic test and the end-to-end checks are in
+[0015](0015-metrics-rollout-and-testing.md).
 
 ### Namespace and access
 
@@ -181,6 +213,6 @@ See [Namespace and access](#namespace-and-access). No metric exposes keys, token
 
 ## Open questions
 
-- `prometheus-client` or the `metrics` facade, confirmed when `/metrics` is implemented.
-- Histogram bucket boundaries for each duration and size metric.
+- Histogram bucket boundaries for each duration and size metric
+  ([0015](0015-metrics-rollout-and-testing.md) proposes them).
 - Whether to export per-user request counts behind a setting.

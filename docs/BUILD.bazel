@@ -1,0 +1,10 @@
+# The metrics docs, embedded by tests/metrics.rs so the catalog test can check they list every
+# metric.
+filegroup(
+    name = "metrics_docs",
+    srcs = [
+        "design/0004-metrics.md",
+        "user/metrics.md",
+    ],
+    visibility = ["//crates/mammoth-cache:__pkg__"],
+)

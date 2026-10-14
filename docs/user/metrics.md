@@ -4,7 +4,8 @@
 > Exported today: `mammoth_http_requests_total`, `mammoth_gradle_requests_total`,
 > `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total` (memory tier),
 > `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
-> `mammoth_bucket_uploads_total` and `mammoth_bucket_uploads_dropped_total`. The rest of the catalog
+> `mammoth_bucket_uploads_total`, `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`,
+> `mammoth_disk_free_bytes` and the `mammoth_tls_*` metrics. The rest of the catalog
 > below is the contract from design doc [0004](../design/0004-metrics.md) and arrives with the
 > features it measures. Names and labels
 > won't change without a breaking release.
@@ -62,6 +63,7 @@ cache key, a token or a user name.
 | `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)       | Uploads to the bucket, sync or background |
 | `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`)       | Uploads skipped; the entry stays local    |
 | `mammoth_shutting_down`                | gauge     |                                           | `1` while the node drains                 |
+| `mammoth_tier_up`                      | gauge     | `tier`                                    | 1 if the tier's last call succeeded       |
 
 ### Current population
 
@@ -100,6 +102,13 @@ Only with [`[tls]`](configuration.md#tls) set.
 | `mammoth_tls_certificate_expiry_seconds` | gauge   |                                 | When the serving certificate expires, Unix s  |
 | `mammoth_tls_reloads_total`              | counter | `result` (`ok`, `error`)        | Renewed certificates swapped in, or refused   |
 | `mammoth_tls_handshake_failures_total`   | counter | `reason` (`error`, `timeout`)   | Handshakes that failed, such as plain HTTP    |
+
+## Alerting
+
+mammoth-cache does not send alerts; Prometheus and Alertmanager do. A bucket outage does not fail
+`/readyz`, because the node keeps serving from memory and disk, so alert on
+`mammoth_tier_up{tier="bucket"} == 0` and on `result="error"` for the bucket's reads and writes.
+Recommended rules will be listed here as the metrics they need land.
 
 ## Useful queries
 
