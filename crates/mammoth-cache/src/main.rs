@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use clap::{Parser, Subcommand};
 use mammoth_cache::{
     auth,
     cache::{BucketLimits, BucketWrite, Cache},
@@ -30,38 +31,56 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const USAGE: &str = "\
-usage: mammoth [--config <path>]
-       mammoth config check [--config <path>]
-       mammoth token new
+/// mammoth-cache, a remote build cache node.
+#[derive(Debug, Parser)]
+#[command(
+    name = "mammoth",
+    version,
+    after_help = "The config file is --config, else $MAMMOTH_CONFIG, else ./mammoth.toml."
+)]
+struct Cli {
+    /// The config file to read.
+    #[arg(long, value_name = "PATH", global = true)]
+    config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
 
-The config file is --config, else $MAMMOTH_CONFIG, else ./mammoth.toml.";
-
+#[derive(Debug, Subcommand)]
 enum Command {
-    Serve,
+    /// Work with the config file.
+    #[command(subcommand)]
+    Config(ConfigCommand),
+    /// Work with client tokens.
+    #[command(subcommand)]
+    Token(TokenCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Validate the config file and what it points at, then exit.
     Check,
-    NewToken,
+}
+
+#[derive(Debug, Subcommand)]
+enum TokenCommand {
+    /// Print a new token and the hash to put in mammoth.toml.
+    New,
 }
 
 fn main() -> ExitCode {
-    let (command, explicit) = match parse_args(env::args().skip(1)) {
-        Ok(parsed) => parsed,
-        Err(message) => {
-            eprintln!("{message}\n\n{USAGE}");
-            return ExitCode::from(2);
-        }
-    };
-    if matches!(command, Command::NewToken) {
+    let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Token(TokenCommand::New))) {
         return new_token();
     }
-    let (config, source) = match load_config(explicit) {
+    let (config, source) = match load_config(cli.config) {
         Ok(loaded) => loaded,
         Err(message) => {
             eprintln!("mammoth: {message}");
             return ExitCode::FAILURE;
         }
     };
-    if matches!(command, Command::Check) {
+    if matches!(cli.command, Some(Command::Config(ConfigCommand::Check))) {
         // Check what the file points at too, without the startup log.
         if let Err(error) = check(&config) {
             eprintln!("mammoth: {error}");
@@ -82,6 +101,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "mammoth-cache starting"
+    );
     if let Some(path) = source {
         tracing::info!(path = %path.display(), "config loaded");
     } else {
@@ -94,32 +117,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn parse_args(
-    mut args: impl Iterator<Item = String>,
-) -> Result<(Command, Option<PathBuf>), String> {
-    let mut command = Command::Serve;
-    let mut config = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--config" => {
-                let path = args.next().ok_or("--config needs a path")?;
-                config = Some(PathBuf::from(path));
-            }
-            "config" if matches!(command, Command::Serve) => match args.next().as_deref() {
-                Some("check") => command = Command::Check,
-                _ => return Err("expected `config check`".to_owned()),
-            },
-            "token" if matches!(command, Command::Serve) => match args.next().as_deref() {
-                Some("new") => command = Command::NewToken,
-                _ => return Err("expected `token new`".to_owned()),
-            },
-            "-h" | "--help" => return Err("mammoth-cache, a remote build cache node".to_owned()),
-            other => return Err(format!("unexpected argument {other:?}")),
-        }
-    }
-    Ok((command, config))
 }
 
 /// Loads the config file. With no `--config` or `$MAMMOTH_CONFIG` and no `./mammoth.toml`, the
@@ -416,6 +413,61 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("mammoth").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn cli_is_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn cli_parses_each_command() {
+        let serve = parse(&[]).unwrap();
+        assert!(serve.command.is_none() && serve.config.is_none());
+
+        let serve = parse(&["--config", "/etc/m.toml"]).unwrap();
+        assert_eq!(serve.config, Some(PathBuf::from("/etc/m.toml")));
+
+        for args in [
+            &["config", "check", "--config", "m.toml"][..],
+            &["--config", "m.toml", "config", "check"],
+        ] {
+            let cli = parse(args).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Config(ConfigCommand::Check))
+            ));
+            assert_eq!(cli.config, Some(PathBuf::from("m.toml")));
+        }
+        let cli = parse(&["token", "new"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Token(TokenCommand::New))
+        ));
+    }
+
+    #[test]
+    fn cli_refuses_what_it_does_not_know() {
+        for args in [
+            &["serve"][..],
+            &["config"],
+            &["token", "old"],
+            &["--config"],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn cli_prints_the_version() {
+        let err = parse(&["--version"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(err.to_string().contains(env!("CARGO_PKG_VERSION")));
+    }
 
     fn config(dir: &Path, extra: &str) -> Config {
         let file = dir.join("mammoth.toml");
