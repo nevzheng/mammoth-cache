@@ -19,4 +19,5 @@
   - [0007: Entry size limits and admission](design/0007-size-limits-and-admission.md)
   - [0009: Releases and packaging](design/0009-releases.md)
   - [0010: Memory tier, eviction policies and entry metadata](design/0010-memory-tier-and-eviction.md)
+  - [0011: End-to-end and load testing](design/0011-end-to-end-and-load-testing.md)
   - [Investigations](design/investigations.md)
