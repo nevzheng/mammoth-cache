@@ -139,7 +139,9 @@ key = "/etc/mammoth/tls/tls.key"
 
 ## Config and credentials
 
-Mount `mammoth.toml` from a Secret, since it holds token hashes, and point `MAMMOTH_CONFIG` at it.
+Every setting is in the [configuration reference](configuration.md), which ends with a full
+example. Mount `mammoth.toml` from a Secret, since it holds token hashes, and point `MAMMOTH_CONFIG`
+at it.
 A change to the file needs a rollout. Bucket credentials never go in the file; see
 [Bucket access](#bucket-access). The image runs as the nonroot user (UID and GID 65532), so give the
 pod `fsGroup: 65532`, or a fresh PersistentVolumeClaim is owned by root and the node can't write

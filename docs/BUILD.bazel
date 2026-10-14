@@ -8,3 +8,14 @@ filegroup(
     ],
     visibility = ["//crates/mammoth-cache:__pkg__"],
 )
+
+# The configuration reference and its full example, embedded by tests/config_doc.rs so it can check
+# they list every key the config parser accepts.
+filegroup(
+    name = "config_reference",
+    srcs = [
+        "user/configuration.md",
+        "user/mammoth.example.toml",
+    ],
+    visibility = ["//crates/mammoth-cache:__pkg__"],
+)

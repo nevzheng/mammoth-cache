@@ -80,10 +80,11 @@ max_entry_size = "100MiB" # BCN cache.maxArtifactSize
 [memory] # L1
 size = "1GiB"
 max_entry_size = "1MiB" # larger entries skip memory
+eviction = "s3-fifo" # or lru, w-tinylfu, sieve, fifo (0010)
 
 [disk] # L2
 path = "/var/lib/mammoth"
-size = "50GiB" # or "max-available", like BCN targetSize.type
+size = "50GiB"
 free_space_buffer = "1GiB" # BCN cache.freeSpaceBufferSize
 max_entry_age = "30d" # optional; BCN cache.maxEntryAgeInHours
 
@@ -91,6 +92,7 @@ max_entry_age = "30d" # optional; BCN cache.maxEntryAgeInHours
 url = "s3://acme-build-cache/mammoth/" # also gs://, az://, file://
 region = "us-east-1"
 # endpoint = "https://<account>.r2.cloudflarestorage.com" # S3-compatible stores only
+# allow_http = true # for an http:// endpoint such as a local MinIO
 write = "async" # or "sync": answer a PUT only after the upload
 upload_queue = 1000 # async only
 timeout = "2s" # longest bucket read, retries included; a slower one is a miss
@@ -125,10 +127,13 @@ access_log = true
 - **Defaults:** every key except `version` and `disk.path` is optional. Defaults follow the BCN
   where it has one (100 MiB entries, 1 GiB free-space buffer, no anonymous access).
 - **Validation:** unknown keys, wrong types, unparseable units and contradictions (an L1 entry
-  limit above the overall entry limit, `write = "sync"` with no bucket) are errors at startup.
+  limit above the overall entry limit, an entry limit above `disk.size`, `shutdown_delay` not
+  below `shutdown_timeout`) are errors at startup.
   `mammoth config check` runs the same validation without starting the server.
-- **Reference:** every key is documented in the user guide with its type, default and meaning.
-  There is no machine-readable schema; `mammoth config check` is the validator.
+- **Reference:** every key is documented in the user guide's
+  [configuration reference](../user/configuration.md) with its type, default, example and status,
+  and set in its full example file. A test fails when either misses a key the parser accepts. There
+  is no machine-readable schema; `mammoth config check` is the validator.
 - **Protocols:** a protocol that is off has no routes, so its requests get the `404` of an unknown
   path. Gradle and Maven are on and Bazel is off by default; turning all three off is an error.
   See [0012](0012-bazel-http-cache-and-protocol-switches.md).
@@ -138,15 +143,15 @@ access_log = true
   from people who may read it.
 - **Versioning:** `version` is the file's schema version. A new version is introduced only for a
   breaking change, and the server reads the previous version with a deprecation warning.
-- **Changes:** edit the file and restart. On Kubernetes, the file is a ConfigMap and a rollout
-  restarts the pods.
+- **Changes:** edit the file and restart. On Kubernetes, the file is mounted from a Secret (see
+  [0013](0013-deployment.md)) and a rollout restarts the pods.
 
 ### Migrating from the Build Cache Node
 
 | BCN                                   | mammoth-cache                                                        |
 | ------------------------------------- | -------------------------------------------------------------------- |
 | `cache.targetSize` (`fixed`, `size`)  | `disk.size` (`50000` MiB becomes `"50000MiB"`)                       |
-| `cache.targetSize.type: maxAvailable` | `disk.size = "max-available"`                                        |
+| `cache.targetSize.type: maxAvailable` | No equivalent yet: set `disk.size` to the volume less the buffer     |
 | `cache.freeSpaceBufferSize`           | `disk.free_space_buffer`                                             |
 | `cache.maxArtifactSize`               | `limits.max_entry_size`                                              |
 | `cache.maxEntryAgeInHours`            | `disk.max_entry_age`                                                 |

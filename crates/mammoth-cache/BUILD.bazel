@@ -63,9 +63,11 @@ rust_test(
         size = "small",
         srcs = [src],
         aliases = aliases(normal_dev = True),
-        # tests/contract.rs embeds the OpenAPI contracts; tests/metrics.rs the metrics docs.
+        # tests/contract.rs embeds the OpenAPI contracts, tests/metrics.rs the metrics docs and
+        # tests/config_doc.rs the config reference.
         compile_data = [
             "//api/openapi:specs",
+            "//docs:config_reference",
             "//docs:metrics_docs",
         ],
         lint_config = ":lints",
