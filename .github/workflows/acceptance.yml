@@ -1,6 +1,7 @@
 name: acceptance
 
-# Real Gradle, Maven, Bazel and Buck2 builds against the image, one job per client line. See
+# Real Gradle, Maven, Bazel and Buck2 builds against the image, one job per client line, each a
+# Bazel target in tests/BUILD.bazel. See
 # docs/design/0008-supported-clients.md, 0012 and 0016. Each line resolves to its newest release at
 # run time, so the nightly run picks up new patch releases.
 on:
@@ -13,6 +14,8 @@ on:
       - Dockerfile
       - deploy/compose/**
       - tests/**
+      - MODULE.bazel
+      - .bazelrc
       - .github/workflows/acceptance.yml
       - .github/workflows/image.yml
   schedule:
@@ -37,24 +40,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: gradle-7.6, suite: test_gradle.py, args: --gradle 7.6 }
-          - { name: gradle-8.14, suite: test_gradle.py, args: --gradle 8.14 }
-          - { name: gradle-9, suite: test_gradle.py, args: --gradle 9 }
-          - { name: maven-ext-1.2, suite: test_maven.py, args: --maven 3.9 --maven-extension 1.2 }
-          - { name: maven-ext-latest, suite: test_maven.py, args: --maven 3.9 --maven-extension latest }
-          - { name: bazel-7, suite: test_bazel.py, args: --bazel 7 }
-          - { name: bazel-8, suite: test_bazel.py, args: --bazel 8 }
-          - { name: bazel-9, suite: test_bazel.py, args: --bazel 9 }
+          - { name: gradle-7.6, target: acceptance_gradle, args: --test_arg=--gradle=7.6 }
+          - { name: gradle-8.14, target: acceptance_gradle, args: --test_arg=--gradle=8.14 }
+          - { name: gradle-9, target: acceptance_gradle, args: --test_arg=--gradle=9 }
+          - { name: maven-ext-1.2, target: acceptance_maven, args: --test_arg=--maven=3.9 --test_arg=--maven-extension=1.2 }
+          - { name: maven-ext-latest, target: acceptance_maven, args: --test_arg=--maven=3.9 --test_arg=--maven-extension=latest }
+          - { name: bazel-7, target: acceptance_bazel, args: --test_arg=--bazel=7 }
+          - { name: bazel-8, target: acceptance_bazel, args: --test_arg=--bazel=8 }
+          - { name: bazel-9, target: acceptance_bazel, args: --test_arg=--bazel=9 }
           # Bazel over grpc:// (REAPI, doc 0016): the newest two majors, plus Buck2.
-          - { name: bazel-8-grpc, suite: "test_bazel_grpc*.py", args: --bazel 8 }
-          - { name: bazel-9-grpc, suite: "test_bazel_grpc*.py", args: --bazel 9 }
-          - { name: buck2, suite: test_buck2.py, args: --buck2 latest }
+          - { name: bazel-8-grpc, target: acceptance_bazel_grpc, args: --test_arg=--bazel=8 }
+          - { name: bazel-9-grpc, target: acceptance_bazel_grpc, args: --test_arg=--bazel=9 }
+          - { name: buck2, target: acceptance_buck2, args: --test_arg=--buck2=latest }
           # The newest of each client against the node serving HTTPS itself (doc 0014).
-          - { name: tls, suite: test_tls.py, args: --gradle 9 --maven 3.9 --maven-extension latest --bazel 9 }
+          - { name: tls, target: acceptance_tls, args: --test_arg=--gradle=9 --test_arg=--maven=3.9 --test_arg=--maven-extension=latest --test_arg=--bazel=9 }
     name: ${{ matrix.name }}
-    defaults:
-      run:
-        working-directory: tests
     steps:
       - uses: actions/checkout@v7
       # Java 17 is the one JDK every tested Gradle and Maven version runs on (doc 0008).
@@ -72,15 +72,17 @@ jobs:
           name: mammoth-image
           path: ${{ runner.temp }}
       - run: docker load --input "$RUNNER_TEMP/mammoth-image.tar"
-      - uses: astral-sh/setup-uv@v7
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          working-directory: tests
-      - run: uv sync --locked
-      - run: >-
-          uv run pytest acceptance/${{ matrix.suite }} ${{ matrix.args }}
-          --junitxml="$RUNNER_TEMP/${{ matrix.name }}.xml"
+          bazelisk-cache: true
+          repository-cache: |
+            - MODULE.bazel
+            - Cargo.lock
+            - tests/uv.lock
+          cache-save: ${{ github.event_name != 'pull_request' }}
+      - run: bazel test --config=ci --config=e2e //tests:${{ matrix.target }} ${{ matrix.args }}
       - if: always()
         uses: actions/upload-artifact@v7
         with:
           name: acceptance-${{ matrix.name }}
-          path: ${{ runner.temp }}/${{ matrix.name }}.xml
+          path: bazel-testlogs/tests/${{ matrix.target }}/test.xml

@@ -80,10 +80,11 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel", "pydantic_settings.BaseS
 "e2e/**" = ["INP001"]
 "acceptance/**" = ["INP001"]
 "load/**" = ["INP001"] # Locust loads the file by path
+"bazel/**" = ["INP001"] # Bazel runs the files by path
 "conftest.py" = ["INP001"]
 
 [tool.pyrefly]
-project-includes = ["src", "e2e", "acceptance", "load", "conftest.py"]
+project-includes = ["src", "e2e", "acceptance", "load", "bazel", "conftest.py"]
 python-version = "3.14"
 preset = "strict"
 
