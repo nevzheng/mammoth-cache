@@ -73,8 +73,10 @@ See [Gradle](gradle.md#credentials) and [Maven](maven.md#credentials) for client
 
 Every `401` carries `WWW-Authenticate`. Both statuses fail a Gradle build, which is what a
 misconfigured credential should do. A refused upload sent with `Expect: 100-continue` is answered
-before its body is sent. One sent without it is read and discarded first, up to the entry size
-limit, so the client can reuse the connection; past the limit the node answers and closes it.
+before its body is sent. One sent without it is read and discarded first, so the client can reuse
+the connection: up to the entry size limit for a known user lacking the scope, and up to 1 MiB
+within 3 seconds for anyone else. Past that the node answers and closes the connection, so a client
+without credentials cannot hold it open by sending slowly.
 
 Send credentials only over TLS: terminate it at a proxy or ingress, or turn on the node's own
 [`[tls]`](configuration.md#tls). With authentication on and no `[tls]`, it logs a warning at

@@ -1082,3 +1082,48 @@ fn parser_reads_labels_and_histograms() {
         1
     );
 }
+
+/// `gradle_version` comes from a header anyone can send, so it labels only Gradle requests that
+/// got past authentication, and only versions in range: other requests mint no series.
+#[tokio::test]
+async fn gradle_versions_are_bounded() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = three_tier_app(dir.path(), authenticator()).await;
+    let series = |scrape: &Scrape| {
+        scrape
+            .samples_of("mammoth_gradle_requests_total")
+            .map(|(_, labels, _)| labels["gradle_version"].clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let before = scrape(&app).await;
+    let get = |path: String, version: String, auth: Option<&str>| {
+        let mut request = Request::get(path).header("x-gradle-version", version);
+        if let Some(auth) = auth {
+            request = request.header(header::AUTHORIZATION, auth);
+        }
+        send(&app, request.body(Body::empty()).unwrap())
+    };
+    for i in 0..50 {
+        // Off the Gradle route, refused, and out of range.
+        get("/nope".to_owned(), format!("{i}.{i}"), None).await;
+        get(
+            "/cache/a3f5e1c09b2d4e7f8a1b6c3d5e9f0c01".to_owned(),
+            format!("{}.{i}", i % 20 + 1),
+            Some("Bearer wrong"),
+        )
+        .await;
+        get(
+            "/cache/a3f5e1c09b2d4e7f8a1b6c3d5e9f0c01".to_owned(),
+            format!("{}.{}", 1000 + i, i),
+            None,
+        )
+        .await;
+    }
+    let after = scrape(&app).await;
+    let new: BTreeSet<_> = series(&after)
+        .difference(&series(&before))
+        .cloned()
+        .collect();
+    assert!(new.iter().all(|v| v == "other"), "{new:?}");
+}

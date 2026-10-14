@@ -4,10 +4,11 @@
 //! token as the password, or Bearer), finds the principal and either forwards the request, with
 //! the [`Principal`] as an extension, or answers `401` or `403`. It runs before the handler reads
 //! the body, so a refused upload with `Expect: 100-continue` is never sent. A refused upload sent
-//! without it is read and discarded, up to the entry size limit, so the client gets its answer and
-//! can reuse the connection.
+//! without it is read and discarded, so the client gets its answer and can reuse the connection:
+//! up to the entry size limit for a known user, and up to [`ANONYMOUS_DRAIN_BYTES`] within
+//! [`ANONYMOUS_DRAIN_TIME`] for anyone else, who could otherwise hold the connection.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
@@ -93,7 +94,7 @@ pub(crate) async fn require(
     let Some(scope) = required_scope(request.method(), request.uri().path(), &guard) else {
         return next.run(request).await;
     };
-    let Some(refusal) = refuse(auth, scope, &mut request) else {
+    let Some((refusal, known)) = refuse(auth, scope, &mut request) else {
         return next.run(request).await;
     };
     let expects_continue = request
@@ -104,14 +105,30 @@ pub(crate) async fn require(
         // The client waits for `100 Continue`, which an unread body never sends.
         return refusal;
     }
-    discard(request.into_body(), guard.drain_limit, refusal).await
+    let body = request.into_body();
+    let drained = if known {
+        discard(body, guard.drain_limit).await
+    } else {
+        let limit = guard.drain_limit.min(ANONYMOUS_DRAIN_BYTES);
+        tokio::time::timeout(ANONYMOUS_DRAIN_TIME, discard(body, limit))
+            .await
+            .unwrap_or(false)
+    };
+    if drained { refusal } else { close(refusal) }
 }
 
-/// Authenticates the request and checks it has `scope`: the refusal, or `None` with the
-/// [`Principal`] added to the request.
-fn refuse(auth: &Authenticator, scope: Scope, request: &mut Request) -> Option<Response> {
+/// The most of a refused body read from a client that is not a known user: enough for a small
+/// upload to finish cleanly.
+const ANONYMOUS_DRAIN_BYTES: u64 = 1024 * 1024;
+
+/// How long reading it may take in all, so a client sending slowly cannot hold the connection.
+const ANONYMOUS_DRAIN_TIME: Duration = Duration::from_secs(3);
+
+/// Authenticates the request and checks it has `scope`: the refusal, and whether it was for a
+/// known user lacking the scope; or `None` with the [`Principal`] added to the request.
+fn refuse(auth: &Authenticator, scope: Scope, request: &mut Request) -> Option<(Response, bool)> {
     let Ok(presented) = credentials(request.headers()) else {
-        return Some(invalid());
+        return Some((invalid(), false));
     };
     let creds = presented.as_ref().map(|(user, token)| {
         if user.is_empty() {
@@ -121,7 +138,7 @@ fn refuse(auth: &Authenticator, scope: Scope, request: &mut Request) -> Option<R
         }
     });
     let Ok(principal) = auth.authenticate(creds) else {
-        return Some(invalid());
+        return Some((invalid(), false));
     };
     if principal.scopes.contains(scope) {
         request.extensions_mut().insert(principal);
@@ -130,31 +147,41 @@ fn refuse(auth: &Authenticator, scope: Scope, request: &mut Request) -> Option<R
     Some(match &principal.user {
         None => {
             count_failure("CREDENTIALS_MISSING");
-            ApiError::unauthenticated("CREDENTIALS_MISSING", "Authentication is required.")
-                .into_response()
+            let refusal =
+                ApiError::unauthenticated("CREDENTIALS_MISSING", "Authentication is required.")
+                    .into_response();
+            (refusal, false)
         }
         Some(user) => {
             count_failure("SCOPE_MISSING");
-            ApiError::permission_denied(user, scope).into_response()
+            (
+                ApiError::permission_denied(user, scope).into_response(),
+                true,
+            )
         }
     })
 }
 
 /// Reads and discards a refused request's body before answering, so the client finishes sending
-/// and reads the answer instead of a reset. A body over `limit` is left unread and the connection
-/// closed after the answer.
-async fn discard(body: Body, limit: u64, mut refusal: Response) -> Response {
+/// and reads the answer instead of a reset. Whether it ended within `limit` bytes; if not, the rest
+/// is left unread and the connection must close after the answer.
+async fn discard(body: Body, limit: u64) -> bool {
     let mut stream = body.into_data_stream();
     let mut read = 0_u64;
     while let Some(Ok(chunk)) = stream.next().await {
         read += chunk.len() as u64;
         if read > limit {
-            refusal
-                .headers_mut()
-                .insert(header::CONNECTION, HeaderValue::from_static("close"));
-            break;
+            return false;
         }
     }
+    true
+}
+
+/// The refusal, closing the connection after it: the rest of the body is never read.
+fn close(mut refusal: Response) -> Response {
+    refusal
+        .headers_mut()
+        .insert(header::CONNECTION, HeaderValue::from_static("close"));
     refusal
 }
 
