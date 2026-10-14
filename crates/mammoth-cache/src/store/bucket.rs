@@ -521,4 +521,36 @@ mod tests {
         let err = BucketStore::open(&BucketConfig::new("ftp://example.com/x")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
+
+    #[tokio::test]
+    async fn an_ipv6_endpoint_is_reachable() {
+        let Ok(listener) = tokio::net::TcpListener::bind("[::1]:0").await else {
+            eprintln!("skipped: this host has no IPv6");
+            return;
+        };
+        let addr = listener.local_addr().unwrap();
+        // A bucket that holds nothing: every request gets a 404.
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0_u8; 4096];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let store = s3_at(format!("http://{addr}"));
+        let key = CacheKey::gradle("a3f5").unwrap();
+        assert_eq!(store.head(&key).await.unwrap(), None);
+    }
+
+    #[test]
+    fn accepts_a_bracketed_ipv6_endpoint() {
+        let mut config = BucketConfig::new("s3://bucket/mammoth");
+        config.region = Some("us-east-1".into());
+        config.endpoint = Some("http://[::1]:8333".into());
+        config.allow_http = Some(true);
+        BucketStore::open(&config).unwrap();
+    }
 }
