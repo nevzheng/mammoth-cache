@@ -22,6 +22,13 @@ One static `mammoth.toml`, read at startup and never rewritten. There is no conf
 web UI and no hot reload. To change a setting, edit the file and restart the node, which is cheap
 because nodes are stateless.
 
+## No UI
+
+A web UI is a non-goal. Operators use the config file, the `mammoth` command line, curl and
+Prometheus; the admin API serves those, and dashboards belong in Grafana or whatever already
+watches your services. A UI would bring logins, sessions and pressure to change settings at
+runtime, all of which the cache does without.
+
 ## Nodes are stateless
 
 Each node keeps copies in memory and on disk; the bucket is the only shared state. Recovery is
