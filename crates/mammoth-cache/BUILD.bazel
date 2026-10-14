@@ -81,11 +81,12 @@ rust_test(
         size = "small",
         srcs = [src],
         aliases = aliases(normal_dev = True),
-        # tests/contract.rs embeds the OpenAPI contracts, tests/metrics.rs the metrics docs and
-        # tests/config_doc.rs the config reference.
+        # tests/contract.rs embeds the OpenAPI contracts, tests/metrics.rs the metrics docs,
+        # tests/config_doc.rs the config reference and tests/catalogue.rs the error design doc.
         compile_data = [
             "//api/openapi:specs",
             "//docs:config_reference",
+            "//docs:error_catalogue",
             "//docs:metrics_docs",
         ],
         lint_config = ":lints",

@@ -2,12 +2,13 @@
 
 use axum::{
     extract::{Query, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 
 use super::{AppState, error::ApiError};
+use crate::api::error::Reason;
 
 /// Build Cache Node compatible health check.
 pub(super) async fn ping() -> &'static str {
@@ -33,24 +34,13 @@ pub(super) async fn readyz(
 ) -> Result<String, ApiError> {
     let mut checks = vec![("config", None)];
     let shutting_down = state.cache.is_shutting_down().then(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "UNAVAILABLE",
-            "SHUTTING_DOWN",
-            "The node is shutting down.",
-        )
-        .with("check", "shutting-down")
+        ApiError::new(Reason::ShuttingDown, "The node is shutting down.")
+            .with("check", "shutting-down")
     });
     checks.push(("shutting-down", shutting_down));
     for check in state.cache.health() {
         let error = check.problem.map(|problem| {
-            let error = ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "UNAVAILABLE",
-                problem.reason,
-                problem.message,
-            )
-            .with("check", check.name);
+            let error = ApiError::new(problem.reason, problem.message).with("check", check.name);
             problem
                 .metadata
                 .into_iter()
@@ -76,10 +66,9 @@ pub(super) async fn readyz(
 
 /// Prometheus metrics in the text exposition format. The catalog is design doc 0004.
 pub(super) async fn metrics(State(state): State<AppState>) -> Result<Response, ApiError> {
-    let handle = state
-        .metrics
-        .as_ref()
-        .ok_or_else(|| ApiError::unimplemented("Metrics"))?;
+    let handle = state.metrics.as_ref().ok_or_else(|| {
+        ApiError::method_not_supported("GET /metrics", "Metrics are off on this server.")
+    })?;
     let headers = [(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4"),

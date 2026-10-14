@@ -354,6 +354,7 @@ bold.
 | `UPLOAD_INCOMPLETE`           | `INVALID_ARGUMENT`             | 400  |                                |
 | `UPLOAD_CANCELLED`            | `CANCELLED`                    | 400* |                                |
 | `UPLOAD_IDLE`                 | `DEADLINE_EXCEEDED`            | 400* |                                |
+| `DOWNLOAD_STALLED`            | `DEADLINE_EXCEEDED`            | 504  | (gRPC only)                    |
 | `EMPTY_WRITE`                 | `INVALID_ARGUMENT`             | 400  |                                |
 | `UNSUPPORTED_COMPRESSOR`      | `INVALID_ARGUMENT`             | 400  |                                |
 | `ACTION_RESULT_MISSING`       | `INVALID_ARGUMENT`             | 400  |                                |
@@ -365,6 +366,8 @@ bold.
 | `INVALID_WRITE`               | `INVALID_ARGUMENT`             | 400  |                                |
 | `OFFSET_OUT_OF_RANGE`         | `OUT_OF_RANGE`                 | 400  |                                |
 | `BATCH_TOO_LARGE`             | `INVALID_ARGUMENT`             | 400  |                                |
+| `TOO_MANY_DIGESTS`            | `INVALID_ARGUMENT`             | 400  | (gRPC only)                    |
+| `MESSAGE_TOO_LARGE`           | `RESOURCE_EXHAUSTED`           | 429  | (gRPC only)                    |
 | `UNSUPPORTED_DIGEST_FUNCTION` | `INVALID_ARGUMENT`             | 400  |                                |
 | `CREDENTIALS_MISSING`         | `UNAUTHENTICATED`              | 401  |                                |
 | `CREDENTIALS_INVALID`         | `UNAUTHENTICATED`              | 401  |                                |

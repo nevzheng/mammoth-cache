@@ -50,7 +50,7 @@ use super::{
     PutOutcome, Tier, TierUsage,
     meta::{Checksum, EntryMeta, unix_now},
 };
-use crate::key::CacheKey;
+use crate::{api::error::Reason, key::CacheKey};
 
 const MAGIC: &[u8; 8] = b"MMTHENT\0";
 const FORMAT_VERSION: u16 = 1;
@@ -478,7 +478,8 @@ impl Inner {
         );
         if probe.not_writable != previous.not_writable {
             if let Some(error) = &probe.not_writable {
-                tracing::error!(%error, "disk tier is not writable");
+                let path = self.entries_dir.display();
+                tracing::error!(%error, %path, "disk tier is not writable");
             } else {
                 tracing::info!("disk tier is writable again");
             }
@@ -1094,19 +1095,17 @@ impl BoundedStore for DiskStore {
     fn health(&self) -> Vec<HealthCheck> {
         let probe = self.inner.last_probe();
         let buffer = self.inner.free_space_buffer;
+        // The path is in the log, not the response: /readyz needs no authentication.
         let writable = probe.not_writable.map(|error| HealthProblem {
-            reason: "STORAGE_NOT_WRITABLE",
-            message: format!(
-                "The disk tier at {} is not writable: {error}.",
-                self.inner.entries_dir.display()
-            ),
-            metadata: vec![("path", self.inner.entries_dir.display().to_string())],
+            reason: Reason::StorageNotWritable,
+            message: format!("The disk tier is not writable: {error}."),
+            metadata: Vec::new(),
         });
         let free_space = probe
             .available
             .filter(|&available| available < buffer)
             .map(|available| HealthProblem {
-                reason: "STORAGE_FREE_SPACE_LOW",
+                reason: Reason::StorageFreeSpaceLow,
                 message: format!(
                     "Free space is {available} bytes, below the {buffer} byte buffer."
                 ),
@@ -1330,7 +1329,7 @@ mod tests {
         };
         let store = DiskStore::open(short).await.unwrap();
         let problem = store.health()[1].problem.clone().unwrap();
-        assert_eq!(problem.reason, "STORAGE_FREE_SPACE_LOW");
+        assert_eq!(problem.reason, Reason::StorageFreeSpaceLow);
         assert_eq!(store.usage().entries, 0);
         store.put(&b, None, body(&[hundred])).await.unwrap();
         assert_eq!(store.head(&b).await.unwrap(), None);

@@ -91,10 +91,47 @@ components:
           type: string
           const: type.googleapis.com/google.rpc.ErrorInfo
         reason:
-          description: A stable UPPER_SNAKE_CASE identifier, unique within `domain`.
+          description: |
+            A stable UPPER_SNAKE_CASE identifier, unique within `domain`. Reasons are never renamed
+            or reused; the catalogue is design doc 0017.
           type: string
           pattern: "^[A-Z][A-Z0-9_]+[A-Z0-9]$"
           maxLength: 63
+          enum:
+            - ENTRY_NOT_FOUND
+            - ROUTE_NOT_FOUND
+            - INVALID_REQUEST
+            - ENTRY_TOO_LARGE
+            - DIGEST_MISMATCH
+            - SIZE_MISMATCH
+            - UPLOAD_INCOMPLETE
+            - UPLOAD_CANCELLED
+            - UPLOAD_IDLE
+            - DOWNLOAD_STALLED
+            - EMPTY_WRITE
+            - UNSUPPORTED_COMPRESSOR
+            - ACTION_RESULT_MISSING
+            - INVALID_CACHE_KEY
+            - INVALID_CACHE_PATH
+            - INVALID_DIGEST
+            - INVALID_RESOURCE_NAME
+            - INVALID_READ_LIMIT
+            - INVALID_WRITE
+            - OFFSET_OUT_OF_RANGE
+            - BATCH_TOO_LARGE
+            - TOO_MANY_DIGESTS
+            - MESSAGE_TOO_LARGE
+            - UNSUPPORTED_DIGEST_FUNCTION
+            - CREDENTIALS_MISSING
+            - CREDENTIALS_INVALID
+            - SCOPE_MISSING
+            - METHOD_NOT_ALLOWED
+            - METHOD_NOT_SUPPORTED
+            - STORAGE_UNAVAILABLE
+            - STORAGE_NOT_WRITABLE
+            - STORAGE_FREE_SPACE_LOW
+            - SHUTTING_DOWN
+            - INTERNAL
           examples: [ENTRY_TOO_LARGE]
         domain:
           description: The service that produced the error.

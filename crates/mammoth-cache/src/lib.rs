@@ -5,6 +5,8 @@
 //! - [`store`]: the blob store port, implemented by each storage tier (memory, disk, bucket).
 //! - [`cache`]: the core, which applies the tiering rules over the port.
 //! - [`config`]: the `mammoth.toml` file.
+//! - [`api`]: what the inbound adapters share about their external contract, such as the error
+//!   catalogue.
 //! - [`http`]: inbound adapters for the Gradle protocol, health checks and the admin API.
 //! - [`reapi`]: the inbound gRPC adapter for the REAPI cache (Bazel, Buck2, Pants, sbt 2, Please).
 //! - [`server`]: connections, timeouts and the shutdown drain.
@@ -14,6 +16,7 @@
 //! The crate is a library with a thin `mammoth` binary, so a custom build can supply its own
 //! [`store::BlobStore`] implementation without forking.
 
+pub mod api;
 pub mod auth;
 pub mod cache;
 pub mod config;

@@ -7,11 +7,10 @@ use tonic::{Code, Status};
 
 use super::proto::google::rpc;
 use crate::{
+    api::error::DOMAIN,
     cache::{self, Detail},
     key::CacheKey,
 };
-
-const DOMAIN: &str = "mammoth-cache.dev";
 
 /// A status with an `ErrorInfo` detail.
 pub(crate) fn error(
