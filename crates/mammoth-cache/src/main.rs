@@ -2,7 +2,7 @@ use std::{env, io, path::PathBuf, process::ExitCode, sync::Arc};
 
 use mammoth_cache::{
     auth,
-    cache::{BucketWrite, Cache},
+    cache::{BucketLimits, BucketWrite, Cache},
     config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
     server::{self, ServerSettings, TlsSettings},
     store::{
@@ -261,6 +261,8 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
             region: bucket.region.clone(),
             endpoint: bucket.endpoint.clone(),
             allow_http: bucket.allow_http,
+            timeout: bucket.timeout.0,
+            retries: bucket.retries,
             ..BucketConfig::new(bucket.url.clone())
         })?;
         let write = match bucket.write {
@@ -269,7 +271,12 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
             },
             config::BucketWrite::Sync => BucketWrite::Sync,
         };
-        builder = builder.bucket_tier(Arc::new(store), write);
+        builder = builder
+            .bucket_tier(Arc::new(store), write)
+            .bucket_limits(BucketLimits {
+                timeout: bucket.timeout.0,
+                cooldown: bucket.cooldown.0,
+            });
     }
     Ok(builder.build())
 }

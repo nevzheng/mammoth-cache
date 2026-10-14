@@ -10,6 +10,11 @@
 //! - **Writes** stream into every local tier at once; the deepest (disk, when configured) decides
 //!   the outcome. The bucket gets the entry in the background through a bounded queue, or inline
 //!   with [`BucketWrite::Sync`]. A node with no local tier writes straight to the bucket.
+//! - **Bucket outages** cost misses, never stalls or errors (see [`BucketLimits`]). A bucket read
+//!   that fails or passes its deadline is a miss, and after any bucket failure the bucket is
+//!   skipped for a cooldown: reads miss at once and uploads are dropped and counted. The first
+//!   call after the cooldown probes the bucket again. Only the change between up and down is
+//!   logged, and the `mammoth_tier_up{tier="bucket"}` gauge follows it.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -29,7 +34,10 @@ use tokio::{
 
 use crate::{
     key::{CacheKey, Namespace},
-    store::{Blob, BlobStore, BoundedStore, ByteStream, HealthCheck, PutOutcome, Tier, TierUsage},
+    store::{
+        Blob, BlobStore, BoundedStore, BoxFuture, ByteStream, HealthCheck, PutOutcome, Tier,
+        TierUsage,
+    },
     tee::{self, tee},
 };
 
@@ -65,6 +73,132 @@ pub enum BucketWrite {
     },
     /// Answer only after the upload, trading `PUT` latency for other nodes seeing the entry sooner.
     Sync,
+}
+
+/// Limits on calls to the bucket (`bucket.timeout` and `bucket.cooldown` in `mammoth.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BucketLimits {
+    /// The longest a bucket read may take: a `get` until its body starts, or a `head`. A read
+    /// that takes longer is a miss and counts as a bucket failure.
+    pub timeout: Duration,
+    /// After a bucket failure, how long to skip the bucket. The first call after it goes to the
+    /// bucket as a probe. Zero turns the cooldown off, so every call tries the bucket.
+    pub cooldown: Duration,
+}
+
+impl Default for BucketLimits {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(2),
+            cooldown: Duration::from_secs(30),
+        }
+    }
+}
+
+/// Whether the bucket is answering, and the cooldown after a failure. Shared by the read path
+/// and the upload worker.
+#[derive(Debug)]
+struct BucketHealth {
+    limits: BucketLimits,
+    /// False from a bucket failure until the next success.
+    up: AtomicBool,
+    /// While cooling down, when the cooldown ends, in milliseconds since `epoch`; 0 otherwise.
+    skip_until: AtomicU64,
+    epoch: tokio::time::Instant,
+}
+
+impl BucketHealth {
+    fn new(limits: BucketLimits) -> Self {
+        set_bucket_gauge(true);
+        Self {
+            limits,
+            up: AtomicBool::new(true),
+            skip_until: AtomicU64::new(0),
+            epoch: tokio::time::Instant::now(),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// When a cooldown starting now ends; never 0.
+    fn cooldown_end(&self) -> u64 {
+        let cooldown = u64::try_from(self.limits.cooldown.as_millis()).unwrap_or(u64::MAX);
+        self.now_ms().saturating_add(cooldown.max(1))
+    }
+
+    fn is_up(&self) -> bool {
+        self.up.load(Ordering::Relaxed)
+    }
+
+    /// Whether the bucket is being skipped after a failure.
+    fn cooling_down(&self) -> bool {
+        let until = self.skip_until.load(Ordering::Acquire);
+        until != 0 && self.now_ms() < until
+    }
+
+    /// Whether a read may go to the bucket. The first read after a cooldown is let through as
+    /// the probe; the cooldown is extended for the others until it reports back.
+    fn admit_read(&self) -> bool {
+        let until = self.skip_until.load(Ordering::Acquire);
+        if until == 0 {
+            return true;
+        }
+        if self.now_ms() < until {
+            return false;
+        }
+        self.skip_until
+            .compare_exchange(
+                until,
+                self.cooldown_end(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// Records a bucket call that the bucket answered, "not found" included.
+    fn succeeded(&self) {
+        self.skip_until.store(0, Ordering::Release);
+        if !self.up.swap(true, Ordering::AcqRel) {
+            set_bucket_gauge(true);
+            tracing::info!("bucket is answering again");
+        }
+    }
+
+    /// Records a bucket failure: starts the cooldown and, on the first one, warns.
+    fn failed(&self, op: &str, key: &CacheKey, error: &io::Error) {
+        if !self.limits.cooldown.is_zero() {
+            self.skip_until
+                .store(self.cooldown_end(), Ordering::Release);
+        }
+        if self.up.swap(false, Ordering::AcqRel) {
+            set_bucket_gauge(false);
+            tracing::warn!(
+                %key, op, %error, cooldown = ?self.limits.cooldown,
+                "bucket failed; serving from the local tiers until it answers again"
+            );
+        } else {
+            tracing::debug!(%key, op, %error, "bucket still failing");
+        }
+    }
+}
+
+fn set_bucket_gauge(up: bool) {
+    metrics::gauge!("mammoth_tier_up", "tier" => "bucket").set(if up { 1.0 } else { 0.0 });
+}
+
+fn count_bucket(metric: &'static str, result: &'static str) {
+    metrics::counter!(metric, "tier" => "bucket", "result" => result).increment(1);
+}
+
+/// Counts a bucket upload skipped because the bucket is cooling down after a failure. Logged at
+/// debug only: the failure that started the cooldown was already logged.
+fn drop_for_bucket_down(key: &CacheKey) {
+    metrics::counter!("mammoth_bucket_uploads_dropped_total", "reason" => "bucket-down")
+        .increment(1);
+    tracing::debug!(%key, "bucket is cooling down; upload dropped");
 }
 
 /// Whether to take an upload, decided from its declared size before reading it.
@@ -190,6 +324,7 @@ struct TierHandle {
 #[derive(Debug)]
 struct BucketHandle {
     store: Arc<dyn BlobStore>,
+    health: Arc<BucketHealth>,
     /// The background upload queue; `None` when stores reach the bucket inline.
     uploads: Option<Uploads>,
 }
@@ -210,6 +345,7 @@ struct Uploads {
 pub struct CacheBuilder {
     tiers: Vec<TierHandle>,
     bucket: Option<(Arc<dyn BlobStore>, BucketWrite)>,
+    bucket_limits: BucketLimits,
     max_entry_size: u64,
     oversize: OversizePolicy,
 }
@@ -219,6 +355,7 @@ impl Default for CacheBuilder {
         Self {
             tiers: Vec::new(),
             bucket: None,
+            bucket_limits: BucketLimits::default(),
             max_entry_size: DEFAULT_MAX_ENTRY_SIZE,
             oversize: OversizePolicy::default(),
         }
@@ -244,6 +381,13 @@ impl CacheBuilder {
         write: BucketWrite,
     ) -> Self {
         self.bucket = Some((store, write));
+        self
+    }
+
+    /// Sets the bucket's read deadline and cooldown.
+    #[must_use]
+    pub fn bucket_limits(mut self, limits: BucketLimits) -> Self {
+        self.bucket_limits = limits;
         self
     }
 
@@ -285,7 +429,9 @@ impl CacheBuilder {
             // Nothing below would keep a larger entry, so it is oversized.
             max_entry_size = max_entry_size.min(cap);
         }
+        let limits = self.bucket_limits;
         let bucket = self.bucket.map(|(store, write)| {
+            let health = Arc::new(BucketHealth::new(limits));
             let uploads = match (write, source) {
                 // Background uploads read the entry back, so its local copy must be whole.
                 (BucketWrite::Async { queue }, Some(source)) if source_cap.is_none() => {
@@ -296,6 +442,7 @@ impl CacheBuilder {
                         rx,
                         source,
                         store.clone(),
+                        health.clone(),
                         pending.clone(),
                         stop.clone(),
                     ));
@@ -309,7 +456,11 @@ impl CacheBuilder {
                 // Inline: asked for, or there is no whole local copy to upload from.
                 _ => None,
             };
-            BucketHandle { store, uploads }
+            BucketHandle {
+                store,
+                health,
+                uploads,
+            }
         });
         Cache {
             tiers: self.tiers,
@@ -369,48 +520,57 @@ impl Cache {
         self.max_entry_size
     }
 
-    /// Every tier in lookup order: the local tiers, then the bucket.
-    fn lookup_order(&self) -> impl Iterator<Item = &Arc<dyn BlobStore>> {
-        self.tiers
-            .iter()
-            .map(|handle| &handle.store)
-            .chain(self.bucket.as_ref().map(|bucket| &bucket.store))
-    }
-
     /// Loads an entry, looking in each tier in order. `Ok(None)` is a miss.
     ///
     /// A hit below the first tier is copied into the local tiers above it as it streams. A tier
-    /// that fails is skipped and the next one tried: for a cache, a failed read is a miss.
+    /// that fails is skipped and the next one tried: for a cache, a failed read is a miss. So is
+    /// a bucket read past [`BucketLimits::timeout`], or one during a cooldown.
     pub async fn get(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
-        for (depth, store) in self.lookup_order().enumerate() {
-            let tier = store.tier();
-            match store.get(key).await {
-                Ok(Some(blob)) => {
-                    self.hits.fetch_add(1, Ordering::Relaxed);
-                    let above = &self.tiers[..depth.min(self.tiers.len())];
-                    let blob = promote(key, tier, blob, above);
-                    return Ok(Some(Hit { tier, blob }));
-                }
+        for (depth, handle) in self.tiers.iter().enumerate() {
+            let tier = handle.store.tier();
+            match handle.store.get(key).await {
+                Ok(Some(blob)) => return Ok(Some(self.hit(key, tier, blob, depth))),
                 Ok(None) => {}
                 Err(error) => tracing::warn!(%key, %tier, %error, "tier read failed; skipping"),
             }
+        }
+        if let Some(bucket) = &self.bucket
+            && let Some(blob) = bucket_read(bucket, key, "get", || bucket.store.get(key)).await
+        {
+            return Ok(Some(self.hit(key, Tier::Bucket, blob, self.tiers.len())));
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
         Ok(None)
     }
 
-    /// Returns an entry's size without reading it. `Ok(None)` is a miss.
+    /// Counts a hit at `depth` in the lookup order and promotes it into the local tiers above.
+    fn hit(&self, key: &CacheKey, tier: Tier, blob: Blob, depth: usize) -> Hit {
+        self.hits.fetch_add(1, Ordering::Relaxed);
+        let blob = promote(key, tier, blob, &self.tiers[..depth]);
+        Hit { tier, blob }
+    }
+
+    /// Returns an entry's size without reading it. `Ok(None)` is a miss, as for [`get`](Self::get).
     pub async fn head(&self, key: &CacheKey) -> Result<Option<u64>, CacheError> {
-        for store in self.lookup_order() {
-            match store.head(key).await {
+        for handle in &self.tiers {
+            match handle.store.head(key).await {
                 Ok(Some(size)) => return Ok(Some(size)),
                 Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(%key, tier = %store.tier(), %error, "tier head failed");
+                    tracing::warn!(%key, tier = %handle.store.tier(), %error, "tier head failed");
                 }
             }
         }
-        Ok(None)
+        let Some(bucket) = &self.bucket else {
+            return Ok(None);
+        };
+        Ok(bucket_read(bucket, key, "head", || bucket.store.head(key)).await)
+    }
+
+    /// Whether the bucket answered its last call; `None` without a bucket. Mirrors the
+    /// `mammoth_tier_up{tier="bucket"}` gauge.
+    pub fn bucket_up(&self) -> Option<bool> {
+        self.bucket.as_ref().map(|bucket| bucket.health.is_up())
     }
 
     /// Decides from an upload's declared size whether to take it, and counts it if oversized.
@@ -499,7 +659,12 @@ impl Cache {
         if let Some(bucket) = &self.bucket
             && bucket.uploads.is_none()
         {
-            writers.push(&bucket.store);
+            // While the bucket cools down, keep the entry local, unless there is nowhere else.
+            if self.tiers.is_empty() || !bucket.health.cooling_down() {
+                writers.push(&bucket.store);
+            } else {
+                drop_for_bucket_down(key);
+            }
         }
         let Some((primary, others)) = writers.split_first() else {
             return Err(CacheError::Internal(io::Error::other(
@@ -523,21 +688,7 @@ impl Cache {
             future::join_all(secondary),
         )
         .await;
-        if result.is_ok() {
-            for (tier, outcome) in secondary {
-                if tier == Tier::Bucket {
-                    // A sync upload counts like a background one. Its failure still answers the
-                    // client with success: the entry is stored locally, and Gradle would turn its
-                    // cache off over an error.
-                    let result = if outcome.is_ok() { "ok" } else { "error" };
-                    metrics::counter!("mammoth_bucket_uploads_total", "result" => result)
-                        .increment(1);
-                }
-                if let Err(error) = outcome {
-                    tracing::warn!(%key, %tier, %error, "write to a secondary tier failed");
-                }
-            }
-        }
+        self.record_writes(key, primary.tier(), result.as_ref(), secondary);
 
         match result {
             Ok(outcome) => {
@@ -559,11 +710,75 @@ impl Cache {
         }
     }
 
-    /// Queues a background upload to the bucket, when there is one. A full queue drops the upload.
-    fn enqueue_upload(&self, key: &CacheKey) {
-        let Some(uploads) = self.uploads() else {
+    /// Logs and counts the outcomes of one store's writes, given the primary tier's result.
+    fn record_writes(
+        &self,
+        key: &CacheKey,
+        primary: Tier,
+        result: Result<&PutOutcome, &io::Error>,
+        secondary: Vec<(Tier, io::Result<PutOutcome>)>,
+    ) {
+        // A secondary write's outcome says something about its tier only when the body was
+        // good, which the primary's success shows.
+        if result.is_ok() {
+            for (tier, outcome) in secondary {
+                match (tier, outcome) {
+                    (Tier::Bucket, outcome) => {
+                        // A sync upload counts like a background one. Its failure still answers
+                        // the client with success: the entry is stored locally, and Gradle would
+                        // turn its cache off over an error.
+                        let result = if outcome.is_ok() { "ok" } else { "error" };
+                        metrics::counter!("mammoth_bucket_uploads_total", "result" => result)
+                            .increment(1);
+                        self.record_bucket_write(key, outcome.as_ref());
+                    }
+                    (_, Ok(_)) => {}
+                    (tier, Err(error)) => {
+                        tracing::warn!(%key, %tier, %error, "write to a secondary tier failed");
+                    }
+                }
+            }
+        }
+        if primary == Tier::Bucket {
+            // A failed primary write may be the client's fault, so only success is recorded.
+            if result.is_ok() {
+                self.record_bucket_write(key, result);
+            } else {
+                count_bucket("mammoth_tier_writes_total", "error");
+            }
+        }
+    }
+
+    /// Counts an inline write to the bucket and records it in the bucket's health.
+    fn record_bucket_write(&self, key: &CacheKey, outcome: Result<&PutOutcome, &io::Error>) {
+        let Some(bucket) = &self.bucket else {
             return;
         };
+        match outcome {
+            Ok(_) => {
+                bucket.health.succeeded();
+                count_bucket("mammoth_tier_writes_total", "ok");
+            }
+            Err(error) => {
+                bucket.health.failed("put", key, error);
+                count_bucket("mammoth_tier_writes_total", "error");
+            }
+        }
+    }
+
+    /// Queues a background upload to the bucket, when there is one. A full queue drops the upload,
+    /// and so does a bucket cooling down after a failure.
+    fn enqueue_upload(&self, key: &CacheKey) {
+        let Some(bucket) = &self.bucket else {
+            return;
+        };
+        let Some(uploads) = &bucket.uploads else {
+            return;
+        };
+        if bucket.health.cooling_down() {
+            drop_for_bucket_down(key);
+            return;
+        }
         match uploads.queue.try_send(key.clone()) {
             Ok(()) => {
                 uploads.pending.fetch_add(1, Ordering::Relaxed);
@@ -649,6 +864,42 @@ impl Cache {
     }
 }
 
+/// Reads from the bucket under its deadline and cooldown. Failures and timeouts are misses; they
+/// are counted, and logged when the bucket changes between up and down.
+async fn bucket_read<'a, T>(
+    bucket: &'a BucketHandle,
+    key: &CacheKey,
+    op: &'static str,
+    read: impl FnOnce() -> BoxFuture<'a, io::Result<Option<T>>>,
+) -> Option<T> {
+    let health = &bucket.health;
+    if !health.admit_read() {
+        return None;
+    }
+    let timeout = health.limits.timeout;
+    let result = tokio::time::timeout(timeout, read())
+        .await
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("no answer within {timeout:?}"),
+            ))
+        });
+    match result {
+        Ok(found) => {
+            health.succeeded();
+            let result = if found.is_some() { "hit" } else { "miss" };
+            count_bucket("mammoth_tier_reads_total", result);
+            found
+        }
+        Err(error) => {
+            health.failed(op, key, &error);
+            count_bucket("mammoth_tier_reads_total", "error");
+            None
+        }
+    }
+}
+
 /// Copies a hit from a lower tier into the tiers `above` it while it streams to the client. Each
 /// copy is written in the background and abandoned if it falls behind the client.
 fn promote(key: &CacheKey, from: Tier, blob: Blob, above: &[TierHandle]) -> Blob {
@@ -693,6 +944,7 @@ async fn upload_worker(
     queue: mpsc::Receiver<CacheKey>,
     source: Arc<dyn BlobStore>,
     bucket: Arc<dyn BlobStore>,
+    health: Arc<BucketHealth>,
     pending: Arc<AtomicU64>,
     stop: Arc<Notify>,
 ) {
@@ -716,8 +968,15 @@ async fn upload_worker(
     // finish is always the newest copy.
     let in_flight = Mutex::new(HashMap::<CacheKey, bool>::new());
     keys.for_each_concurrent(UPLOAD_CONCURRENCY, |key| {
-        let (source, bucket, pending, in_flight) = (&source, &bucket, &pending, &in_flight);
+        let (source, bucket, health) = (&source, &bucket, &health);
+        let (pending, in_flight) = (&pending, &in_flight);
         async move {
+            if health.cooling_down() {
+                // Queued before the bucket failed.
+                drop_for_bucket_down(&key);
+                pending.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
             {
                 let mut in_flight = in_flight.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(again) = in_flight.get_mut(&key) {
@@ -728,7 +987,7 @@ async fn upload_worker(
                 in_flight.insert(key.clone(), false);
             }
             loop {
-                upload(&key, source.as_ref(), bucket.as_ref()).await;
+                upload(&key, source.as_ref(), bucket.as_ref(), health).await;
                 let mut in_flight = in_flight.lock().unwrap_or_else(PoisonError::into_inner);
                 if in_flight.get(&key) == Some(&true) {
                     in_flight.insert(key.clone(), false);
@@ -743,21 +1002,39 @@ async fn upload_worker(
     .await;
 }
 
-/// Uploads one entry from `source` to the bucket, and counts the result.
-async fn upload(key: &CacheKey, source: &dyn BlobStore, bucket: &dyn BlobStore) {
-    let result = match source.get(key).await {
-        Ok(Some(blob)) => bucket.put(key, Some(blob.size), blob.body).await.map(Some),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e),
-    };
-    let outcome = match result {
-        Ok(Some(_)) => "ok",
+/// Uploads one entry from `source` to the bucket, and counts the result. Skipped while the bucket
+/// cools down after a failure.
+async fn upload(
+    key: &CacheKey,
+    source: &dyn BlobStore,
+    bucket: &dyn BlobStore,
+    health: &BucketHealth,
+) {
+    if health.cooling_down() {
+        drop_for_bucket_down(key);
+        return;
+    }
+    let outcome = match source.get(key).await {
+        Ok(Some(blob)) => match bucket.put(key, Some(blob.size), blob.body).await {
+            Ok(_) => {
+                health.succeeded();
+                count_bucket("mammoth_tier_writes_total", "ok");
+                "ok"
+            }
+            // The body comes from a local tier, so a failure is the bucket's. The bucket's health
+            // logs it.
+            Err(error) => {
+                health.failed("put", key, &error);
+                count_bucket("mammoth_tier_writes_total", "error");
+                "error"
+            }
+        },
         Ok(None) => {
             tracing::debug!(%key, "entry left the local tiers before its upload");
             "skipped"
         }
         Err(error) => {
-            tracing::warn!(%key, %error, "bucket upload failed");
+            tracing::warn!(%key, %error, "reading an entry back for upload failed");
             "error"
         }
     };
@@ -968,6 +1245,187 @@ mod tests {
         assert_eq!(status.tiers.len(), 1);
         assert_eq!(status.tiers[0].0, Tier::Memory);
         assert_eq!(status.tiers[0].1.entries, 1);
+    }
+
+    mod bucket_outage {
+        use std::{
+            sync::atomic::AtomicU8,
+            time::{Duration, Instant},
+        };
+
+        use super::*;
+        use crate::store::BoxFuture;
+
+        const HANG: u8 = 0;
+        const FAIL: u8 = 1;
+        const ANSWER: u8 = 2;
+
+        /// A bucket that hangs, fails or answers "not found", and counts the calls it gets.
+        #[derive(Debug)]
+        struct FakeBucket {
+            mode: AtomicU8,
+            reads: AtomicU64,
+            writes: AtomicU64,
+        }
+
+        impl FakeBucket {
+            fn new(mode: u8) -> Arc<Self> {
+                Arc::new(Self {
+                    mode: AtomicU8::new(mode),
+                    reads: AtomicU64::new(0),
+                    writes: AtomicU64::new(0),
+                })
+            }
+
+            fn set(&self, mode: u8) {
+                self.mode.store(mode, Ordering::SeqCst);
+            }
+
+            fn reads(&self) -> u64 {
+                self.reads.load(Ordering::SeqCst)
+            }
+
+            fn answer<'a, T: Send + 'a>(&self) -> BoxFuture<'a, io::Result<Option<T>>> {
+                self.reads.fetch_add(1, Ordering::SeqCst);
+                match self.mode.load(Ordering::SeqCst) {
+                    HANG => Box::pin(std::future::pending()),
+                    FAIL => Box::pin(async { Err(io::Error::other("bucket unreachable")) }),
+                    _ => Box::pin(async { Ok(None) }),
+                }
+            }
+        }
+
+        impl BlobStore for FakeBucket {
+            fn tier(&self) -> Tier {
+                Tier::Bucket
+            }
+
+            fn get<'a>(&'a self, _: &'a CacheKey) -> BoxFuture<'a, io::Result<Option<Blob>>> {
+                self.answer()
+            }
+
+            fn head<'a>(&'a self, _: &'a CacheKey) -> BoxFuture<'a, io::Result<Option<u64>>> {
+                self.answer()
+            }
+
+            fn put<'a>(
+                &'a self,
+                _: &'a CacheKey,
+                _: Option<u64>,
+                mut body: ByteStream,
+            ) -> BoxFuture<'a, io::Result<PutOutcome>> {
+                self.writes.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    while body.next().await.is_some() {}
+                    Ok(PutOutcome::Stored)
+                })
+            }
+        }
+
+        const TIMEOUT: Duration = Duration::from_millis(50);
+        const COOLDOWN: Duration = Duration::from_millis(200);
+
+        fn cache_over(bucket: &Arc<FakeBucket>, cooldown: Duration) -> Cache {
+            Cache::builder()
+                .bounded_tier(Arc::new(MemoryStore::new(1 << 20)))
+                .bucket_tier(bucket.clone(), BucketWrite::Sync)
+                .bucket_limits(BucketLimits {
+                    timeout: TIMEOUT,
+                    cooldown,
+                })
+                .build()
+        }
+
+        #[tokio::test]
+        async fn a_hanging_bucket_is_a_miss_within_the_timeout() {
+            let bucket = FakeBucket::new(HANG);
+            let cache = cache_over(&bucket, COOLDOWN);
+            let started = Instant::now();
+            assert!(cache.get(&key("a1")).await.unwrap().is_none());
+            let took = started.elapsed();
+            assert!(took >= TIMEOUT && took < TIMEOUT * 10, "took {took:?}");
+            assert_eq!(cache.bucket_up(), Some(false));
+            assert_eq!(bucket.reads(), 1);
+        }
+
+        #[tokio::test]
+        async fn the_cooldown_skips_the_bucket_then_probes_it() {
+            let bucket = FakeBucket::new(FAIL);
+            let cache = cache_over(&bucket, COOLDOWN);
+            let k = key("a1");
+            assert!(cache.get(&k).await.unwrap().is_none());
+            assert_eq!((bucket.reads(), cache.bucket_up()), (1, Some(false)));
+
+            // Inside the cooldown: misses without calling the bucket, and stores stay local.
+            assert!(cache.get(&k).await.unwrap().is_none());
+            assert_eq!(cache.head(&k).await.unwrap(), None);
+            assert_eq!(bucket.reads(), 1);
+            let stored = cache.put(&key("b2"), Some(1), body(&[b"x"])).await.unwrap();
+            assert_eq!(stored, StoreOutcome::Stored);
+            assert_eq!(bucket.writes.load(Ordering::SeqCst), 0);
+
+            // After it, the first call probes; a failed probe starts a new cooldown.
+            tokio::time::sleep(COOLDOWN + TIMEOUT).await;
+            assert_eq!(cache.head(&k).await.unwrap(), None);
+            assert_eq!(bucket.reads(), 2);
+            assert_eq!(cache.head(&k).await.unwrap(), None);
+            assert_eq!(bucket.reads(), 2);
+
+            // A probe that succeeds brings the bucket back.
+            bucket.set(ANSWER);
+            tokio::time::sleep(COOLDOWN + TIMEOUT).await;
+            assert!(cache.get(&k).await.unwrap().is_none());
+            assert_eq!((bucket.reads(), cache.bucket_up()), (3, Some(true)));
+            assert_eq!(cache.head(&k).await.unwrap(), None);
+            assert_eq!(bucket.reads(), 4);
+            cache.put(&key("c3"), Some(1), body(&[b"x"])).await.unwrap();
+            assert_eq!(bucket.writes.load(Ordering::SeqCst), 1);
+        }
+
+        #[tokio::test]
+        async fn without_a_cooldown_every_call_tries_the_bucket() {
+            let bucket = FakeBucket::new(FAIL);
+            let cache = cache_over(&bucket, Duration::ZERO);
+            for _ in 0..3 {
+                assert_eq!(cache.head(&key("a1")).await.unwrap(), None);
+            }
+            assert_eq!((bucket.reads(), cache.bucket_up()), (3, Some(false)));
+            bucket.set(ANSWER);
+            assert_eq!(cache.head(&key("a1")).await.unwrap(), None);
+            assert_eq!(cache.bucket_up(), Some(true));
+        }
+
+        #[test]
+        fn the_gauge_follows_the_bucket() {
+            let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+            let handle = recorder.handle();
+            let gauge = || {
+                handle
+                    .render()
+                    .lines()
+                    .find(|line| line.starts_with("mammoth_tier_up{tier=\"bucket\"}"))
+                    .map(str::to_owned)
+            };
+            let k = key("a1");
+            let error = io::Error::other("down");
+            metrics::with_local_recorder(&recorder, || {
+                let health = BucketHealth::new(BucketLimits::default());
+                assert_eq!(
+                    gauge().as_deref(),
+                    Some("mammoth_tier_up{tier=\"bucket\"} 1")
+                );
+                health.failed("get", &k, &error);
+                assert_eq!(
+                    gauge().as_deref(),
+                    Some("mammoth_tier_up{tier=\"bucket\"} 0")
+                );
+                health.succeeded();
+                assert_eq!(
+                    gauge().as_deref(),
+                    Some("mammoth_tier_up{tier=\"bucket\"} 1")
+                );
+            });
+        }
     }
 
     mod tiers {

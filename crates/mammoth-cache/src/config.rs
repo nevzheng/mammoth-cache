@@ -203,6 +203,16 @@ pub struct Bucket {
     /// Uploads waiting in the background, for [`BucketWrite::Async`].
     #[serde(default = "default_upload_queue")]
     pub upload_queue: usize,
+    /// The longest a bucket read may take, retries included. A slower read is a miss.
+    #[serde(default = "default_bucket_timeout")]
+    pub timeout: HumanDuration,
+    /// Retries of a failed bucket request, within `timeout`.
+    #[serde(default = "default_bucket_retries")]
+    pub retries: usize,
+    /// After a bucket failure, how long to skip the bucket and serve from the local tiers. `0s`
+    /// turns the cooldown off.
+    #[serde(default = "default_bucket_cooldown")]
+    pub cooldown: HumanDuration,
 }
 
 /// `bucket.write`.
@@ -400,6 +410,21 @@ fn default_upload_queue() -> usize {
     1000
 }
 
+fn default_bucket_timeout() -> HumanDuration {
+    HumanDuration(Duration::from_secs(2))
+}
+
+fn default_bucket_retries() -> usize {
+    1
+}
+
+fn default_bucket_cooldown() -> HumanDuration {
+    HumanDuration(Duration::from_secs(30))
+}
+
+/// The most `bucket.retries` allowed: more only stretch an outage's misses.
+const MAX_BUCKET_RETRIES: usize = 10;
+
 /// A config file that could not be used.
 #[derive(Debug)]
 pub enum ConfigError {
@@ -489,6 +514,17 @@ impl Config {
             && bucket.upload_queue == 0
         {
             return Err("bucket.upload_queue must be at least 1".to_owned());
+        }
+        if let Some(bucket) = &self.bucket {
+            if bucket.timeout.0.is_zero() {
+                return Err("bucket.timeout must be above zero".to_owned());
+            }
+            if bucket.retries > MAX_BUCKET_RETRIES {
+                return Err(format!(
+                    "bucket.retries ({}) must be at most {MAX_BUCKET_RETRIES}",
+                    bucket.retries
+                ));
+            }
         }
         let server = &self.server;
         for (name, value) in [
@@ -742,6 +778,35 @@ mod tests {
         assert_eq!(ci.scopes, [Scope::CacheRead, Scope::CacheWrite]);
         assert_eq!(ci.token_hashes[0].0[0], 0x9f);
         assert_eq!(config.log.format, LogFormat::Text);
+    }
+
+    #[test]
+    fn bucket_limits_have_defaults_and_are_checked() {
+        let bucket = |extra: &str| {
+            parse(&format!(
+                "version = 1\n[bucket]\nurl = \"s3://b/p\"\n{extra}"
+            ))
+        };
+        let defaults = bucket("").unwrap().bucket.unwrap();
+        assert_eq!(defaults.timeout.0, Duration::from_secs(2));
+        assert_eq!(defaults.retries, 1);
+        assert_eq!(defaults.cooldown.0, Duration::from_secs(30));
+
+        let custom = bucket("timeout = \"5s\"\nretries = 0\ncooldown = \"0s\"\n")
+            .unwrap()
+            .bucket
+            .unwrap();
+        assert_eq!(custom.timeout.0, Duration::from_secs(5));
+        assert_eq!(custom.retries, 0);
+        assert!(custom.cooldown.0.is_zero());
+
+        for (extra, message) in [
+            ("timeout = \"0s\"\n", "bucket.timeout must be above zero"),
+            ("retries = 11\n", "bucket.retries (11) must be at most 10"),
+        ] {
+            let err = bucket(extra).unwrap_err();
+            assert!(err.contains(message), "{extra}: {err}");
+        }
     }
 
     #[test]

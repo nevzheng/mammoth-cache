@@ -64,21 +64,21 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 
 #### Per tier
 
-| Metric                                 | Type      | Labels                                    | Meaning                                                             |
-| -------------------------------------- | --------- | ----------------------------------------- | ------------------------------------------------------------------- |
-| `mammoth_tier_reads_total`             | counter   | `tier`, `result` (`hit`, `miss`, `error`) | Reads against a tier                                                |
-| `mammoth_tier_read_duration_seconds`   | histogram | `tier`                                    | Time to first byte from a tier                                      |
-| `mammoth_tier_writes_total`            | counter   | `tier`, `result` (`ok`, `error`)          | Writes to a tier                                                    |
-| `mammoth_tier_write_duration_seconds`  | histogram | `tier`                                    | Time to write an entry to a tier                                    |
-| `mammoth_tier_read_bytes_total`        | counter   | `tier`                                    | Bytes read from a tier                                              |
-| `mammoth_tier_written_bytes_total`     | counter   | `tier`                                    | Bytes written to a tier                                             |
-| `mammoth_tier_promotions_total`        | counter   | `from`, `to`                              | Entries copied up a tier after a hit                                |
-| `mammoth_tier_evictions_total`         | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits                               |
-| `mammoth_bucket_upload_queue_entries`  | gauge     |                                           | Stores waiting to be uploaded to the bucket                         |
-| `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)       | Background uploads by outcome; `skipped` left the local tiers first |
-| `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`)       | Uploads skipped; the entry stays local                              |
-| `mammoth_shutting_down`                | gauge     |                                           | 1 while the node drains ([0013](0013-deployment.md))                |
-| `mammoth_tier_up`                      | gauge     | `tier`                                    | 1 after a tier's last operation succeeded, 0 after it failed        |
+| Metric                                 | Type      | Labels                                             | Meaning                                                             |
+| -------------------------------------- | --------- | -------------------------------------------------- | ------------------------------------------------------------------- |
+| `mammoth_tier_reads_total`             | counter   | `tier`, `result` (`hit`, `miss`, `error`)          | Reads against a tier                                                |
+| `mammoth_tier_read_duration_seconds`   | histogram | `tier`                                             | Time to first byte from a tier                                      |
+| `mammoth_tier_writes_total`            | counter   | `tier`, `result` (`ok`, `error`)                   | Writes to a tier                                                    |
+| `mammoth_tier_write_duration_seconds`  | histogram | `tier`                                             | Time to write an entry to a tier                                    |
+| `mammoth_tier_read_bytes_total`        | counter   | `tier`                                             | Bytes read from a tier                                              |
+| `mammoth_tier_written_bytes_total`     | counter   | `tier`                                             | Bytes written to a tier                                             |
+| `mammoth_tier_promotions_total`        | counter   | `from`, `to`                                       | Entries copied up a tier after a hit                                |
+| `mammoth_tier_evictions_total`         | counter   | `tier`, `reason` (`size`, `age`)                   | Entries removed to stay within limits                               |
+| `mammoth_bucket_upload_queue_entries`  | gauge     |                                                    | Stores waiting to be uploaded to the bucket                         |
+| `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)                | Background uploads by outcome; `skipped` left the local tiers first |
+| `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`, `bucket-down`) | Uploads skipped; the entry stays local                              |
+| `mammoth_shutting_down`                | gauge     |                                                    | 1 while the node drains ([0013](0013-deployment.md))                |
+| `mammoth_tier_up`                      | gauge     | `tier`                                             | 1 after a tier's last operation succeeded, 0 after it failed        |
 
 #### Current population
 

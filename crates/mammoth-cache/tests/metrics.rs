@@ -130,7 +130,7 @@ const CATALOG: &[Metric] = &[
             Label("tier", Some(TIERS)),
             Label("result", Some(&["hit", "miss", "error"])),
         ],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_read_duration_seconds",
@@ -145,7 +145,7 @@ const CATALOG: &[Metric] = &[
             Label("tier", Some(TIERS)),
             Label("result", Some(&["ok", "error"])),
         ],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_write_duration_seconds",
@@ -195,8 +195,11 @@ const CATALOG: &[Metric] = &[
     Metric {
         name: "mammoth_bucket_uploads_dropped_total",
         kind: Kind::Counter,
-        labels: &[Label("reason", Some(&["queue-full", "shutdown"]))],
-        // Only a full upload queue or a drain produces one.
+        labels: &[Label(
+            "reason",
+            Some(&["queue-full", "shutdown", "bucket-down"]),
+        )],
+        // Only a full upload queue, a drain or a bucket outage produces one.
         live: false,
     },
     Metric {
@@ -210,7 +213,7 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_tier_up",
         kind: Kind::Gauge,
         labels: &[Label("tier", Some(TIERS))],
-        live: false,
+        live: true,
     },
     // Current population
     Metric {

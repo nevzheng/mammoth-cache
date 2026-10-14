@@ -286,7 +286,8 @@ is handled inside instead:
 
 - Bounded concurrency for each tier's I/O, with bounded queues in front of it, so a slow disk or
   bucket slows requests rather than exhausting memory.
-- Timeouts on every tier operation. A bucket read that times out is a miss, not an error.
+- Timeouts on every tier operation. A bucket read that times out is a miss, not an error, and after
+  any bucket failure the bucket is skipped for a cooldown (`bucket.timeout`, `bucket.cooldown`).
 - A limit on open connections, so excess clients wait in the listen queue.
 - When the bucket upload queue is full, the upload is dropped and counted. That costs a later miss
   only.
@@ -332,7 +333,7 @@ flowchart LR
 | Authentication (0002)        | Done: users, token hashes, scopes, Basic and Bearer; open until configured                   |
 | Metrics (0004)               | Request counters and memory evictions only; the rest of the catalog is missing               |
 | Health                       | Done: `/ping`, `/livez`; `/readyz` checks config, shutdown, disk writability and free space  |
-| Flow control                 | Connection idle and body read timeouts, bounded upload queue; no per-tier limits or timeouts |
+| Flow control                 | Idle and body read timeouts, upload queue, bucket deadline and cooldown; no per-tier limits  |
 | TLS                          | In progress; terminate at the proxy until then                                               |
 
 Without `[disk]`, a node keeps nothing across a restart, and entries are capped at
