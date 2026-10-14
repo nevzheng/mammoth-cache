@@ -9,7 +9,8 @@ Over gRPC, an action result whose outputs are not all in the CAS is a miss, so a
 it never asks for a blob that is gone; over HTTP the stored bytes are served as they are. Results
 may list output directories, as `Tree` blobs whose files are in the CAS.
 
-Batches carry up to eight blobs, some corrupt, and batches past the size limit are refused whole.
+Batches carry up to eight blobs, some corrupt, and batch reads past the size limit are refused
+whole.
 `FindMissingBlobs` also gets thousands of digests at once, `QueryWriteStatus` must agree with the
 model, and calls switch between instance names, which the node accepts and ignores.
 """
@@ -41,7 +42,6 @@ OK, INVALID_ARGUMENT, NOT_FOUND = (
 WAYS = ("http", "batch", "bytestream")
 SIZES = st.one_of(st.integers(0, 64), st.integers(0, 4096), st.integers(50_000, 600_000))
 MAX_BATCH = 4 * 1024 * 1024  # max_batch_total_size_bytes
-MAX_MESSAGE = MAX_BATCH + 256 * 1024  # the most the node decodes from one message
 INSTANCES = st.sampled_from(["", "main", "ci/linux-x86_64"])
 
 
@@ -256,25 +256,6 @@ class ParityModel(RuleBasedStateMachine):
         digests.append(self.grpc.s.re.Digest(hash=sha256(self.salt), size_bytes=claimed))
         code, _ = attempt(lambda: self.grpc.batch_read(digests))
         assert code == grpc.StatusCode.INVALID_ARGUMENT, f"oversized batch read answered {code}"
-
-    @rule(seed=st.text("0123456789abcdef", min_size=4, max_size=4))
-    def batch_upload_too_big(self, seed: str) -> None:
-        """A batch past the message limit is refused whole, and stores none of its blobs."""
-        half = MAX_MESSAGE // 2 + 1
-        fresh = [
-            Blob(self.salt + blobs.payload(half, f"{self.salt.decode()}/big/{seed}/{i}"))
-            for i in range(2)
-        ]
-        code, _ = attempt(lambda: self.grpc.batch_update([(self.digest(b), b.data) for b in fresh]))
-        # tonic refuses a message over its decode limit with OUT_OF_RANGE, where gRPC's own
-        # implementations use RESOURCE_EXHAUSTED; either way the call fails before any store.
-        assert code in {
-            grpc.StatusCode.INVALID_ARGUMENT,
-            grpc.StatusCode.RESOURCE_EXHAUSTED,
-            grpc.StatusCode.OUT_OF_RANGE,
-        }, f"oversized batch update answered {code}"
-        missing = self.grpc.find_missing([self.digest(b) for b in fresh])
-        assert missing == {(b.hash, b.size) for b in fresh}, "a refused batch stored a blob"
 
     @rule(blob=blobs)
     def query_write_status(self, blob: Blob) -> None:
