@@ -31,12 +31,9 @@ use mammoth_cache::{
                 content_addressable_storage_client::ContentAddressableStorageClient,
                 digest_function, execution_client::ExecutionClient,
             },
-            google::{
-                bytestream::{
-                    QueryWriteStatusRequest, ReadRequest, WriteRequest,
-                    byte_stream_client::ByteStreamClient,
-                },
-                rpc,
+            google::bytestream::{
+                QueryWriteStatusRequest, ReadRequest, WriteRequest,
+                byte_stream_client::ByteStreamClient,
             },
         },
     },
@@ -52,6 +49,7 @@ use tonic::{
     metadata::MetadataValue,
     transport::{Channel, Endpoint},
 };
+use tonic_types::{ErrorInfo, RpcStatusExt, StatusExt};
 use tower::ServiceExt;
 
 const LIMIT: u64 = 1 << 20;
@@ -161,11 +159,15 @@ fn digest_of(data: &[u8]) -> Digest {
     }
 }
 
-fn reason(status: &Status) -> String {
-    let details = rpc::Status::decode(status.details()).unwrap();
-    let info = rpc::ErrorInfo::decode(details.details[0].value.as_slice()).unwrap();
+/// The status's `ErrorInfo`, which every error carries in the `mammoth-cache.dev` domain.
+fn info(status: &Status) -> ErrorInfo {
+    let info = status.get_details_error_info().unwrap();
     assert_eq!(info.domain, "mammoth-cache.dev");
-    info.reason
+    info
+}
+
+fn reason(status: &Status) -> String {
+    info(status).reason
 }
 
 async fn upload(node: &Node, blobs: &[&[u8]]) {
@@ -329,6 +331,30 @@ async fn batch_upload_checks_each_blob() {
         .collect();
     let invalid = Code::InvalidArgument as i32;
     assert_eq!(codes, [0, invalid, invalid, invalid]);
+    // Each failed blob carries the same `ErrorInfo` it would fail a call with.
+    let reasons: Vec<String> = response[1..]
+        .iter()
+        .map(|r| {
+            let info = r.status.as_ref().unwrap().get_details_error_info().unwrap();
+            assert_eq!(info.domain, "mammoth-cache.dev");
+            info.reason
+        })
+        .collect();
+    assert_eq!(
+        reasons,
+        ["DIGEST_MISMATCH", "SIZE_MISMATCH", "INVALID_DIGEST"]
+    );
+    let size_mismatch = response[2]
+        .status
+        .as_ref()
+        .unwrap()
+        .get_details_error_info()
+        .unwrap();
+    assert_eq!(
+        size_mismatch.metadata["key"],
+        digest_of(b"short").hash,
+        "the bare digest"
+    );
     // The mismatched blob was not stored under the digest it claimed.
     let missing = node
         .cas()
@@ -484,7 +510,9 @@ async fn bytestream_read_misses() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert_eq!(reason(&err), "ENTRY_NOT_FOUND");
+    let not_found = info(&err);
+    assert_eq!(not_found.reason, "ENTRY_NOT_FOUND");
+    assert_eq!(not_found.metadata["key"], digest_of(b"nothing here").hash);
     let status = node
         .bytestream()
         .query_write_status(QueryWriteStatusRequest {
@@ -514,7 +542,9 @@ async fn bytestream_write_checks_the_digest() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);
-    assert_eq!(reason(&err), "DIGEST_MISMATCH");
+    let mismatch = info(&err);
+    assert_eq!(mismatch.reason, "DIGEST_MISMATCH");
+    assert_eq!(mismatch.metadata["key"], claimed.hash);
     assert_eq!(
         read(&node, &claimed, 0, 0).await.unwrap_err().code(),
         Code::NotFound
@@ -583,7 +613,9 @@ async fn oversized_blobs_are_refused_without_retry() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::InvalidArgument);
-    assert_eq!(reason(&err), "ENTRY_TOO_LARGE");
+    let too_large = info(&err);
+    assert_eq!(too_large.reason, "ENTRY_TOO_LARGE");
+    assert_eq!(too_large.metadata["maxEntryBytes"], LIMIT.to_string());
 }
 
 fn result_with(outputs: &[&[u8]]) -> ActionResult {
@@ -773,7 +805,9 @@ async fn calls_need_the_cache_scopes() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::PermissionDenied);
-    assert_eq!(reason(&err), "SCOPE_MISSING");
+    let scope = info(&err);
+    assert_eq!(scope.reason, "SCOPE_MISSING");
+    assert_eq!(scope.metadata["requiredScope"], "cache:write");
 
     let basic = format!(
         "Basic {}",

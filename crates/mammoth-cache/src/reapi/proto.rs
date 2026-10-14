@@ -36,7 +36,6 @@ pub mod google {
     pub mod longrunning {
         include!("proto/google.longrunning.rs");
     }
-    pub mod rpc {
-        include!("proto/google.rpc.rs");
-    }
+    /// `google.rpc` comes from tonic-types, which builds and reads its details.
+    pub use tonic_types::pb as rpc;
 }

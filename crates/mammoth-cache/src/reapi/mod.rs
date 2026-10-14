@@ -26,6 +26,7 @@ use tonic::service::Routes;
 pub use services::{MAX_MESSAGE_BYTES, MAX_REQUEST_BYTES, Services};
 
 use crate::{
+    api::error::Reason,
     auth::Authenticator,
     cache::Cache,
     server::{self, ServerSettings, TlsSettings},
@@ -92,10 +93,8 @@ async fn too_large(request: Request, next: Next) -> Response {
         return response;
     }
     status::error(
-        tonic::Code::ResourceExhausted,
-        "MESSAGE_TOO_LARGE",
+        Reason::MessageTooLarge,
         status.message().replace("Error, decoded", "The"),
-        &[],
     )
     .into_http::<axum::body::Body>()
 }

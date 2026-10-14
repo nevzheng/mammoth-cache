@@ -9,7 +9,10 @@ use super::{
     proto::build::bazel::remote::execution::v2::{Digest, digest_function},
     status,
 };
-use crate::key::{CacheKey, Namespace};
+use crate::{
+    api::error::Reason,
+    key::{CacheKey, Namespace},
+};
 
 /// The SHA-256 of nothing. A client may assume the empty blob is always present, so it is never
 /// stored or looked up.
@@ -35,24 +38,23 @@ impl Blob {
     }
 
     fn new(namespace: Namespace, digest: Option<&Digest>) -> Result<Self, Status> {
-        let digest = digest
-            .ok_or_else(|| status::invalid_argument("INVALID_DIGEST", "The digest is missing."))?;
-        let size = u64::try_from(digest.size_bytes).map_err(|_| {
-            status::invalid_argument("INVALID_DIGEST", "The digest's size is negative.")
-        })?;
+        let digest =
+            digest.ok_or_else(|| status::error(Reason::InvalidDigest, "The digest is missing."))?;
+        let size = u64::try_from(digest.size_bytes)
+            .map_err(|_| status::error(Reason::InvalidDigest, "The digest's size is negative."))?;
         Self::parse(namespace, &digest.hash, size)
     }
 
     fn parse(namespace: Namespace, hash: &str, size: u64) -> Result<Self, Status> {
         let key = CacheKey::bazel(namespace, hash).map_err(|_| {
-            status::invalid_argument(
-                "INVALID_DIGEST",
+            status::error(
+                Reason::InvalidDigest,
                 "A digest's hash must be a SHA-256 in 64 lowercase hex characters.",
             )
         })?;
         if namespace == Namespace::BazelCas && (size == 0) != (hash == EMPTY_SHA256) {
-            return Err(status::invalid_argument(
-                "INVALID_DIGEST",
+            return Err(status::error(
+                Reason::InvalidDigest,
                 "Only the empty blob has size 0.",
             ));
         }
@@ -94,8 +96,8 @@ impl Blob {
 pub(crate) fn check_function(function: i32) -> Result<(), Status> {
     match digest_function::Value::try_from(function) {
         Ok(digest_function::Value::Unknown | digest_function::Value::Sha256) => Ok(()),
-        _ => Err(status::invalid_argument(
-            "UNSUPPORTED_DIGEST_FUNCTION",
+        _ => Err(status::error(
+            Reason::UnsupportedDigestFunction,
             "Only SHA-256 digests are supported.",
         )),
     }
@@ -141,15 +143,15 @@ fn parse_size(name: &str, size: &str) -> Result<u64, Status> {
 
 fn invalid_resource(name: &str) -> Status {
     let shown: String = name.chars().take(200).collect();
-    status::invalid_argument(
-        "INVALID_RESOURCE_NAME",
+    status::error(
+        Reason::InvalidResourceName,
         format!("{shown:?} is not a valid blob resource name."),
     )
 }
 
 fn compressed() -> Status {
-    status::invalid_argument(
-        "UNSUPPORTED_COMPRESSOR",
+    status::error(
+        Reason::UnsupportedCompressor,
         "Compressed blobs are not supported; GetCapabilities lists no compressors.",
     )
 }

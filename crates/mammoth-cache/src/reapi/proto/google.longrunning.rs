@@ -14,7 +14,7 @@ pub mod operation {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Result {
         #[prost(message, tag = "4")]
-        Error(super::super::rpc::Status),
+        Error(::tonic_types::pb::Status),
         #[prost(message, tag = "5")]
         Response(::prost_types::Any),
     }

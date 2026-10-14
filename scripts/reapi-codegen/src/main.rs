@@ -11,7 +11,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         [
             "build/bazel/remote/execution/v2/remote_execution.proto",
             "google/bytestream/bytestream.proto",
-            "google/rpc/error_details.proto",
         ],
         [&protos],
     )?;
@@ -22,6 +21,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .build_transport(false)
         // Blob data as `Bytes`, so it moves to and from the tiers without copies.
         .bytes(".")
+        // `google.rpc.Status` and its details come from tonic-types, whose helpers build and
+        // read them.
+        .extern_path(".google.rpc", "::tonic_types::pb")
         .emit_rerun_if_changed(false)
         .out_dir(&out)
         .compile_fds(files)?;

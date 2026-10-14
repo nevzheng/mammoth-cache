@@ -1,45 +1,72 @@
 //! gRPC errors in the AIP-193 shape: a `google.rpc.Status` whose details carry one
-//! `google.rpc.ErrorInfo` in the `mammoth-cache.dev` domain, with the same reasons as the HTTP
-//! adapters where they overlap.
+//! `google.rpc.ErrorInfo` in the `mammoth-cache.dev` domain. Reasons and metadata come from the
+//! catalogue in [`crate::api::error`], so a failure has the same reason here as over HTTP; the
+//! canonical code becomes the `tonic::Code` one to one.
+
+use std::borrow::Cow;
 
 use prost::Message;
-use tonic::{Code, Status};
+use tonic::Status;
+use tonic_types::{ErrorDetails, StatusExt};
 
 use super::proto::google::rpc;
 use crate::{
-    api::error::DOMAIN,
-    cache::{self, Detail},
+    api::error::{self, Code, DOMAIN, Reason},
+    cache,
     key::CacheKey,
 };
 
-/// A status with an `ErrorInfo` detail.
-pub(crate) fn error(
-    code: Code,
-    reason: &'static str,
-    message: impl Into<String>,
-    metadata: &[(&str, &str)],
-) -> Status {
-    let message = message.into();
-    let info = rpc::ErrorInfo {
-        reason: reason.to_owned(),
-        domain: DOMAIN.to_owned(),
-        metadata: metadata
-            .iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-            .collect(),
-    };
-    let details = rpc::Status {
-        code: code as i32,
-        message: message.clone(),
-        details: vec![prost_types::Any {
-            type_url: "type.googleapis.com/google.rpc.ErrorInfo".to_owned(),
-            value: info.encode_to_vec(),
-        }],
-    };
-    Status::with_details(code, message, details.encode_to_vec().into())
+/// The gRPC code for a canonical code.
+#[must_use]
+pub(crate) const fn code(code: Code) -> tonic::Code {
+    match code {
+        Code::Cancelled => tonic::Code::Cancelled,
+        Code::Unknown => tonic::Code::Unknown,
+        Code::InvalidArgument => tonic::Code::InvalidArgument,
+        Code::DeadlineExceeded => tonic::Code::DeadlineExceeded,
+        Code::NotFound => tonic::Code::NotFound,
+        Code::AlreadyExists => tonic::Code::AlreadyExists,
+        Code::PermissionDenied => tonic::Code::PermissionDenied,
+        Code::ResourceExhausted => tonic::Code::ResourceExhausted,
+        Code::FailedPrecondition => tonic::Code::FailedPrecondition,
+        Code::Aborted => tonic::Code::Aborted,
+        Code::OutOfRange => tonic::Code::OutOfRange,
+        Code::Unimplemented => tonic::Code::Unimplemented,
+        Code::Internal => tonic::Code::Internal,
+        Code::Unavailable => tonic::Code::Unavailable,
+        Code::DataLoss => tonic::Code::DataLoss,
+        Code::Unauthenticated => tonic::Code::Unauthenticated,
+    }
 }
 
-/// The `google.rpc.Status` for one blob of a batch call.
+impl From<&error::Status> for Status {
+    fn from(status: &error::Status) -> Self {
+        let metadata = status
+            .metadata()
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        Self::with_error_details(
+            code(status.code()),
+            status.message(),
+            ErrorDetails::with_error_info(status.reason().as_str(), DOMAIN, metadata),
+        )
+    }
+}
+
+impl From<error::Status> for Status {
+    fn from(status: error::Status) -> Self {
+        Self::from(&status)
+    }
+}
+
+/// A status for `reason`, without metadata.
+pub(crate) fn error(reason: Reason, message: impl Into<Cow<'static, str>>) -> Status {
+    error::Status::new(reason, message).into()
+}
+
+/// The `google.rpc.Status` for one blob of a batch call: the same code, message and details the
+/// call would fail with.
 pub(crate) fn to_rpc(status: &Status) -> rpc::Status {
     if !status.details().is_empty()
         && let Ok(decoded) = rpc::Status::decode(status.details())
@@ -58,89 +85,32 @@ pub(crate) fn ok() -> rpc::Status {
     rpc::Status::default()
 }
 
-pub(crate) fn invalid_argument(reason: &'static str, message: impl Into<String>) -> Status {
-    error(Code::InvalidArgument, reason, message, &[])
-}
-
 pub(crate) fn not_found(key: &CacheKey) -> Status {
-    error(
-        Code::NotFound,
-        "ENTRY_NOT_FOUND",
-        format!("No entry {key}."),
-        &[("key", key.as_str())],
-    )
+    error::Status::new(Reason::EntryNotFound, format!("No entry {}.", key.name()))
+        .with("key", key.name())
+        .into()
 }
 
 pub(crate) fn digest_mismatch(key: &CacheKey) -> Status {
-    error(
-        Code::InvalidArgument,
-        "DIGEST_MISMATCH",
+    error::Status::new(
+        Reason::DigestMismatch,
         "The content does not hash to its digest.",
-        &[("key", key.as_str())],
     )
+    .with("key", key.name())
+    .into()
 }
 
-/// An entry over `limits.max_entry_size`. `INVALID_ARGUMENT`, not `RESOURCE_EXHAUSTED`: clients
-/// retry the latter, and an entry that is too large stays too large.
-pub(crate) fn too_large(size: Option<u64>, limit: u64) -> Status {
-    let limit_text = limit.to_string();
-    let message = match size {
-        Some(size) => format!("The entry is {size} bytes; the limit is {limit}."),
-        None => format!("The entry is over the limit of {limit} bytes."),
-    };
-    error(
-        Code::InvalidArgument,
-        "ENTRY_TOO_LARGE",
-        message,
-        &[("limit", &limit_text)],
-    )
-}
-
-/// A storage error as a status. A bucket outage never gets here: the core turns it into misses.
-pub(crate) fn storage(error: &cache::Error) -> Status {
-    if let Some(&Detail::TooLarge { size, limit }) = error.detail() {
-        return too_large(size, limit);
+/// A storage error as a status, logged here because only here is its source chain. A bucket
+/// outage never gets here: the core turns it into misses.
+pub(crate) fn storage(e: &cache::Error) -> Status {
+    let status = error::Status::from(e);
+    match status.code() {
+        Code::Unavailable => tracing::warn!(error = %e, "storage unavailable"),
+        Code::Internal => tracing::error!(error = %e, "storage error"),
+        // The client's fault, and usually the client is gone.
+        _ => tracing::debug!(error = %e, "upload failed"),
     }
-    if error.is_upload() {
-        tracing::debug!(%error, "upload failed");
-        return self::error(
-            Code::InvalidArgument,
-            "UPLOAD_INCOMPLETE",
-            "The upload failed before it completed.",
-            &[],
-        );
-    }
-    match error.code() {
-        cache::Code::Unavailable => {
-            tracing::warn!(%error, "storage unavailable");
-            self::error(
-                Code::Unavailable,
-                "STORAGE_UNAVAILABLE",
-                "Storage is unavailable.",
-                &[],
-            )
-        }
-        // The core sends no other code today; the catalogue (design doc 0017, step 3) maps each
-        // one.
-        cache::Code::Cancelled
-        | cache::Code::Unknown
-        | cache::Code::InvalidArgument
-        | cache::Code::DeadlineExceeded
-        | cache::Code::NotFound
-        | cache::Code::AlreadyExists
-        | cache::Code::PermissionDenied
-        | cache::Code::ResourceExhausted
-        | cache::Code::FailedPrecondition
-        | cache::Code::Aborted
-        | cache::Code::OutOfRange
-        | cache::Code::Unimplemented
-        | cache::Code::Internal
-        | cache::Code::DataLoss
-        | cache::Code::Unauthenticated => {
-            tracing::error!(%error, "storage error");
-            self::error(Code::Internal, "STORAGE_ERROR", "Storage failed.", &[])
-        }
-    }
+    status.into()
 }
 
 #[cfg(test)]
@@ -149,19 +119,43 @@ mod tests {
 
     #[test]
     fn details_carry_error_info() {
-        let status = invalid_argument("INVALID_DIGEST", "bad");
-        assert_eq!(status.code(), Code::InvalidArgument);
-        let rpc = to_rpc(&status);
-        assert_eq!(rpc.code, Code::InvalidArgument as i32);
-        let info = rpc::ErrorInfo::decode(rpc.details[0].value.as_slice()).unwrap();
-        assert_eq!(info.reason, "INVALID_DIGEST");
+        let status: Status = error::Status::new(Reason::ScopeMissing, "no")
+            .with("user", "ci")
+            .into();
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert_eq!(status.message(), "no");
+        let info = status.get_details_error_info().unwrap();
+        assert_eq!(info.reason, "SCOPE_MISSING");
         assert_eq!(info.domain, DOMAIN);
+        assert_eq!(info.metadata["user"], "ci");
+
+        let rpc = to_rpc(&status);
+        assert_eq!(rpc.code, tonic::Code::PermissionDenied as i32);
+        assert_eq!(rpc.message, "no");
+        assert_eq!(
+            rpc.details[0].type_url,
+            "type.googleapis.com/google.rpc.ErrorInfo"
+        );
+    }
+
+    #[test]
+    fn every_reason_keeps_its_code() {
+        for &reason in Reason::ALL {
+            let status = error(reason, "x");
+            assert_eq!(status.code(), code(reason.code()), "{reason:?}");
+            let info = status.get_details_error_info().unwrap();
+            assert_eq!(info.reason, reason.as_str());
+        }
     }
 
     #[test]
     fn too_large_is_not_retryable() {
-        let status = too_large(Some(10), 5);
-        assert_eq!(status.code(), Code::InvalidArgument);
+        let status = storage(&cache::Error::too_large(Some(10), 5));
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert!(status.message().contains("10 bytes"));
+        let info = status.get_details_error_info().unwrap();
+        assert_eq!(info.reason, "ENTRY_TOO_LARGE");
+        assert_eq!(info.metadata["maxEntryBytes"], "5");
+        assert_eq!(info.metadata["entryBytes"], "10");
     }
 }

@@ -57,6 +57,7 @@ tokio-rustls = "0.26"
 toml = "1.1.8"
 tonic = { version = "0.14.6", default-features = false, features = ["codegen", "router", "server", "tls-connect-info"] }
 tonic-prost = "0.14.6"
+tonic-types = "0.14.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
