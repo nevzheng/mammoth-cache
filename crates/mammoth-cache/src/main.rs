@@ -233,6 +233,7 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         let store = BucketStore::open(&BucketConfig {
             region: bucket.region.clone(),
             endpoint: bucket.endpoint.clone(),
+            allow_http: bucket.allow_http,
             ..BucketConfig::new(bucket.url.clone())
         })?;
         let write = match bucket.write {

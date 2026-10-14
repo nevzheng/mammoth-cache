@@ -156,12 +156,15 @@ tier is built on the `object_store` crate.
 | `url`          | string  | required             | `s3://`, `gs://`, `az://` or `file://` URL, with an optional prefix    |
 | `region`       | string  | from the environment | Region, for S3                                                         |
 | `endpoint`     | string  | none                 | Endpoint for S3-compatible stores such as MinIO or R2                  |
+| `allow_http`   | boolean | `false`              | Allow an `http://` endpoint, such as a local MinIO, SeaweedFS, Azurite |
 | `write`        | string  | `async`              | `async` answers a store once it's on disk; `sync` waits for the upload |
 | `upload_queue` | integer | `1000`               | Uploads waiting at once, for `async`; more are dropped and counted     |
 
-Credentials come from the cloud's default credential chain (environment, instance or workload
-identity), never from the file. Entries are never deleted from the bucket; set a lifecycle rule,
-for example 30 days, to expire them.
+Credentials come from the environment, never from the file: workload identity (EKS IRSA or Pod
+Identity, GKE, AKS), instance roles and VM service accounts, or keys in the cloud's usual variables
+(`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for S3-compatible stores). AWS profiles and SSO are
+not read. Design doc [0003](../design/0003-architecture.md#bucket-access) lists what works. Entries
+are never deleted from the bucket; set a lifecycle rule, for example 30 days, to expire them.
 
 ### `[auth]`
 
