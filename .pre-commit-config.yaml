@@ -19,6 +19,24 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: ruff-format
+        name: ruff format (tests/)
+        entry: uv run --project tests ruff format --check tests
+        language: system
+        files: ^tests/.*\.py$
+        pass_filenames: false
+      - id: ruff-check
+        name: ruff check (tests/)
+        entry: uv run --project tests ruff check tests
+        language: system
+        files: ^tests/.*\.py$
+        pass_filenames: false
+      - id: pyrefly
+        name: pyrefly check (tests/)
+        entry: uv run --project tests pyrefly check --config tests/pyproject.toml
+        language: system
+        files: ^tests/.*\.py$
+        pass_filenames: false
       - id: buildifier
         name: buildifier
         entry: bazel run @buildifier_prebuilt//:buildifier -- -lint=warn

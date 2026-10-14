@@ -1,0 +1,52 @@
+# The Docker Compose stack in deploy/compose, started and stopped by the harness.
+name = "compose"
+base_url = "http://localhost:5071"
+open_base_url = "http://localhost:5073"
+prometheus_url = "http://localhost:9090"
+proxy_url = "http://localhost:8080" # nginx, set up as docs/user/deployment.md says
+proxy_defaults_url = "http://localhost:8081" # the same nginx on its defaults
+
+# Server features this target has. Tests that need a missing one are skipped, so a feature is
+# switched on here in the PR that builds it. Known: config, auth, disk, bucket, bazel.
+features = ["config", "auth", "disk", "bucket", "bazel"]
+
+# Must match deploy/compose/config/*.toml.
+max_entry_size = 16_777_216 # [limits] max_entry_size = "16MiB"
+memory_max_entry_size = 8_388_608 # [memory] max_entry_size = "8MiB"
+
+control = true # the harness may stop, restart and wipe services
+destructive = true # tests may delete what they find in the bucket
+default_user = "ci"
+anonymous_scopes = [] # [auth] anonymous in deploy/compose/config/mammoth.toml
+
+[compose]
+file = "../../deploy/compose/compose.yaml"
+project = "mammoth-e2e"
+
+[bucket]
+name = "mammoth-e2e"
+prefix = "mammoth/"
+endpoint = "http://localhost:8333"
+access_key_id = "mammoth-e2e"
+secret_access_key = "mammoth-e2e-secret"
+
+# Test-only tokens for the users in deploy/compose/config/mammoth.toml. They protect nothing.
+[users.ci] # cache:read, cache:write
+username = "ci"
+token = "mmc_e2eCiTokenNotSecretUsedOnlyInTests000001"
+scopes = ["cache:read", "cache:write"]
+
+[users.developer] # cache:read
+username = "developer"
+token = "mmc_e2eDeveloperTokenNotSecretOnlyInTests02"
+scopes = ["cache:read"]
+
+[users.prometheus] # metrics:read
+username = "prometheus"
+token = "mmc_e2ePrometheusTokenNotSecretOnlyInTest03"
+scopes = ["metrics:read"]
+
+[users.admin] # admin:read
+username = "admin"
+token = "mmc_e2eAdminTokenNotSecretUsedOnlyInTests04"
+scopes = ["admin:read"]

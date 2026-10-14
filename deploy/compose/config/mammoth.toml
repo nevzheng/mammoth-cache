@@ -1,0 +1,54 @@
+# mammoth's config for the Compose stack and the test suites. Sizes are small so tests can reach
+# every limit and tier quickly. The tokens below are test-only and protect nothing; their plain
+# values are in tests/targets/compose.toml.
+version = 1
+listen = "0.0.0.0:5071"
+
+[limits]
+max_entry_size = "16MiB"
+
+[memory]
+size = "256MiB"
+max_entry_size = "8MiB"
+
+[disk]
+path = "/var/lib/mammoth"
+size = "1GiB"
+free_space_buffer = "64MiB"
+
+[bucket]
+url = "s3://mammoth-e2e/mammoth/"
+region = "us-east-1"
+endpoint = "http://seaweedfs:8333"
+
+[protocols]
+gradle = true
+maven = true
+bazel = true
+
+[auth]
+anonymous = []
+
+[auth.users.ci]
+note = "Read and write"
+scopes = ["cache:read", "cache:write"]
+token_hashes = ["sha256:4d1e6aaa9c67470cab51154f354b65ea6ad43112047149fdcef91a3c7625a229"]
+
+[auth.users.developer]
+note = "Read only"
+scopes = ["cache:read"]
+token_hashes = ["sha256:ec48e51da0c37775419b67e934fa462557c0f51833e2c980c782074139ac5a0e"]
+
+[auth.users.prometheus]
+note = "Metrics only"
+scopes = ["metrics:read"]
+token_hashes = ["sha256:c0ddcdc0ce061e0dce233b7d75aff58e8cfc16026afdc13f140ac656e35f27a1"]
+
+[auth.users.admin]
+note = "Admin API only"
+scopes = ["admin:read"]
+token_hashes = ["sha256:a006dc2d0df8cfa2a64b03373f35c1be477dc9967ec8799833ed57b6fa34282b"]
+
+[log]
+level = "info"
+format = "text"

@@ -1,0 +1,14 @@
+# Scrapes every mammoth node and SeaweedFS. A missing node (mammoth-2 outside the `multi` profile)
+# shows as a down target and is harmless.
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+
+scrape_configs:
+  - job_name: mammoth
+    static_configs:
+      - targets: ["mammoth:5071", "mammoth-open:5071", "mammoth-proxied:5071", "mammoth-2:5071"]
+
+  - job_name: seaweedfs
+    static_configs:
+      - targets: ["seaweedfs:9324"]
