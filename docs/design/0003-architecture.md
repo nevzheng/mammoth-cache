@@ -325,8 +325,8 @@ flowchart LR
 | L1 memory                    | Done: foyer, five eviction policies, eviction counter                                        |
 | L2 disk                      | Done: atomic writes, CRC32C, warm index, LRU and age; set by `[disk]`                        |
 | L3 bucket                    | Done: S3, GCS, Azure, local files; set by `[bucket]`                                         |
-| Core read path               | Lookup in order, failed tier skipped; no promotion, no single-flight                         |
-| Core write path              | Writes the first tier only; no L2-then-bucket path, no upload queue                          |
+| Core read path               | Lookup in order, failed tier skipped, hits promoted to faster tiers; no single-flight        |
+| Core write path              | Writes every local tier at once; bucket inline or through a bounded upload queue             |
 | Configuration (0005)         | Done: `mammoth.toml`, `config check`; some keys validated but not enforced yet               |
 | Authentication (0002)        | Not started: every route is open                                                             |
 | Metrics (0004)               | Request counters and memory evictions only; the rest of the catalog is missing               |

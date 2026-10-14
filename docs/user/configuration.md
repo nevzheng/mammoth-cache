@@ -2,8 +2,8 @@
 
 mammoth-cache reads one TOML file at startup. If no path is given and `./mammoth.toml` doesn't
 exist, the node runs on the defaults with memory only, so `docker run` works without a file, but
-entries are lost on restart. [Not enforced yet](#not-enforced-yet) lists the keys that are
-validated but don't take effect yet.
+entries are lost on restart, and entries over `memory.max_entry_size` are treated as oversized.
+[Not enforced yet](#not-enforced-yet) lists the keys that are validated but don't take effect yet.
 
 ## The config file
 
@@ -161,5 +161,5 @@ the environment. It can live in version control and be readable by anyone who ru
 mammoth-cache is pre-alpha. These keys are read and validated but don't take effect yet:
 
 - `[auth]` and `metrics.require_auth`: every request is allowed, and the node logs a warning.
-- `disk.free_space_buffer`, `bucket.write`, `bucket.upload_queue` and `log.access_log`.
+- `disk.free_space_buffer` and `log.access_log`.
 - `[tls]` is rejected; terminate TLS in a proxy.
