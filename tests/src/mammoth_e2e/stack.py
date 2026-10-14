@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from mammoth_e2e.bucket import BucketInspector
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -28,12 +30,19 @@ class Stack:
     compose: Compose
     target: Target
 
-    def _run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, *args: str, check: bool = True, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
         argv = ["docker", "compose", "-f", str(self.compose.file), "-p", self.compose.project]
         for profile in self.compose.profiles:
             argv += ["--profile", profile]
         result = subprocess.run(
-            [*argv, *args], capture_output=True, text=True, check=False, env=os.environ.copy()
+            [*argv, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=os.environ.copy(),
+            timeout=timeout,
         )
         if check and result.returncode != 0:
             msg = f"docker compose {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
@@ -54,6 +63,8 @@ class Stack:
     def start(self, *services: str) -> None:
         self._run("start", *services)
         self.wait_ready()
+        if "seaweedfs" in services:
+            self.wait_bucket()
 
     def restart(self, *services: str) -> None:
         self._run("restart", *services)
@@ -65,6 +76,20 @@ class Stack:
 
     def unpause(self, *services: str) -> None:
         self._run("unpause", *services)
+        if "seaweedfs" in services:
+            self.wait_bucket()
+
+    def wait_bucket(self, timeout: float = 60.0) -> None:
+        """Wait until the bucket takes writes again: SeaweedFS answers health checks before its
+        master has a leader, and writes fail until it does."""
+        if self.target.bucket is None:
+            return
+        bucket = BucketInspector.connect(self.target.bucket)
+        deadline = time.monotonic() + timeout
+        while not bucket.writable():
+            if time.monotonic() > deadline:
+                raise StackError(f"bucket not writable after {timeout}s")
+            time.sleep(0.5)
 
     def kill(self, service: str, signal: str = "SIGTERM") -> None:
         """Send a signal to a service's container, as Kubernetes does when it stops a pod."""
@@ -82,6 +107,27 @@ class Stack:
             if time.monotonic() > deadline:
                 raise StackError(f"{service} still running after {timeout}s")
             time.sleep(0.2)
+
+    def run_once(self, service: str, timeout: float = 30.0) -> tuple[int | None, str]:
+        """Start a throwaway second container of a service, sharing its volumes.
+
+        Returns its exit code and output; the code is None if it was still running at `timeout`.
+        """
+        try:
+            result = self._run("run", "--rm", "--no-deps", "-T", service, check=False,
+                               timeout=timeout)  # fmt: skip
+        except subprocess.TimeoutExpired as e:
+            project = f"label=com.docker.compose.project={self.compose.project}"
+            ids = subprocess.run(
+                ["docker", "ps", "-q", "--filter", project, "--filter",
+                 "label=com.docker.compose.oneoff=True"],
+                capture_output=True, text=True, check=False,
+            ).stdout.split()  # fmt: skip
+            if ids:
+                subprocess.run(["docker", "rm", "-f", *ids], capture_output=True, check=False)
+            output = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+            return None, output
+        return result.returncode, result.stdout + result.stderr
 
     def wipe_disk(self, service: str) -> None:
         """Empty a stopped node's disk volume, as if it were a new node."""

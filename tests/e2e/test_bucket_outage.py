@@ -1,4 +1,4 @@
-"""A bucket outage (audit finding 4): local tiers keep serving, and the outage shows in metrics.
+"""A bucket outage (audit finding 4, fixed in #51): local tiers keep serving, and it shows.
 
 Two kinds of outage, because clients see them differently: `stop` refuses connections at once,
 `pause` accepts them and never answers, like a network blackhole. Behind both, the node gives each
@@ -30,13 +30,7 @@ FIRST_MISS_BUDGET = 3.0  # the bucket deadline (about 2 s) plus slack
 MISS_BUDGET = 0.5  # during the cooldown the bucket is skipped outright
 RECOVERY_BUDGET = 45.0  # the 30 s cooldown, then a probe, plus Prometheus' scrape interval
 
-pytestmark = [
-    pytest.mark.requires("bucket"),
-    pytest.mark.control,
-    pytest.mark.xfail(
-        strict=True, reason="audit 4: bucket deadline, cooldown and mammoth_tier_up not built"
-    ),
-]
+pytestmark = [pytest.mark.requires("bucket"), pytest.mark.control]
 
 
 def _eventually(check: Callable[[], bool], timeout: float, what: str) -> None:
@@ -74,7 +68,7 @@ def test_bucket_outage_keeps_serving_and_shows_in_metrics(
 ) -> None:
     stored_key, stored = blobs.gradle_key(), blobs.payload(1000)
     assert client.gradle_put(stored_key, stored).status_code == 201
-    assert _bucket_up(target) == 1
+    _eventually(lambda: _bucket_up(target) == 1, 10.0, "the bucket is up before the outage")
 
     down, up = (controlled.stop, controlled.start)
     if outage == "pause":
@@ -101,5 +95,11 @@ def test_bucket_outage_keeps_serving_and_shows_in_metrics(
     finally:
         up("seaweedfs")
 
-    _eventually(lambda: _bucket_up(target) == 1, RECOVERY_BUDGET, "the bucket comes back")
+    # The gauge follows the bucket's last operation, so keep asking: after the cooldown a miss
+    # tries the bucket again and succeeds.
+    def recovered() -> bool:
+        client.gradle_get(blobs.gradle_key())
+        return _bucket_up(target) == 1
+
+    _eventually(recovered, RECOVERY_BUDGET, "the bucket comes back")
     _eventually(lambda: _bucket_up_in_prometheus(prometheus) == 1, 10.0, "Prometheus sees it back")

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 if TYPE_CHECKING:
     from types_boto3_s3 import S3Client
@@ -44,6 +45,15 @@ class BucketInspector:
 
     def read(self, key: str) -> bytes:
         return self.client.get_object(Bucket=self.bucket.name, Key=key)["Body"].read()
+
+    def writable(self) -> bool:
+        """Whether a probe object can be written and read back now."""
+        key = self.bucket.prefix + ".e2e-probe"
+        try:
+            self.client.put_object(Bucket=self.bucket.name, Key=key, Body=b"probe")
+            return self.read(key) == b"probe"
+        except BotoCoreError, ClientError:
+            return False
 
     def exists(self) -> bool:
         self.client.head_bucket(Bucket=self.bucket.name)

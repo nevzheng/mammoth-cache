@@ -1,13 +1,13 @@
 """Regression tests for the persona audit of 2026-10-14, one per finding a client can see.
 
-Each test describes the behaviour the audit asks for. Findings 1, 2, 9, 10 and 12 are fixed on
-main (#46, #47). Finding 4, a bucket outage, has its own module: test_bucket_outage.py.
+Each test describes the behaviour the audit asks for; every finding here is fixed on main (#46,
+#47, #52). Finding 4, a bucket outage (#51), has its own module: test_bucket_outage.py.
 
 Not here: finding 3 (a read racing an overwrite) needs a disk read to land between two syscalls,
-which HTTP timing does not reach reliably, and 5, 6, 7 and 13 need faults below the HTTP surface
-(a full volume, two processes on one disk, a hostile `disk.path`, a failed rename). Those belong
-in the Rust tests. 8, 14 and 15 are workflow and doc findings. 11 (bucket upload order) is fixed
-in #47 and has no outcome the suite can see without racing the upload queue.
+which HTTP timing does not reach reliably, and 5, 7 and 13 need faults below the HTTP surface (a
+full volume, a hostile `disk.path`, a failed rename). Those belong in the Rust tests. 8, 14 and 15
+are workflow and doc findings. 11 (bucket upload order) is fixed in #47 and has no outcome the
+suite can see without racing the upload queue.
 """
 
 from __future__ import annotations
@@ -116,3 +116,14 @@ def test_promotions_count_only_stored_entries(client: CacheClient, target: Targe
     assert client.gradle_get(key).content == body
     after = metrics.scrape(target)
     assert metrics.delta(before, after, "mammoth_tier_promotions_total", to="memory") == 0
+
+
+@pytest.mark.requires("disk")
+@pytest.mark.control
+def test_second_process_on_one_disk_fails_fast(client: CacheClient, controlled: Stack) -> None:
+    """Audit 6, fixed in #52: a second node on the same `disk.path` (a rolling update on one
+    volume) must refuse to start, not share and corrupt the running node's files."""
+    code, output = controlled.run_once("mammoth", timeout=30.0)
+    assert code is not None, "the second node kept running on the same disk"
+    assert code != 0, output
+    assert client.gradle_get(blobs.gradle_key()).status_code == 404  # the first still serves
