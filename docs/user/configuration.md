@@ -90,13 +90,14 @@ How connections time out and how the node shuts down. Design doc
 Every key applies to both ports, the HTTP `listen` and the gRPC `[reapi] listen`, except where the
 table says otherwise.
 
-| Key                 | Type     | Default | Example  | Status    | Meaning                                                                                       |
-| ------------------- | -------- | ------- | -------- | --------- | --------------------------------------------------------------------------------------------- |
-| `shutdown_delay`    | duration | `5s`    | `"10s"`  | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail                         |
-| `shutdown_timeout`  | duration | `25s`   | `"55s"`  | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads                    |
-| `idle_timeout`      | duration | `75s`   | `"620s"` | Available | How long an HTTP connection may wait for its next request's headers; a new gRPC one, any byte |
-| `body_read_timeout` | duration | `60s`   | `"2m"`   | Available | How long an upload may send nothing before it fails; per read, not in total                   |
-| `send_timeout`      | duration | `60s`   | `"2m"`   | Available | How long a response may make no progress because the client stopped reading; per write        |
+| Key                 | Type     | Default | Example          | Status    | Meaning                                                                                       |
+| ------------------- | -------- | ------- | ---------------- | --------- | --------------------------------------------------------------------------------------------- |
+| `shutdown_delay`    | duration | `5s`    | `"10s"`          | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail                         |
+| `shutdown_timeout`  | duration | `25s`   | `"55s"`          | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads                    |
+| `idle_timeout`      | duration | `75s`   | `"620s"`         | Available | How long an HTTP connection may wait for its next request's headers; a new gRPC one, any byte |
+| `body_read_timeout` | duration | `60s`   | `"2m"`           | Available | How long an upload may send nothing before it fails; per read, not in total                   |
+| `send_timeout`      | duration | `60s`   | `"2m"`           | Available | How long a response may make no progress because the client stopped reading; per write        |
+| `trusted_proxies`   | list     | `[]`    | `["10.0.0.0/8"]` | Available | Proxies whose `X-Forwarded-For` names the client in the access log: addresses or CIDRs        |
 
 On `SIGTERM` or Ctrl-C the node fails `/readyz`, keeps serving for `shutdown_delay`, stops
 accepting connections, finishes requests in flight on both ports, then finishes queued bucket
@@ -104,6 +105,11 @@ uploads, all within `shutdown_timeout`. Connections that have not sent a request
 starts. A second signal exits at once. Keep `shutdown_timeout` below the platform's grace period
 (30 s on Kubernetes), and `shutdown_delay` below `shutdown_timeout`; the second is checked at
 startup, and the last three must be above zero.
+
+With `trusted_proxies` empty, the access log shows each connection's peer address and ignores
+`X-Forwarded-For`, which any client can send. List the load balancers and proxies in front of the
+node, and a request through them is logged with the address they report. A CIDR with host bits set,
+such as `10.0.0.1/8`, is refused at startup.
 
 Keep `idle_timeout` above the load balancer's idle timeout (60 s on AWS ALB and nginx), or the
 load balancer reuses a connection the node has just closed and returns `502`. Google Cloud load
@@ -259,7 +265,7 @@ authenticates, so a token can be rotated by adding the new hash before removing 
 | -------------- | ------- | -------- | --------- | ------------ | ------------------------------------------------------------------------- |
 | `level`        | string  | `info`   | `"debug"` | Available    | `error`, `warn`, `info`, `debug` or `trace`                               |
 | `format`       | string  | `json`   | `"text"`  | Available    | `json` or `text`                                                          |
-| `access_log`   | boolean | `true`   | `false`   | Not enforced | Log each request, with the user name, never the token                     |
+| `access_log`   | boolean | `true`   | `false`   | Available    | Log each request, with the user name, never the token                     |
 | `buffer_lines` | integer | `128000` | `500000`  | Available    | Lines buffered for stdout; when it is full, lines are dropped and counted |
 
 `RUST_LOG`, when set, replaces `log.level`. The line format, and how to collect the logs, are in
@@ -279,11 +285,3 @@ to set every key.
 
 Nothing in the file is secret. It holds token hashes, not tokens, and bucket credentials come from
 the environment. It can live in version control and be readable by anyone who runs the node.
-
-## Not there yet
-
-mammoth-cache is pre-alpha. Some settings are accepted but have no effect yet, and some are
-designed but not accepted yet:
-
-- `log.access_log` is validated, but the node doesn't write an access log yet.
-- A list of trusted proxies, for client addresses in the access log, comes with the access log.
