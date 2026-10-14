@@ -1,9 +1,12 @@
-use std::{env, io};
+use std::{env, io, sync::Arc};
 
+use mammoth_cache::{cache::Cache, store::memory::MemoryStore};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:5071";
+// Until the config file (design doc 0005) lands, the memory tier is the only tier.
+const DEFAULT_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -15,7 +18,10 @@ async fn main() -> io::Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!(addr = %listener.local_addr()?, "mammoth-cache listening");
 
-    axum::serve(listener, mammoth_cache::router())
+    let cache = Cache::builder()
+        .bounded_tier(Arc::new(MemoryStore::new(DEFAULT_MEMORY_BYTES)))
+        .build();
+    axum::serve(listener, mammoth_cache::router(Arc::new(cache)))
         .with_graceful_shutdown(shutdown_signal())
         .await
 }

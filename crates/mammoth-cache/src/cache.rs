@@ -1,0 +1,402 @@
+//! The core: tiering rules over the blob store port.
+//!
+//! The core knows nothing of HTTP, file systems or cloud SDKs (design doc 0003). It owns the lookup
+//! order, the entry size limit and the hit and miss counts. Promotion between tiers, single-flight
+//! bucket reads, checksums and the background bucket upload are not implemented yet.
+
+use std::{
+    fmt, io,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+use futures_util::StreamExt;
+
+use crate::{
+    key::CacheKey,
+    store::{Blob, BlobStore, BoundedStore, ByteStream, PutOutcome, Tier, TierUsage},
+};
+
+/// The default largest entry, matching the Build Cache Node's `cache.maxArtifactSize`.
+pub const DEFAULT_MAX_ENTRY_SIZE: u64 = 100 * 1024 * 1024;
+
+/// A cache hit: the entry and the tier that served it.
+#[derive(Debug)]
+pub struct Hit {
+    /// The tier that held the entry.
+    pub tier: Tier,
+    /// The entry.
+    pub blob: Blob,
+}
+
+/// Why a cache operation failed.
+#[derive(Debug)]
+pub enum CacheError {
+    /// The entry is over the size limit. `size` is the declared size, when known before reading.
+    TooLarge { size: Option<u64>, limit: u64 },
+    /// A tier failed in a way that may pass, such as a timeout.
+    Unavailable(io::Error),
+    /// Anything else.
+    Internal(io::Error),
+}
+
+impl fmt::Display for CacheError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge {
+                size: Some(size),
+                limit,
+            } => {
+                write!(f, "cache entry is {size} bytes; the limit is {limit}")
+            }
+            Self::TooLarge { size: None, limit } => {
+                write!(f, "cache entry is over the limit of {limit} bytes")
+            }
+            Self::Unavailable(e) => write!(f, "storage unavailable: {e}"),
+            Self::Internal(e) => write!(f, "storage error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for CacheError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TooLarge { .. } => None,
+            Self::Unavailable(e) | Self::Internal(e) => Some(e),
+        }
+    }
+}
+
+impl From<io::Error> for CacheError {
+    fn from(e: io::Error) -> Self {
+        match e.kind() {
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Self::Unavailable(e),
+            _ => Self::Internal(e),
+        }
+    }
+}
+
+/// Marks the error a size-limited body stream fails with, so it maps back to `TooLarge`.
+#[derive(Debug)]
+struct EntryTooLarge;
+
+impl fmt::Display for EntryTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("entry exceeds the size limit")
+    }
+}
+
+impl std::error::Error for EntryTooLarge {}
+
+/// Point-in-time counters, for `/v1/serverStatus`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheStatus {
+    /// Time since the cache was built.
+    pub uptime: Duration,
+    /// Lookups that found an entry, across all tiers.
+    pub hits: u64,
+    /// Lookups that found nothing.
+    pub misses: u64,
+    /// Population of each bounded tier, in lookup order.
+    pub tiers: Vec<(Tier, TierUsage)>,
+}
+
+#[derive(Debug)]
+struct TierHandle {
+    store: Arc<dyn BlobStore>,
+    bounded: Option<Arc<dyn BoundedStore>>,
+}
+
+/// Builds a [`Cache`] from its tiers, in lookup order.
+#[derive(Debug)]
+pub struct CacheBuilder {
+    tiers: Vec<TierHandle>,
+    max_entry_size: u64,
+}
+
+impl Default for CacheBuilder {
+    fn default() -> Self {
+        Self {
+            tiers: Vec::new(),
+            max_entry_size: DEFAULT_MAX_ENTRY_SIZE,
+        }
+    }
+}
+
+impl CacheBuilder {
+    /// Adds a local tier with a capacity (memory or disk).
+    #[must_use]
+    pub fn bounded_tier<S: BoundedStore + 'static>(mut self, store: Arc<S>) -> Self {
+        self.tiers.push(TierHandle {
+            store: store.clone(),
+            bounded: Some(store),
+        });
+        self
+    }
+
+    /// Adds a tier without a capacity (the bucket).
+    #[must_use]
+    pub fn tier<S: BlobStore + 'static>(mut self, store: Arc<S>) -> Self {
+        self.tiers.push(TierHandle {
+            store,
+            bounded: None,
+        });
+        self
+    }
+
+    /// Sets the largest entry accepted, in bytes.
+    #[must_use]
+    pub fn max_entry_size(mut self, bytes: u64) -> Self {
+        self.max_entry_size = bytes;
+        self
+    }
+
+    /// Builds the cache.
+    #[must_use]
+    pub fn build(self) -> Cache {
+        Cache {
+            tiers: self.tiers,
+            max_entry_size: self.max_entry_size,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            started: Instant::now(),
+        }
+    }
+}
+
+/// The cache core. Cheap to share behind an `Arc`; all methods take `&self`.
+#[derive(Debug)]
+pub struct Cache {
+    tiers: Vec<TierHandle>,
+    max_entry_size: u64,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    started: Instant,
+}
+
+impl Cache {
+    /// Starts building a cache.
+    #[must_use]
+    pub fn builder() -> CacheBuilder {
+        CacheBuilder::default()
+    }
+
+    /// The largest entry accepted, in bytes.
+    pub fn max_entry_size(&self) -> u64 {
+        self.max_entry_size
+    }
+
+    /// Loads an entry, looking in each tier in order. `Ok(None)` is a miss.
+    ///
+    /// A tier that fails is skipped and the next one tried: for a cache, a failed read is a miss.
+    pub async fn get(&self, key: &CacheKey) -> Result<Option<Hit>, CacheError> {
+        for handle in &self.tiers {
+            let tier = handle.store.tier();
+            match handle.store.get(key).await {
+                Ok(Some(blob)) => {
+                    self.hits.fetch_add(1, Ordering::Relaxed);
+                    return Ok(Some(Hit { tier, blob }));
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%key, %tier, %error, "tier read failed; skipping"),
+            }
+        }
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        Ok(None)
+    }
+
+    /// Returns an entry's size without reading it. `Ok(None)` is a miss.
+    pub async fn head(&self, key: &CacheKey) -> Result<Option<u64>, CacheError> {
+        for handle in &self.tiers {
+            match handle.store.head(key).await {
+                Ok(Some(size)) => return Ok(Some(size)),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%key, tier = %handle.store.tier(), %error, "tier head failed");
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Stores an entry from a stream. `declared_size` is the request's `Content-Length`.
+    ///
+    /// Rejects a declared size over the limit before reading anything, and stops reading once the
+    /// body passes the limit. Writes to the first tier only for now; the full write path (disk,
+    /// then a background bucket upload) arrives with the disk and bucket tiers.
+    pub async fn put(
+        &self,
+        key: &CacheKey,
+        declared_size: Option<u64>,
+        body: ByteStream,
+    ) -> Result<PutOutcome, CacheError> {
+        let limit = self.max_entry_size;
+        if let Some(size) = declared_size.filter(|&size| size > limit) {
+            return Err(CacheError::TooLarge {
+                size: Some(size),
+                limit,
+            });
+        }
+        if self.head(key).await?.is_some() {
+            return Ok(PutOutcome::Exists);
+        }
+        let Some(first) = self.tiers.first() else {
+            return Err(CacheError::Internal(io::Error::other(
+                "no storage tiers configured",
+            )));
+        };
+
+        let mut seen = 0_u64;
+        let limited: ByteStream = Box::pin(body.map(move |chunk| {
+            let chunk = chunk?;
+            seen += chunk.len() as u64;
+            if seen > limit {
+                Err(io::Error::other(EntryTooLarge))
+            } else {
+                Ok(chunk)
+            }
+        }));
+
+        first
+            .store
+            .put(key, declared_size, limited)
+            .await
+            .map_err(|e| {
+                if e.get_ref()
+                    .is_some_and(<dyn std::error::Error + Send + Sync>::is::<EntryTooLarge>)
+                {
+                    CacheError::TooLarge { size: None, limit }
+                } else {
+                    CacheError::from(e)
+                }
+            })
+    }
+
+    /// Current counters and tier populations.
+    pub fn status(&self) -> CacheStatus {
+        CacheStatus {
+            uptime: self.started.elapsed(),
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            tiers: self
+                .tiers
+                .iter()
+                .filter_map(|h| h.bounded.as_ref().map(|b| (b.tier(), b.usage())))
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+    use futures_util::{StreamExt, stream};
+
+    use super::*;
+    use crate::store::memory::MemoryStore;
+
+    fn key(s: &str) -> CacheKey {
+        CacheKey::parse(s).unwrap()
+    }
+
+    fn body(chunks: &[&'static [u8]]) -> ByteStream {
+        let chunks: Vec<io::Result<Bytes>> =
+            chunks.iter().map(|c| Ok(Bytes::from_static(c))).collect();
+        Box::pin(stream::iter(chunks))
+    }
+
+    async fn read_all(mut blob: Blob) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some(chunk) = blob.body.next().await {
+            out.extend_from_slice(&chunk.unwrap());
+        }
+        out
+    }
+
+    fn cache(limit: u64) -> Cache {
+        Cache::builder()
+            .bounded_tier(Arc::new(MemoryStore::new(1024)))
+            .max_entry_size(limit)
+            .build()
+    }
+
+    #[tokio::test]
+    async fn put_then_get_round_trips() {
+        let cache = cache(1024);
+        let k = key("abc123");
+        let outcome = cache
+            .put(&k, Some(11), body(&[b"hello ", b"world"]))
+            .await
+            .unwrap();
+        assert_eq!(outcome, PutOutcome::Stored);
+
+        let hit = cache.get(&k).await.unwrap().unwrap();
+        assert_eq!(hit.tier, Tier::Memory);
+        assert_eq!(hit.blob.size, 11);
+        assert_eq!(read_all(hit.blob).await, b"hello world");
+        assert_eq!(cache.head(&k).await.unwrap(), Some(11));
+    }
+
+    #[tokio::test]
+    async fn second_put_writes_nothing() {
+        let cache = cache(1024);
+        let k = key("abc123");
+        cache.put(&k, None, body(&[b"first"])).await.unwrap();
+        let outcome = cache.put(&k, None, body(&[b"second"])).await.unwrap();
+        assert_eq!(outcome, PutOutcome::Exists);
+        let hit = cache.get(&k).await.unwrap().unwrap();
+        assert_eq!(read_all(hit.blob).await, b"first");
+    }
+
+    #[tokio::test]
+    async fn declared_size_over_limit_is_rejected_before_reading() {
+        let cache = cache(4);
+        let err = cache
+            .put(&key("ab"), Some(5), body(&[b"12345"]))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            CacheError::TooLarge {
+                size: Some(5),
+                limit: 4
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn streamed_body_over_limit_is_rejected_and_not_stored() {
+        let cache = cache(4);
+        let k = key("ab");
+        let err = cache
+            .put(&k, None, body(&[b"123", b"45"]))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            CacheError::TooLarge {
+                size: None,
+                limit: 4
+            }
+        ));
+        assert!(cache.get(&k).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn counts_hits_and_misses() {
+        let cache = cache(1024);
+        let k = key("ab");
+        assert!(cache.get(&k).await.unwrap().is_none());
+        cache.put(&k, None, body(&[b"x"])).await.unwrap();
+        assert!(cache.get(&k).await.unwrap().is_some());
+
+        let status = cache.status();
+        assert_eq!((status.hits, status.misses), (1, 1));
+        assert_eq!(status.tiers.len(), 1);
+        assert_eq!(status.tiers[0].0, Tier::Memory);
+        assert_eq!(status.tiers[0].1.entries, 1);
+    }
+}
