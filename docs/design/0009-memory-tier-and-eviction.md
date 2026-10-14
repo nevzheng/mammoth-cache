@@ -254,6 +254,37 @@ flowchart LR
 - **Usage:** `BoundedStore::usage` reports foyer's `usage()` as `size_bytes` and `capacity()` as
   `capacity_bytes`; `entries` is a counter maintained by `put` and the listener.
 
+### Time and clocks
+
+No part of this design needs a shared or synchronised clock.
+
+- **Eviction is clock-free.** Every offered policy orders entries by queue position, visited bits or
+  frequency counters, not timestamps. A hit updates policy state inside one shard and never reads
+  the time.
+- **`created` is read once.** It is the node's wall-clock time (`SystemTime`, whole seconds) at the
+  first `PUT`, then copied with the entry between tiers. Nodes do not coordinate clocks; skew
+  between nodes only shifts age-based expiry by the skew, which is harmless for a cache.
+- **No per-hit timestamps.** Reading the clock is cheap (tens of nanoseconds through the vDSO), but
+  storing the result in a shared entry on every hit makes cores contend for the same cache line on
+  the hottest path. That is why last access is not in `EntryMeta`.
+- **If a coarse time is needed** (for example an L2 index that wants access age), one `AtomicU64`
+  holding seconds since start, advanced by a once-a-second tokio task and read with `Relaxed`
+  ordering, gives every thread a time without a system call. Nothing in this doc needs it yet.
+
+### Swapping the implementation
+
+Two seams keep the choices here reversible:
+
+- **Tier level:** every tier implements `BlobStore`, and the local ones `BoundedStore` (0006). A
+  different memory tier is a new adapter, and the core does not change.
+- **Library level:** foyer appears only inside `MemoryStore`. The `memory.eviction` value is parsed
+  into mammoth's own `EvictionPolicy` enum, which `MemoryStore` maps to the library's
+  configuration, so replacing foyer with moka or quick_cache changes one file and, at most, the set
+  of accepted values.
+
+There is deliberately no eviction-policy trait of mammoth's own: implementing policies is what the
+library is for, and a trait would invite maintaining them here.
+
 ### Maven entries
 
 The Maven namespace (in review for 0001) stores objects that are not content-addressed and can be
