@@ -26,6 +26,7 @@ async fn app(dir: &tempfile::TempDir) -> Router {
         path: dir.path().to_path_buf(),
         capacity_bytes: 64 << 20,
         max_entry_age: None,
+        free_space_buffer: 0,
     })
     .await
     .unwrap();

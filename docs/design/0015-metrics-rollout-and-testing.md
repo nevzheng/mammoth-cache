@@ -59,35 +59,37 @@ work from; the hermetic metrics test lives with it.
 
 Checked at `c9daff9` (2026-10-14). "Source" is where the number already exists in the code.
 
-| Metric                                  | On `main`                     | Source today                                    |
-| --------------------------------------- | ----------------------------- | ----------------------------------------------- |
-| `mammoth_http_requests_total`           | yes                           | `http::metrics::record`                         |
-| `mammoth_gradle_requests_total`         | yes                           | `http::metrics::record`                         |
-| `mammoth_tier_promotions_total`         | yes                           | `cache::promote`                                |
-| `mammoth_tier_evictions_total`          | memory only, `reason="size"`  | `store::memory::eviction_counter`               |
-| `mammoth_cache_integrity_errors_total`  | disk only                     | `store::disk` verify-before-serve               |
-| `mammoth_bucket_upload_queue_entries`   | yes                           | `cache::enqueue_upload`, `upload_worker`        |
-| `mammoth_bucket_uploads_total`          | yes, **not in 0004**          | `cache::upload_worker`, `result` ok/skipped/err |
-| `mammoth_bucket_uploads_dropped_total`  | yes, **not in 0004**          | `cache::enqueue_upload`                         |
-| `mammoth_cache_lookups_total`           | no                            | `Cache::get` keeps `hits`/`misses` atomics      |
-| `mammoth_cache_stores_total`            | no                            | `Cache::put` knows every outcome                |
-| `mammoth_cache_entry_size_bytes`        | no                            | `Cache::put` has the final size                 |
-| `mammoth_tier_reads_total`              | no                            | `Cache::get` loop sees hit, miss and error      |
-| `mammoth_tier_read_duration_seconds`    | no                            | same loop, time to `store.get` returning        |
-| `mammoth_tier_writes_total`             | no                            | every `store.put` in the core                   |
-| `mammoth_tier_write_duration_seconds`   | no                            | same                                            |
-| `mammoth_tier_read_bytes_total`         | no                            | `Blob::size` on a hit                           |
-| `mammoth_tier_written_bytes_total`      | no                            | `put` returns the size written                  |
-| `mammoth_tier_entries`                  | no                            | `BoundedStore::usage()` (serverStatus has it)   |
-| `mammoth_tier_size_bytes`               | no                            | `usage().weight`                                |
-| `mammoth_tier_capacity_bytes`           | no                            | `usage().capacity`                              |
-| `mammoth_tier_oldest_entry_age_seconds` | no                            | nothing: needs a store hook                     |
-| `mammoth_disk_free_bytes`               | no                            | nothing: `statvfs` on the disk root             |
-| `mammoth_http_request_duration_seconds` | no                            | `http::metrics::record` wraps the handler       |
-| `mammoth_http_requests_in_flight`       | no                            | same middleware                                 |
-| `mammoth_auth_failures_total`           | no                            | `ApiError::reason()` on 401/403                 |
-| `mammoth_build_info`                    | no                            | `CARGO_PKG_VERSION`; no revision yet            |
-| `process_*`                             | no                            | `metrics-process` crate                         |
+| Metric                                  | On `main`                    | Source today                                          |
+| --------------------------------------- | ---------------------------- | ----------------------------------------------------- |
+| `mammoth_http_requests_total`           | yes                          | `http::metrics::record`                               |
+| `mammoth_gradle_requests_total`         | yes                          | `http::metrics::record`                               |
+| `mammoth_tier_promotions_total`         | yes                          | `cache::promote`                                      |
+| `mammoth_tier_evictions_total`          | memory only, `reason="size"` | `store::memory::eviction_counter`                     |
+| `mammoth_cache_integrity_errors_total`  | disk only                    | `store::disk` verify-before-serve                     |
+| `mammoth_bucket_upload_queue_entries`   | yes                          | `cache::enqueue_upload`, `upload_worker`              |
+| `mammoth_bucket_uploads_total`          | yes, **not in 0004**         | `cache::upload_worker`, `result` ok/skipped/err       |
+| `mammoth_bucket_uploads_dropped_total`  | yes, **not in 0004**         | `cache::enqueue_upload`, `reason` queue-full/shutdown |
+| `mammoth_shutting_down`                 | yes (#39), **not in 0004**   | `Cache::shutdown`                                     |
+| `mammoth_tls_*` (three, 0014)           | yes (#40), **not in 0004**   | `server`, `tls`                                       |
+| `mammoth_cache_lookups_total`           | no                           | `Cache::get` keeps `hits`/`misses` atomics            |
+| `mammoth_cache_stores_total`            | no                           | `Cache::put` knows every outcome                      |
+| `mammoth_cache_entry_size_bytes`        | no                           | `Cache::put` has the final size                       |
+| `mammoth_tier_reads_total`              | no                           | `Cache::get` loop sees hit, miss and error            |
+| `mammoth_tier_read_duration_seconds`    | no                           | same loop, time to `store.get` returning              |
+| `mammoth_tier_writes_total`             | no                           | every `store.put` in the core                         |
+| `mammoth_tier_write_duration_seconds`   | no                           | same                                                  |
+| `mammoth_tier_read_bytes_total`         | no                           | `Blob::size` on a hit                                 |
+| `mammoth_tier_written_bytes_total`      | no                           | `put` returns the size written                        |
+| `mammoth_tier_entries`                  | no                           | `BoundedStore::usage()` (serverStatus has it)         |
+| `mammoth_tier_size_bytes`               | no                           | `usage().weight`                                      |
+| `mammoth_tier_capacity_bytes`           | no                           | `usage().capacity`                                    |
+| `mammoth_tier_oldest_entry_age_seconds` | no                           | nothing: needs a store hook                           |
+| `mammoth_disk_free_bytes`               | yes (#39)                    | disk probe, `DiskStore::open` and every few seconds   |
+| `mammoth_http_request_duration_seconds` | no                           | `http::metrics::record` wraps the handler             |
+| `mammoth_http_requests_in_flight`       | no                           | same middleware                                       |
+| `mammoth_auth_failures_total`           | no                           | `ApiError::reason()` on 401/403                       |
+| `mammoth_build_info`                    | no                           | `CARGO_PKG_VERSION`; no revision yet                  |
+| `process_*`                             | no                           | `metrics-process` crate                               |
 
 Also missing: `HELP` text (`metrics::describe_*`), histogram bucket boundaries (0004 lists them as
 an open question), and `/metrics` is only rendered when `main` installs the recorder, so the router
@@ -102,8 +104,9 @@ hermetic test asserts they agree.
 
 Additive. The first two land with this doc; the rest with the first instrumentation pull request:
 
-- Add `mammoth_bucket_uploads_total{result="ok"|"skipped"|"error"}` and
-  `mammoth_bucket_uploads_dropped_total` under "Per tier". Both already ship.
+- Add `mammoth_bucket_uploads_total{result="ok"|"skipped"|"error"}`,
+  `mammoth_bucket_uploads_dropped_total{reason}` and `mammoth_shutting_down` under "Per tier", and
+  the three `mammoth_tls_*` metrics from 0014. All already ship.
 - Record the `metrics` facade as the implementation and close that open question.
 - Note that `mammoth_tier_evictions_total{reason="age"}` has no producer until a TTL exists.
 - Fix the histogram bucket boundaries:
@@ -140,10 +143,10 @@ all five.
    bucket's writes are counted even though they are asynchronous.
 4. **Population gauges.** After every local `put` and every eviction callback, set
    `mammoth_tier_entries`, `mammoth_tier_size_bytes` and `mammoth_tier_capacity_bytes` from
-   `usage()`, which is O(1). `mammoth_disk_free_bytes` is sampled by a 10 s Tokio task calling
-   `statvfs`. `mammoth_tier_oldest_entry_age_seconds` needs the policy's oldest key: foyer and the
-   disk index both expose it, but the `MemoryBackend` trait does not, so this one lands last behind
-   a trait method with a default of "not reported".
+   `usage()`, which is O(1). `mammoth_disk_free_bytes` already ships from the disk probe (#39).
+   `mammoth_tier_oldest_entry_age_seconds` needs the policy's oldest key: foyer and the disk index
+   both expose it, but the `MemoryBackend` trait does not, so this one lands last behind a trait
+   method with a default of "not reported".
 5. **Serving.** `mammoth_http_request_duration_seconds` and `mammoth_http_requests_in_flight` in
    `http::metrics::record` (a guard decrements the gauge when the response body is dropped, so a
    client that walks away is still counted out). `mammoth_auth_failures_total{reason}` where

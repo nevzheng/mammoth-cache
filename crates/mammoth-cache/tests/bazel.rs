@@ -165,6 +165,7 @@ async fn cas_digest_mismatch_leaves_nothing_on_disk() {
         path: dir.path().to_owned(),
         capacity_bytes: 1 << 20,
         max_entry_age: None,
+        free_space_buffer: 0,
     })
     .await
     .unwrap();

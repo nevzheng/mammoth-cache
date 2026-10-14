@@ -15,13 +15,17 @@
 //! An in-memory index tracks every entry's size, metadata and recency. It is rebuilt from the file
 //! headers at startup, so a restarted node starts warm. Eviction is least recently used by bytes,
 //! plus an optional maximum age.
+//!
+//! A background task probes the directory every few seconds: it writes and removes a file, and
+//! reads the volume's free space. The tier shrinks so that `free_space_buffer` bytes stay free on
+//! the volume, and `/readyz` reports both results.
 
 use std::{
     collections::{BTreeMap, HashMap},
     fs as std_fs, io,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex, PoisonError, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -35,7 +39,8 @@ use tokio::{
 };
 
 use super::{
-    Blob, BlobStore, BoundedStore, BoxFuture, ByteStream, PutOutcome, Tier, TierUsage,
+    Blob, BlobStore, BoundedStore, BoxFuture, ByteStream, HealthCheck, HealthProblem, PutOutcome,
+    Tier, TierUsage,
     meta::{Checksum, EntryMeta, unix_now},
 };
 use crate::key::CacheKey;
@@ -52,6 +57,8 @@ const READ_CHUNK: usize = 64 * 1024;
 /// Entries up to this size are read whole and checked before they are served; larger ones are
 /// checked in a first pass, then streamed.
 const READ_WHOLE: u64 = 1024 * 1024;
+/// How often the directory is probed for writability and free space.
+const PROBE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Settings for a [`DiskStore`].
 #[derive(Debug, Clone)]
@@ -62,6 +69,8 @@ pub struct DiskConfig {
     pub capacity_bytes: u64,
     /// Entries older than this are evicted, when set.
     pub max_entry_age: Option<Duration>,
+    /// Bytes to leave free on the volume. The tier evicts entries to keep them free.
+    pub free_space_buffer: u64,
 }
 
 /// The disk tier. Cheap to clone; clones share the same files and index.
@@ -76,8 +85,21 @@ struct Inner {
     tmp_dir: PathBuf,
     capacity_bytes: u64,
     max_entry_age: Option<Duration>,
+    free_space_buffer: u64,
+    /// The most the tier may hold while keeping `free_space_buffer` free, from the last probe.
+    space_cap: AtomicU64,
+    probe: Mutex<Probe>,
     index: Mutex<Index>,
     next_tmp: AtomicU64,
+}
+
+/// What the last probe of the directory found.
+#[derive(Debug, Clone, Default)]
+struct Probe {
+    /// Why a file could not be written and removed, if it could not.
+    not_writable: Option<String>,
+    /// Free bytes on the volume for unprivileged writers; `None` if unknown.
+    available: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -175,6 +197,9 @@ impl DiskStore {
                 tmp_dir,
                 capacity_bytes: config.capacity_bytes,
                 max_entry_age: config.max_entry_age,
+                free_space_buffer: config.free_space_buffer,
+                space_cap: AtomicU64::new(u64::MAX),
+                probe: Mutex::default(),
                 index: Mutex::default(),
                 next_tmp: AtomicU64::new(0),
             }),
@@ -197,13 +222,104 @@ impl DiskStore {
             );
         }
         store.inner.delete_files(&expired).await;
+        store.inner.refresh().await;
+        tokio::spawn(probe_periodically(Arc::downgrade(&store.inner)));
         Ok(store)
     }
+}
+
+/// Probes the directory until the store is dropped.
+async fn probe_periodically(inner: Weak<Inner>) {
+    let mut interval = tokio::time::interval(PROBE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval.tick().await; // The first tick is immediate; `open` has just probed.
+    loop {
+        interval.tick().await;
+        let Some(inner) = inner.upgrade() else { return };
+        inner.refresh().await;
+    }
+}
+
+/// Writes and removes a file in `tmp_dir`, and reads the free space under `entries_dir`.
+fn probe(tmp_dir: &Path, entries_dir: &Path) -> Probe {
+    let file = tmp_dir.join("probe");
+    let not_writable = std_fs::write(&file, b"probe")
+        .and_then(|()| std_fs::remove_file(&file))
+        .err()
+        .map(|e| e.to_string());
+    Probe {
+        not_writable,
+        available: available_bytes(entries_dir).ok(),
+    }
+}
+
+#[cfg(unix)]
+fn available_bytes(path: &Path) -> io::Result<u64> {
+    let stats = rustix::fs::statvfs(path)?;
+    Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+}
+
+#[cfg(not(unix))]
+fn available_bytes(_path: &Path) -> io::Result<u64> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 impl Inner {
     fn lock(&self) -> std::sync::MutexGuard<'_, Index> {
         self.index.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn last_probe(&self) -> Probe {
+        self.probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The bytes the tier may hold now: its capacity, or less to keep the free space buffer.
+    fn effective_capacity(&self) -> u64 {
+        self.capacity_bytes
+            .min(self.space_cap.load(Ordering::Relaxed))
+    }
+
+    /// Probes the directory, records the result, and evicts entries if free space is short.
+    async fn refresh(&self) {
+        let (tmp_dir, entries_dir) = (self.tmp_dir.clone(), self.entries_dir.clone());
+        let Ok(probe) = tokio::task::spawn_blocking(move || probe(&tmp_dir, &entries_dir)).await
+        else {
+            return;
+        };
+        let previous = std::mem::replace(
+            &mut *self.probe.lock().unwrap_or_else(PoisonError::into_inner),
+            probe.clone(),
+        );
+        if probe.not_writable != previous.not_writable {
+            if let Some(error) = &probe.not_writable {
+                tracing::error!(%error, "disk tier is not writable");
+            } else {
+                tracing::info!("disk tier is writable again");
+            }
+        }
+        let evicted = {
+            let mut index = self.lock();
+            let cap = probe.available.map_or(u64::MAX, |available| {
+                (index.size_bytes + available).saturating_sub(self.free_space_buffer)
+            });
+            self.space_cap.store(cap, Ordering::Relaxed);
+            if let Some(available) = probe.available {
+                #[allow(clippy::cast_precision_loss)] // A gauge; exact below 2^53 bytes.
+                metrics::gauge!("mammoth_disk_free_bytes").set(available as f64);
+            }
+            index.evict_to(self.effective_capacity())
+        };
+        if !evicted.is_empty() {
+            tracing::warn!(
+                entries = evicted.len(),
+                buffer = self.free_space_buffer,
+                "evicting disk entries to keep the free space buffer"
+            );
+        }
+        self.delete_files(&evicted).await;
     }
 
     fn is_expired(&self, meta: &EntryMeta) -> bool {
@@ -368,7 +484,7 @@ impl Inner {
         let evicted = {
             let mut index = self.lock();
             index.insert(key.clone(), meta, file_len);
-            index.evict_to(self.capacity_bytes)
+            index.evict_to(self.effective_capacity())
         };
         self.delete_files(&evicted).await;
         Ok(PutOutcome::Stored)
@@ -567,7 +683,7 @@ fn scan_file(path: &Path) -> io::Result<(Scanned, std::time::SystemTime)> {
     let mut key = vec![0_u8; key_len];
     file.read_exact(&mut key)?;
     let key = String::from_utf8(key).map_err(|_| invalid("key is not UTF-8"))?;
-    let key = parse_stored_key(&key).ok_or_else(|| invalid("unknown key"))?;
+    let key = CacheKey::from_stored(&key).ok_or_else(|| invalid("unknown key"))?;
 
     let file_len = (FIXED_HEADER_LEN + key_len) as u64 + size + TRAILER_LEN;
     if metadata.len() != file_len {
@@ -593,15 +709,6 @@ fn scan_file(path: &Path) -> io::Result<(Scanned, std::time::SystemTime)> {
         },
         accessed,
     ))
-}
-
-fn parse_stored_key(stored: &str) -> Option<CacheKey> {
-    let (namespace, name) = stored.split_once('/')?;
-    match namespace {
-        "gradle" => CacheKey::gradle(name).ok(),
-        "maven" => CacheKey::maven(name).ok(),
-        _ => None,
-    }
 }
 
 impl BlobStore for DiskStore {
@@ -636,6 +743,42 @@ impl BoundedStore for DiskStore {
             capacity_bytes: self.inner.capacity_bytes,
         }
     }
+
+    fn health(&self) -> Vec<HealthCheck> {
+        let probe = self.inner.last_probe();
+        let buffer = self.inner.free_space_buffer;
+        let writable = probe.not_writable.map(|error| HealthProblem {
+            reason: "STORAGE_NOT_WRITABLE",
+            message: format!(
+                "The disk tier at {} is not writable: {error}.",
+                self.inner.entries_dir.display()
+            ),
+            metadata: vec![("path", self.inner.entries_dir.display().to_string())],
+        });
+        let free_space = probe
+            .available
+            .filter(|&available| available < buffer)
+            .map(|available| HealthProblem {
+                reason: "STORAGE_FREE_SPACE_LOW",
+                message: format!(
+                    "Free space is {available} bytes, below the {buffer} byte buffer."
+                ),
+                metadata: vec![
+                    ("freeBytes", available.to_string()),
+                    ("bufferBytes", buffer.to_string()),
+                ],
+            });
+        vec![
+            HealthCheck {
+                name: "storage-writable",
+                problem: writable,
+            },
+            HealthCheck {
+                name: "storage-free-space",
+                problem: free_space,
+            },
+        ]
+    }
 }
 
 #[cfg(test)]
@@ -643,12 +786,14 @@ mod tests {
     use futures_util::TryStreamExt;
 
     use super::*;
+    use crate::key::Namespace;
 
     fn config(dir: &Path, capacity_bytes: u64) -> DiskConfig {
         DiskConfig {
             path: dir.to_path_buf(),
             capacity_bytes,
             max_entry_age: None,
+            free_space_buffer: 0,
         }
     }
 
@@ -687,6 +832,39 @@ mod tests {
         let bytes = read_all(&store, &key).await.unwrap();
         assert_eq!(bytes.as_deref(), Some(&b"hello disk"[..]));
         assert_eq!(store.head(&gradle("ffff")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn every_namespace_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let keys = [
+            gradle("abc123"),
+            CacheKey::maven("v1.1/g/a/cs/buildinfo.xml").unwrap(),
+            CacheKey::bazel(Namespace::BazelAc, digest).unwrap(),
+            CacheKey::bazel(Namespace::BazelCas, digest).unwrap(),
+        ];
+        {
+            let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+            for key in &keys {
+                let outcome = store
+                    .put(
+                        key,
+                        None,
+                        Box::pin(stream::iter([Ok(Bytes::copy_from_slice(
+                            key.as_str().as_bytes(),
+                        ))])),
+                    )
+                    .await;
+                assert_eq!(outcome.unwrap(), PutOutcome::Stored, "{key}");
+            }
+        }
+        let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+        assert_eq!(store.usage().entries, keys.len() as u64);
+        for key in &keys {
+            let bytes = read_all(&store, key).await.unwrap();
+            assert_eq!(bytes.as_deref(), Some(key.as_str().as_bytes()), "{key}");
+        }
     }
 
     #[tokio::test]
@@ -774,6 +952,38 @@ mod tests {
         let usage = store.usage();
         assert_eq!((usage.entries, usage.size_bytes), (2, 290));
         assert!(!store.inner.entry_path(&b).exists());
+    }
+
+    #[tokio::test]
+    async fn a_healthy_directory_passes_both_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+        let checks = store.health();
+        let names: Vec<_> = checks.iter().map(|c| c.name).collect();
+        assert_eq!(names, ["storage-writable", "storage-free-space"]);
+        assert!(checks.iter().all(|c| c.problem.is_none()), "{checks:?}");
+    }
+
+    #[tokio::test]
+    async fn the_free_space_buffer_fails_readiness_and_evicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (gradle("aa"), gradle("bb"));
+        let hundred: &'static [u8] = &[7; 100];
+        let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+        store.put(&a, None, body(&[hundred])).await.unwrap();
+        drop(store);
+
+        // A buffer larger than any volume: the tier may hold nothing.
+        let short = DiskConfig {
+            free_space_buffer: u64::MAX / 2,
+            ..config(dir.path(), 1 << 20)
+        };
+        let store = DiskStore::open(short).await.unwrap();
+        let problem = store.health()[1].problem.clone().unwrap();
+        assert_eq!(problem.reason, "STORAGE_FREE_SPACE_LOW");
+        assert_eq!(store.usage().entries, 0);
+        store.put(&b, None, body(&[hundred])).await.unwrap();
+        assert_eq!(store.head(&b).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -68,6 +68,12 @@ bazel = false
 cert = "/etc/mammoth/tls.crt"
 key = "/etc/mammoth/tls.key"
 
+[server] # connection timeouts and shutdown (doc 0013)
+shutdown_delay = "5s" # keep serving after SIGTERM while load balancers notice
+shutdown_timeout = "25s" # finish requests and queued uploads within this
+idle_timeout = "75s" # above the load balancer's idle timeout
+body_read_timeout = "60s" # per read, not in total
+
 [limits]
 max_entry_size = "100MiB" # BCN cache.maxArtifactSize
 
@@ -157,10 +163,10 @@ Each BCN user needs a new token, set in Gradle where the password was.
 
 ### Operations
 
-The listener, TLS and storage change rarely, and a restart of a stateless node costs only its L1
+The listener and storage change rarely, and a restart of a stateless node costs only its L1
 contents (L2 can be re-indexed, see [0003](0003-architecture.md)). That makes hot reload not worth
-its complexity. Certificate rotation by tools such as cert-manager is handled by restarting the
-pod when the certificate changes.
+its complexity. The one exception is the TLS certificate and key, which the node re-reads from
+their files so a renewal needs no restart; see [0014](0014-tls.md).
 
 ## Alternatives considered
 
@@ -177,5 +183,3 @@ pod when the certificate changes.
 ## Open questions
 
 - Whether to ship `mammoth config import-bcn` to translate a BCN `config.yaml`.
-- Whether TLS certificates should reload without a restart after all, for setups that cannot
-  restart on rotation.

@@ -76,7 +76,9 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 | `mammoth_tier_evictions_total`         | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits                               |
 | `mammoth_bucket_upload_queue_entries`  | gauge     |                                           | Stores waiting to be uploaded to the bucket                         |
 | `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)       | Background uploads by outcome; `skipped` left the local tiers first |
-| `mammoth_bucket_uploads_dropped_total` | counter   |                                           | Uploads dropped because the queue was full                          |
+| `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`)       | Uploads skipped; the entry stays local                              |
+| `mammoth_shutting_down`                | gauge     |                                           | 1 while the node drains ([0013](0013-deployment.md))                |
+| `mammoth_tier_up`                      | gauge     | `tier`                                    | 1 after a tier's last operation succeeded, 0 after it failed        |
 
 #### Current population
 
@@ -90,6 +92,16 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 
 The bucket's population is not reported: counting it means listing the bucket, which is slow and
 costs money. The provider's own metrics cover it.
+
+#### TLS
+
+Only with `[tls]` set; defined in [0014](0014-tls.md).
+
+| Metric                                   | Type    | Labels                        | Meaning                                      |
+| ---------------------------------------- | ------- | ----------------------------- | -------------------------------------------- |
+| `mammoth_tls_certificate_expiry_seconds` | gauge   |                               | When the serving certificate expires, Unix s |
+| `mammoth_tls_reloads_total`              | counter | `result` (`ok`, `error`)      | Renewed certificates swapped in, or refused  |
+| `mammoth_tls_handshake_failures_total`   | counter | `reason` (`error`, `timeout`) | Handshakes that failed, such as plain HTTP   |
 
 #### Serving
 

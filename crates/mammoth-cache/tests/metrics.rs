@@ -195,8 +195,15 @@ const CATALOG: &[Metric] = &[
     Metric {
         name: "mammoth_bucket_uploads_dropped_total",
         kind: Kind::Counter,
+        labels: &[Label("reason", Some(&["queue-full", "shutdown"]))],
+        // Only a full upload queue or a drain produces one.
+        live: false,
+    },
+    Metric {
+        name: "mammoth_shutting_down",
+        kind: Kind::Gauge,
         labels: &[],
-        // Only a full upload queue produces one.
+        // Set when the node drains, which the workload does not do.
         live: false,
     },
     Metric {
@@ -234,6 +241,26 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_disk_free_bytes",
         kind: Kind::Gauge,
         labels: &[],
+        // Set by the probe `DiskStore::open` runs.
+        live: true,
+    },
+    // TLS (design doc 0014), only with `[tls]` set.
+    Metric {
+        name: "mammoth_tls_certificate_expiry_seconds",
+        kind: Kind::Gauge,
+        labels: &[],
+        live: false,
+    },
+    Metric {
+        name: "mammoth_tls_reloads_total",
+        kind: Kind::Counter,
+        labels: &[Label("result", Some(&["ok", "error"]))],
+        live: false,
+    },
+    Metric {
+        name: "mammoth_tls_handshake_failures_total",
+        kind: Kind::Counter,
+        labels: &[Label("reason", Some(&["error", "timeout"]))],
         live: false,
     },
     // Serving
@@ -409,6 +436,7 @@ async fn three_tier_app(dir: &std::path::Path, auth: Authenticator) -> Router {
         path: dir.to_path_buf(),
         capacity_bytes: 1 << 20,
         max_entry_age: None,
+        free_space_buffer: 0,
     })
     .await
     .unwrap();

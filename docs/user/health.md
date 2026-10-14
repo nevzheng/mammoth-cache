@@ -8,7 +8,7 @@ Health checks need no authentication, and follow the Kubernetes conventions.
 | `/livez`  | `ok` while the process answers         | Liveness probes                             | Available |
 | `/readyz` | `ok`, or `503` naming the failed check | Readiness probes and load balancer checks   | Available |
 
-`/livez` never looks at storage and `/readyz` will, so a full disk takes a node out of rotation
+`/livez` never looks at storage and `/readyz` does, so a full disk takes a node out of rotation
 through `/readyz` without restarting it.
 
 `/readyz?verbose` lists each check:
@@ -21,17 +21,18 @@ through `/readyz` without restarting it.
 readyz check passed
 ```
 
-| Check                | Fails when                                                    | Status    |
-| -------------------- | ------------------------------------------------------------- | --------- |
-| `config`             | Never once serving                                            | Available |
-| `shutting-down`      | A shutdown signal arrived; the node is draining               | Planned   |
-| `storage-writable`   | The disk tier can't create and remove a probe file            | Planned   |
-| `storage-free-space` | Free space on the disk tier is below `disk.free_space_buffer` | Planned   |
+| Check                | Fails when                                                    |
+| -------------------- | ------------------------------------------------------------- |
+| `config`             | Never once serving                                            |
+| `shutting-down`      | A shutdown signal arrived; the node is draining               |
+| `storage-writable`   | The disk tier can't create and remove a probe file            |
+| `storage-free-space` | Free space on the disk tier is below `disk.free_space_buffer` |
 
-A failed check answers `503` with an AIP-193 error naming it. The checks run in the background and
-the probe reads the last result, so a slow disk can't time a probe out. The bucket is deliberately
-not a check: a bucket outage should leave every node serving from its local tiers, not take them
-all out of rotation at once.
+The storage checks appear only with a `[disk]` tier. A failed check answers `503` with an AIP-193
+error whose `reason` names it: `SHUTTING_DOWN`, `STORAGE_NOT_WRITABLE` or `STORAGE_FREE_SPACE_LOW`.
+The disk is probed every 5 seconds and the probe reads the last result, so a slow disk can't time a
+probe out. The bucket is deliberately not a check: a bucket outage should leave every node serving
+from its local tiers, not take them all out of rotation at once.
 
 ## Kubernetes
 
@@ -53,11 +54,7 @@ Kubernetes from restarting it during that time.
 
 ### Draining
 
-> [!NOTE]
-> Draining is planned (design doc [0013](../design/0013-deployment.md)). Today the node stops at
-> once, so a rolling update can cut uploads in flight.
-
-On `SIGTERM` the node will turn `/readyz` to `503` (check `shutting-down`) and keep `/livez` at
+On `SIGTERM` the node turns `/readyz` to `503` (check `shutting-down`) and keep `/livez` at
 `200`, so it leaves rotation without being restarted. It keeps serving for `server.shutdown_delay`
 (5 s) while load balancers catch up, then finishes requests in flight and flushes bucket uploads
 before exiting, all within `server.shutdown_timeout` (25 s). No `preStop` hook is needed, and the

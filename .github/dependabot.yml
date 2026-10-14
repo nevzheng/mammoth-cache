@@ -1,0 +1,118 @@
+# Dependabot version updates. Each ecosystem gets one weekly PR that groups its minor and patch
+# bumps; major bumps still arrive as their own PRs so breaking changes are reviewed one at a time.
+# Commit messages (and so PR titles) follow Conventional Commits for the pr-title check.
+#
+# Security updates open as soon as an advisory lands, skip the cooldown, and are batched by the
+# `*-security` groups (only Cargo and GitHub Actions get security updates from Dependabot).
+#
+# Actions are pinned to commit SHAs and runtime base images by digest (OpenSSF Scorecard
+# "Pinned-Dependencies"); Dependabot keeps each SHA or digest current along with its version
+# comment or tag.
+#
+# Not covered here on purpose:
+# - The Rust toolchain. Its version lives in rust-toolchain.toml, MODULE.bazel and the Dockerfile
+#   builder image, and scripts/check-toolchain-sync.sh fails CI when they differ, so a bump that
+#   touches only one of them can never go green. Bump all three by hand.
+# - dtolnay/rust-toolchain in the msrv job: its tag is the MSRV, not a version to keep current.
+version: 2
+
+updates:
+  # Cargo.toml and Cargo.lock are the dependency source of truth; Bazel's crate_universe reads
+  # them, so a Cargo bump updates the Bazel build too.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+      cargo-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  # bazel_dep entries in MODULE.bazel (rules_rust, platforms, buildifier) and .bazelversion.
+  - package-ecosystem: bazel
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      bazel:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+    ignore:
+      # The builder image tag is the Rust toolchain version; see the note at the top.
+      - dependency-name: rust
+    groups:
+      docker:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Hook revisions in .pre-commit-config.yaml.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      pre-commit:
+        patterns: ["*"]
+        update-types: [minor, patch]

@@ -125,4 +125,30 @@ pub struct TierUsage {
 pub trait BoundedStore: BlobStore {
     /// Current population and limit.
     fn usage(&self) -> TierUsage;
+
+    /// The tier's readiness checks, from its last background probe. Must not block or do I/O:
+    /// `/readyz` calls it on every probe.
+    fn health(&self) -> Vec<HealthCheck> {
+        Vec::new()
+    }
+}
+
+/// One readiness check, as `/readyz` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthCheck {
+    /// The check's name, such as `storage-writable`.
+    pub name: &'static str,
+    /// Why the check fails; `None` when it passes.
+    pub problem: Option<HealthProblem>,
+}
+
+/// Why a readiness check fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthProblem {
+    /// The `ErrorInfo.reason`, such as `STORAGE_NOT_WRITABLE`.
+    pub reason: &'static str,
+    /// A sentence for operators.
+    pub message: String,
+    /// `ErrorInfo.metadata` entries.
+    pub metadata: Vec<(&'static str, String)>,
 }

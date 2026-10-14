@@ -90,7 +90,7 @@ flowchart TB
     subgraph b["node B"]
         b1["L1 memory"] --- b2["L2 local disk"]
     end
-    bucket[("L3 object-store bucket<br/>S3, GCS or Azure Blob; optional")]
+    bucket[("L3 object-store bucket, optional<br/>S3, GCS, Azure Blob, or S3-compatible:<br/>MinIO, SeaweedFS, R2")]
     clients -- HTTP --> lb
     lb --> a
     lb --> b
@@ -242,16 +242,17 @@ flowchart LR
         admin["Admin API: /v1/serverStatus"]
         ops["Health and metrics"]
     end
-    mw["Middleware: request metrics;<br/>auth (planned)"]
+    mw["Middleware: auth, request metrics,<br/>body read timeout"]
     subgraph core["Core (cache.rs)"]
-        tiering["Lookup order, size limit, hit and miss counts;<br/>promotion, single-flight, write path (planned)"]
+        tiering["Lookup order, size limit, hit and miss counts,<br/>promotion, write path, upload queue"]
     end
     subgraph out["Outbound adapters (blob store port, store/)"]
         mem["Memory store (L1), foyer"]
         disk["Disk store (L2)"]
-        obj["Bucket store (L3), planned"]
+        obj["Bucket store (L3)"]
     end
     sdk["object_store crate:<br/>S3, GCS, Azure, file"]
+    creds["Credentials from the environment:<br/>workload identity, instance roles, env keys"]
     gradle --> mw
     maven --> mw
     admin --> mw
@@ -261,12 +262,11 @@ flowchart LR
     tiering --> disk
     tiering --> obj
     obj --> sdk
-    classDef planned stroke-dasharray: 5 5
-    class obj,sdk planned
+    creds -.-> sdk
 ```
 
-Dashed boxes are not on `main` yet. [Implementation status](#implementation-status) has the
-details.
+Single-flight bucket reads are not built yet; [Implementation status](#implementation-status) has
+the details.
 
 - **Core:** the tiering rules above. It depends only on ports, never on HTTP, a file system or a
   cloud SDK.
@@ -296,26 +296,27 @@ is handled inside instead:
 
 ## Implementation status
 
-As of 2026-10-14 (`main` at `51e3385`). The design above is the target; this section says how much
-of it the code does today, and is updated as tiers land.
+As of 2026-10-14 (`main` at `c03e77f`, plus the drain and readiness change). The design above is
+the target; this section says how much of it the code does today, and is updated as parts land.
 
 ```mermaid
 flowchart LR
-    client["Gradle and Maven clients"]
+    client["Gradle, Maven and Bazel clients"]
     subgraph node["mammoth binary today"]
-        http["axum router<br/>/cache, /maven, ops, admin"]
+        http["hyper server, axum router<br/>/cache, /maven, Bazel, ops, admin"]
+        auth["Auth middleware"]
         core["Cache core"]
-        l1["L1 memory, 1 GiB,<br/>entries up to 16 MiB"]
-        l2["L2 disk store<br/>(built, not wired in)"]
+        l1["L1 memory, foyer"]
+        l2["L2 disk"]
+        q["Upload queue"]
     end
-    l3[("L3 bucket<br/>(adapter in review)")]
-    client -- "HTTP, no auth" --> http
-    http --> core
-    core -- "reads and writes" --> l1
-    core -.-> l2
-    core -.-> l3
-    classDef planned stroke-dasharray: 5 5
-    class l2,l3 planned
+    l3[("L3 bucket<br/>S3, GCS, Azure, S3-compatible")]
+    client -- "HTTP; TLS at the proxy" --> http
+    http --> auth --> core
+    core -- "reads, writes, promotes" --> l1
+    core -- "reads, writes, promotes" --> l2
+    core -- "reads; sync writes" --> l3
+    core --> q -- "async writes" --> l3
 ```
 
 | Area                         | State                                                                                        |
@@ -324,15 +325,15 @@ flowchart LR
 | Entry size limit             | Done: accept and drop for Gradle, `413` for Maven, by `Content-Length` and while streaming   |
 | L1 memory                    | Done: foyer, five eviction policies, eviction counter                                        |
 | L2 disk                      | Done: atomic writes, CRC32C, warm index, LRU and age; set by `[disk]`                        |
-| L3 bucket                    | Done: S3, GCS, Azure, local files; set by `[bucket]`                                         |
+| L3 bucket                    | Done: S3 and S3-compatible, GCS, Azure, local files; set by `[bucket]`                       |
 | Core read path               | Lookup in order, failed tier skipped, hits promoted to faster tiers; no single-flight        |
 | Core write path              | Writes every local tier at once; bucket inline or through a bounded upload queue             |
 | Configuration (0005)         | Done: `mammoth.toml`, `config check`; some keys validated but not enforced yet               |
 | Authentication (0002)        | Done: users, token hashes, scopes, Basic and Bearer; open until configured                   |
 | Metrics (0004)               | Request counters and memory evictions only; the rest of the catalog is missing               |
-| Health                       | `/ping`, `/livez` done; `/readyz` always ready                                               |
-| Flow control                 | Not started: no per-tier concurrency limits, timeouts or connection limit                    |
-| TLS                          | Not started                                                                                  |
+| Health                       | Done: `/ping`, `/livez`; `/readyz` checks config, shutdown, disk writability and free space  |
+| Flow control                 | Connection idle and body read timeouts, bounded upload queue; no per-tier limits or timeouts |
+| TLS                          | In progress; terminate at the proxy until then                                               |
 
 Without `[disk]`, a node keeps nothing across a restart, and entries are capped at
 `memory.max_entry_size`.
@@ -360,24 +361,31 @@ L3 sits behind the blob store port (get, put, head), backed by the `object_store
 speaks S3, GCS, Azure Blob and the local file system. Apache OpenDAL is the fallback
 ([0006](0006-server-framework.md)).
 
-Credentials come from each cloud's default credential chain, the same one the official SDKs use, so
-workload identity works without code of our own:
+Credentials come from the environment, never from the config file. The `object_store` crate reads
+each cloud's usual variables and metadata endpoints, so workload identity works without code of
+our own. Checked against `object_store` 0.14:
 
-| Platform | Picked up automatically                                                          |
-| -------- | -------------------------------------------------------------------------------- |
-| AWS      | EKS IRSA and Pod Identity, ECS task roles, EC2 instance roles, environment keys  |
-| GCP      | GKE Workload Identity and VM service accounts (metadata server), key files       |
-| Azure    | AKS Workload Identity, managed identity, environment keys                        |
+| Platform | Picked up automatically                                                                |
+| -------- | -------------------------------------------------------------------------------------- |
+| AWS      | EKS IRSA and Pod Identity, ECS task roles, EC2 instance roles, `AWS_*` keys and tokens |
+| GCP      | GKE Workload Identity and VM service accounts, key files, `gcloud` user credentials    |
+| Azure    | AKS Workload Identity, managed identity, keys, SAS tokens, client secrets, `az` logins |
+| Others   | S3-compatible stores (MinIO, SeaweedFS, R2) with `AWS_*` keys and `bucket.endpoint`    |
 
-Federation from outside a cloud (on-premises or CI to GCS through an "external account" file, or
-to S3 through `AssumeRoleWithWebIdentity`) depends on the library; which flows `object_store`
-supports must be checked before the bucket tier ships.
+Not supported, deliberately for now: AWS profiles and SSO from `~/.aws/config` (laptop flows, not
+server ones), and GCP "external account" federation from outside Google Cloud (use a key file in a
+Secret instead). Cross-account AWS access works through IRSA, whose role may live in another
+account, or through the bucket policy. Covering these would mean the AWS SDK credential chain and
+Google's auth library, which [0006](0006-server-framework.md) chose against.
 
-The config file names only the bucket, region, key prefix and, for S3-compatible stores such as
-MinIO or Cloudflare R2, an endpoint. It never holds keys; static keys are accepted only from the
-environment, as a last resort.
+The config file names only the bucket, region, key prefix and, for S3-compatible stores, an
+endpoint, plus `allow_http` for one without TLS. It never holds keys.
 
-The node needs `get`, `put` and `head` on its prefix, and nothing else: no `delete`, no `list`.
+Requests the node sends: a single `PUT` for entries up to 5 MiB; above that a multipart upload
+(create, parts four at a time, complete), aborted if the body fails; `GET` and `HEAD` for reads.
+The node needs `get`, `put` and `head` on its prefix, plus aborting its own multipart uploads
+(`s3:AbortMultipartUpload` on S3), and nothing else: no `delete`, and no listing. S3 still needs
+`s3:ListBucket` on the prefix to answer a missing key with `404` rather than `403`.
 Expiry is the bucket's lifecycle rules.
 
 ### Observability
