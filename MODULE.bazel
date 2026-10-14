@@ -36,3 +36,26 @@ crate.from_cargo(
     ],
 )
 use_repo(crate, "crates")
+
+# Python for the end-to-end, acceptance and load suites under tests/ (doc 0011). tests/uv.lock is the
+# source of truth, as Cargo.lock is for crates: change dependencies with `uv add` in tests/ and
+# Bazel reads the lock on the next build.
+bazel_dep(name = "rules_python", version = "2.4.2", dev_dependency = True)
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python", dev_dependency = True)
+python.toolchain(
+    is_default = True,
+    python_version = "3.14",
+)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip", dev_dependency = True)
+pip.parse(
+    hub_name = "tests_pypi",
+    python_version = "3.14",
+    uv_lock = "//tests:uv.lock",
+)
+use_repo(pip, "tests_pypi")
+
+# No implicit __init__.py files in runfiles: the suites' packages have their own.
+rules_python_config = use_extension("@rules_python//python/extensions:config.bzl", "config", dev_dependency = True)
+rules_python_config.explicit_init_py(default = True)

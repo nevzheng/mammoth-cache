@@ -32,4 +32,27 @@ build:release --@rules_rust//rust/settings:lto=thin
 build:release --@rules_rust//rust/settings:codegen_units=1
 build:release --strip=always
 
+# The Compose-backed Python suites (//tests:e2e, //tests:acceptance_*), which drive Docker, Java,
+# Gradle, Maven, Bazel and Buck2 on the host. Pass any other MAMMOTH_E2E_* override with
+# --test_env=NAME.
+test:e2e --test_env=HOME
+test:e2e --test_env=XDG_CACHE_HOME
+test:e2e --test_env=PATH
+test:e2e --test_env=DOCKER_HOST
+test:e2e --test_env=JAVA_HOME
+test:e2e --test_env=JAVA_TOOL_OPTIONS
+test:e2e --test_env=HTTPS_PROXY
+test:e2e --test_env=NO_PROXY
+test:e2e --test_env=SSL_CERT_FILE
+test:e2e --test_env=MAMMOTH_IMAGE
+test:e2e --test_env=MAMMOTH_E2E_TARGET
+test:e2e --test_env=MAMMOTH_E2E_CACHE
+test:e2e --test_env=MAMMOTH_E2E_BAZEL_REGISTRIES
+test:e2e --test_env=MAMMOTH_E2E_BAZEL_STARTUP_ARGS
+test:e2e --test_env=MAMMOTH_E2E_BAZEL_EXAMPLES
+test:e2e --test_output=errors
+# A full acceptance line can pass Bazel's hour for an enormous test; pytest-timeout still bounds
+# each test case.
+test:e2e --test_timeout=7200
+
 try-import %workspace%/user.bazelrc

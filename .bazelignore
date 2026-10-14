@@ -1,3 +1,4 @@
-# The Python end-to-end and acceptance suites are not built by Bazel (doc 0011). Their Bazel
-# fixture is a separate workspace, built by the acceptance suite with its own Bazel.
-tests
+# The acceptance suite's Bazel fixture is a separate workspace, built by the suite with its own Bazel.
+tests/acceptance/fixtures/bazel
+# uv's virtual environment, for running the suites without Bazel.
+tests/.venv

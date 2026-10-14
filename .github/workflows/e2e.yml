@@ -1,7 +1,8 @@
 name: e2e
 
 # End-to-end suite: the image on the Compose stack (mammoth, SeaweedFS, Prometheus), driven by the
-# Python harness in tests/. See docs/design/0011-end-to-end-and-load-testing.md.
+# Python harness in tests/, run as the Bazel target //tests:e2e. Ruff and pyrefly run in bazel.yml.
+# See docs/design/0011-end-to-end-and-load-testing.md.
 on:
   pull_request:
     paths:
@@ -12,6 +13,8 @@ on:
       - .dockerignore
       - deploy/compose/**
       - tests/**
+      - MODULE.bazel
+      - .bazelrc
       - .github/workflows/e2e.yml
       - .github/workflows/image.yml
   push:
@@ -28,31 +31,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tests
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-        with:
-          working-directory: tests
-      - run: uv lock --check
-      - run: uv sync --locked
-      - run: uv run ruff format --check
-      - run: uv run ruff check --output-format=github
-      - run: uv run pyrefly check
-
   image:
     uses: ./.github/workflows/image.yml
 
   e2e:
     needs: image
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tests
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -60,13 +44,17 @@ jobs:
           name: mammoth-image
           path: ${{ runner.temp }}
       - run: docker load --input "$RUNNER_TEMP/mammoth-image.tar"
-      - uses: astral-sh/setup-uv@v7
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          working-directory: tests
-      - run: uv sync --locked
-      - run: uv run pytest e2e --junitxml="$RUNNER_TEMP/e2e.xml"
+          bazelisk-cache: true
+          repository-cache: |
+            - MODULE.bazel
+            - Cargo.lock
+            - tests/uv.lock
+          cache-save: ${{ github.event_name != 'pull_request' }}
+      - run: bazel test --config=ci --config=e2e //tests:e2e
       - if: always()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-report
-          path: ${{ runner.temp }}/e2e.xml
+          path: bazel-testlogs/tests/e2e/test.xml

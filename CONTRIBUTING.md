@@ -152,9 +152,10 @@ prek install
 CI runs these checks on every pull request, with warnings treated as errors:
 
 ```sh
-bazel test --config=ci --config=lint //...   # build, test, clippy, rustfmt (Linux and macOS)
+bazel test --config=ci --config=lint //...   # build, test, clippy, rustfmt, ruff, pyrefly
 bazel run @buildifier_prebuilt//:buildifier -- -mode=check -lint=warn -r "$PWD"
 scripts/check-toolchain-sync.sh
+uv lock --check --directory tests           # tests/uv.lock matches tests/pyproject.toml
 cargo clippy --workspace --all-targets --locked --no-default-features --features jemalloc
 cargo nextest run --workspace --locked --no-default-features --features jemalloc
 cargo +1.91 check --workspace --locked   # MSRV
