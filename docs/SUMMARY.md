@@ -14,6 +14,7 @@
 - [Migrating from the Build Cache Node](user/migrating.md)
 - [Configuration reference](user/configuration.md)
 - [Authentication](user/authentication.md)
+- [Deployment](user/deployment.md)
 - [Health checks and status](user/health.md)
 - [Metrics](user/metrics.md)
 - [Custom builds](user/custom-builds.md)
