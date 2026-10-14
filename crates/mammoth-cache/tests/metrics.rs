@@ -948,6 +948,8 @@ async fn server_status_agrees_with_the_counters() {
 
 #[tokio::test]
 async fn exposition_has_help_build_info_and_process_metrics() {
+    // Its miss would land in another test's counter deltas.
+    let _serial = serial().await;
     let dir = tempfile::tempdir().unwrap();
     let app = three_tier_app(dir.path(), authenticator()).await;
     send(&app, gradle_get("a3f5e1c09b2d4e7f8a1b6c3d5e9f0a99")).await;
