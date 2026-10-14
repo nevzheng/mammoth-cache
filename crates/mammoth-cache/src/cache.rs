@@ -365,8 +365,28 @@ pub fn upload_error(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) 
 }
 
 fn is_upload_error(e: &io::Error) -> bool {
-    e.get_ref()
-        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<UploadFailed>)
+    find::<UploadFailed>(e).is_some()
+}
+
+/// Finds an error of type `T` anywhere in `e`'s chain, such as a marker wrapped in context.
+///
+/// `io::Error::source` skips the error an `io::Error` wraps and goes straight to that error's
+/// source, so this steps into every `io::Error` it meets with `get_ref` instead.
+pub fn find<T: std::error::Error + 'static>(e: &io::Error) -> Option<&T> {
+    let mut next: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(current) = next {
+        if let Some(found) = current.downcast_ref::<T>() {
+            return Some(found);
+        }
+        next = match current
+            .downcast_ref::<io::Error>()
+            .and_then(io::Error::get_ref)
+        {
+            Some(inner) => Some(inner),
+            None => current.source(),
+        };
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -1246,8 +1266,7 @@ fn limit_stream(body: ByteStream, limit: u64, drain: bool, received: Arc<AtomicU
 }
 
 fn is_too_large(e: &io::Error) -> bool {
-    e.get_ref()
-        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<EntryTooLarge>)
+    find::<EntryTooLarge>(e).is_some()
 }
 
 #[cfg(test)]
@@ -1260,6 +1279,78 @@ mod tests {
 
     fn key(s: &str) -> CacheKey {
         CacheKey::gradle(s).unwrap()
+    }
+
+    /// Context around an error, the way a tier adds it: an `io::Error` whose inner error has the
+    /// wrapped error as its source.
+    #[derive(Debug)]
+    struct Context(io::Error);
+
+    impl fmt::Display for Context {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("while storing")
+        }
+    }
+
+    impl std::error::Error for Context {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    fn wrapped(e: io::Error) -> io::Error {
+        io::Error::new(e.kind(), Context(e))
+    }
+
+    fn classify(e: io::Error) -> &'static str {
+        match CacheError::from(e) {
+            CacheError::TooLarge { .. } => "too large",
+            CacheError::Upload(_) => "upload",
+            CacheError::Unavailable(_) => "unavailable",
+            CacheError::Internal(_) => "internal",
+        }
+    }
+
+    #[test]
+    fn classification_by_kind() {
+        let kinds = [
+            (io::ErrorKind::TimedOut, "unavailable"),
+            (io::ErrorKind::WouldBlock, "unavailable"),
+            (io::ErrorKind::Other, "internal"),
+            (io::ErrorKind::PermissionDenied, "internal"),
+            (io::ErrorKind::StorageFull, "internal"),
+            (io::ErrorKind::UnexpectedEof, "internal"),
+        ];
+        for (kind, want) in kinds {
+            assert_eq!(classify(io::Error::new(kind, "x")), want, "{kind:?}");
+            assert_eq!(
+                classify(wrapped(io::Error::new(kind, "x"))),
+                want,
+                "wrapped {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classification_finds_the_upload_marker() {
+        assert_eq!(classify(upload_error("reset")), "upload");
+        assert_eq!(classify(wrapped(upload_error("reset"))), "upload");
+        assert_eq!(classify(wrapped(wrapped(upload_error("reset")))), "upload");
+    }
+
+    #[test]
+    fn find_reaches_markers_through_context() {
+        let too_large = || io::Error::other(EntryTooLarge);
+        assert!(is_too_large(&too_large()));
+        assert!(is_too_large(&wrapped(too_large())));
+        assert!(is_too_large(&wrapped(wrapped(too_large()))));
+        assert!(!is_too_large(&io::Error::other("plain")));
+        assert!(!is_too_large(&upload_error("reset")));
+
+        // Past the marker to its own source, the way adapters downcast their upload errors.
+        let deep = wrapped(upload_error(Context(io::Error::other("deep"))));
+        assert!(find::<UploadFailed>(&deep).is_some());
+        assert!(find::<Context>(&deep).is_some());
     }
 
     fn body(chunks: &[&'static [u8]]) -> ByteStream {

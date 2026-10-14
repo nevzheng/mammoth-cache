@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 use super::{AppState, entries, error::ApiError};
 use crate::{
-    cache::CacheError,
+    cache::{self, CacheError},
     key::{CacheKey, Namespace},
     store::ByteStream,
 };
@@ -167,9 +167,9 @@ enum Failure {
 impl From<CacheError> for Failure {
     fn from(e: CacheError) -> Self {
         let mismatch = match &e {
-            CacheError::Unavailable(source) | CacheError::Internal(source) => source
-                .get_ref()
-                .is_some_and(<dyn std::error::Error + Send + Sync>::is::<DigestMismatch>),
+            CacheError::Unavailable(source) | CacheError::Internal(source) => {
+                cache::find::<DigestMismatch>(source).is_some()
+            }
             CacheError::TooLarge { .. } | CacheError::Upload(_) => false,
         };
         if mismatch {
