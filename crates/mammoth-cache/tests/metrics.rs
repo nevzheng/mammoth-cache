@@ -134,7 +134,7 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_tier_read_duration_seconds",
         kind: Kind::Histogram,
         labels: &[Label("tier", Some(TIERS))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_writes_total",
@@ -149,19 +149,19 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_tier_write_duration_seconds",
         kind: Kind::Histogram,
         labels: &[Label("tier", Some(TIERS))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_read_bytes_total",
         kind: Kind::Counter,
         labels: &[Label("tier", Some(TIERS))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_written_bytes_total",
         kind: Kind::Counter,
         labels: &[Label("tier", Some(TIERS))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_tier_promotions_total",
@@ -832,6 +832,7 @@ async fn workload_moves_the_live_counters() {
         1
     );
     assert_cache_outcomes(&delta);
+    tier_counters_moved(&before, &after);
 }
 
 /// How much a series moved across [`workload`], by name and labels.
@@ -864,6 +865,94 @@ fn assert_cache_outcomes(delta: &Delta<'_>) {
         ),
         MISSES
     );
+}
+
+/// The per-tier counters after [`workload`]: every stored entry written to the disk and the
+/// bucket, each write timed, promotions written to memory, and no tier failing.
+fn tier_counters_moved(before: &Scrape, after: &Scrape) {
+    let delta = |name: &str, labels: &[(&str, &str)]| {
+        after.count(name, labels) - before.count(name, labels)
+    };
+    let stored_bytes = 64 + 3 * i64::try_from(ENTRY).unwrap();
+    for tier in ["disk", "bucket"] {
+        let writes = |result| {
+            delta(
+                "mammoth_tier_writes_total",
+                &[("tier", tier), ("result", result)],
+            )
+        };
+        assert_eq!(writes("ok"), STORED, "{tier}");
+        assert_eq!(
+            delta("mammoth_tier_written_bytes_total", &[("tier", tier)]),
+            stored_bytes,
+            "{tier}"
+        );
+        assert_eq!(
+            delta(
+                "mammoth_tier_write_duration_seconds_count",
+                &[("tier", tier)]
+            ),
+            STORED,
+            "{tier}"
+        );
+    }
+    for tier in ["memory", "disk", "bucket"] {
+        for metric in ["mammoth_tier_writes_total", "mammoth_tier_reads_total"] {
+            assert_eq!(
+                delta(metric, &[("tier", tier), ("result", "error")]),
+                0,
+                "{metric} {tier}"
+            );
+        }
+    }
+    // Promotions are writes to memory too.
+    assert!(
+        delta(
+            "mammoth_tier_writes_total",
+            &[("tier", "memory"), ("result", "ok")]
+        ) > STORED
+    );
+    // The disk hit's bytes were read from the disk, and every read was timed.
+    assert!(
+        delta("mammoth_tier_read_bytes_total", &[("tier", "disk")])
+            >= i64::try_from(ENTRY).unwrap()
+    );
+    for tier in ["memory", "disk"] {
+        assert_eq!(
+            delta(
+                "mammoth_tier_read_duration_seconds_count",
+                &[("tier", tier)]
+            ),
+            delta("mammoth_tier_reads_total", &[("tier", tier)]),
+            "{tier}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_aborted_upload_is_not_a_tier_failure() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = three_tier_app(dir.path(), authenticator()).await;
+    let before = scrape(&app).await;
+    // The client sends half the entry, then its connection fails.
+    let body = futures_util::stream::iter([
+        Ok(vec![0xAB; 512]),
+        Err(std::io::Error::other("connection reset")),
+    ]);
+    let mut request = gradle_put("b4f5e1c09b2d4e7f8a1b6c3d5e9f0a21", 1024);
+    *request.body_mut() = Body::from_stream(body);
+    assert_eq!(send(&app, request).await.status(), StatusCode::BAD_REQUEST);
+    let after = scrape(&app).await;
+    for tier in ["memory", "disk", "bucket"] {
+        let labels = [("tier", tier), ("result", "error")];
+        assert_eq!(
+            after.count("mammoth_tier_writes_total", &labels)
+                - before.count("mammoth_tier_writes_total", &labels),
+            0,
+            "{tier}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -171,14 +171,34 @@ fn too_long() -> io::Error {
     )
 }
 
+/// Marks the error a copy ends with when it cannot see the whole entry.
+#[derive(Debug)]
+struct Abandoned;
+
+impl std::fmt::Display for Abandoned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the copied stream ended early")
+    }
+}
+
+impl std::error::Error for Abandoned {}
+
+fn abandoned() -> io::Error {
+    io::Error::other(Abandoned)
+}
+
+/// Whether a store failed because its copy was cut short, which says nothing about the store.
+pub(crate) fn is_abandoned(e: &io::Error) -> bool {
+    e.get_ref()
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<Abandoned>)
+}
+
 fn receiver_stream(rx: mpsc::Receiver<Bytes>, aborted: Arc<AtomicBool>) -> ByteStream {
     Box::pin(stream::unfold(Some((rx, aborted)), |state| async move {
         let (mut rx, aborted) = state?;
         match rx.recv().await {
             Some(chunk) => Some((Ok(chunk), Some((rx, aborted)))),
-            None if aborted.load(Ordering::Acquire) => {
-                Some((Err(io::Error::other("the copied stream ended early")), None))
-            }
+            None if aborted.load(Ordering::Acquire) => Some((Err(abandoned()), None)),
             None => None,
         }
     }))
