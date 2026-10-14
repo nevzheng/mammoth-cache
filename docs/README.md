@@ -1,8 +1,10 @@
 # mammoth-cache
 
-**A build cache that never forgets.** mammoth-cache is a fast, open-source remote build cache node
-for Gradle and Maven, written in Rust. It is a drop-in replacement for the Gradle Build Cache Node,
-which reaches end of life after December 31, 2026.
+**A build cache that never forgets.** mammoth-cache is an open-source, self-hosted remote build
+cache for Gradle, Maven and Bazel, written in Rust. It is a drop-in replacement for the Gradle Build
+Cache Node, which reaches end of life after December 31, 2026: same `/cache/` path, same port, same
+`/ping`, and no Develocity. One static binary, a few lines of config and a load balancer, and your
+builds keep their cache.
 
 > [!WARNING]
 > mammoth-cache is pre-alpha. It serves Gradle, Maven and (off by default) Bazel builds from memory,
@@ -23,7 +25,16 @@ which reaches end of life after December 31, 2026.
   no database, no JVM. TLS at the proxy by default, or on the node with two more lines.
 - **Observable.** Prometheus metrics with a documented catalog, Kubernetes-style health checks, and
   a drain on `SIGTERM` that leaves rotation before the process exits.
+- **Honest about failure.** A full disk or a dead bucket costs misses, never errors, so Gradle keeps
+  its cache on. `SIGTERM` drains the node out of rotation before it exits.
 - **Open.** MIT or Apache-2.0, with every design decision written down.
+
+## What it is not
+
+Not a remote execution system or a REAPI server (use
+[bazel-remote](https://github.com/buchgr/bazel-remote) for Bazel's gRPC cache), not a Develocity
+replacement (its plugin, extension and build scans are out of scope), not a web UI, and not a
+replicated cluster: the bucket is the shared state.
 
 ## How it works
 
