@@ -1,0 +1,153 @@
+# 0004: Metrics
+
+## Status
+
+Draft
+
+## Summary
+
+mammoth-cache exports Prometheus metrics at `/metrics`. This doc is the catalog: each metric's name,
+type, labels and meaning. The catalog is a contract like the APIs: renaming or removing a metric,
+or changing its labels, is a breaking change. The admin API's `serverStatus` returns the same
+current-population numbers as a snapshot.
+
+The node's metrics are deliberately dumb: it exposes raw counters, gauges and histograms and
+nothing else. Rates, ratios, rollups, history and reporting are the job of an external
+aggregator such as Prometheus.
+
+## Context and scope
+
+Operators need to know whether the cache is helping (hit rate), where time goes (which tier), and
+whether it is healthy (size, evictions, errors). The tiers are described in
+[0003](0003-architecture.md). Prometheus has no schema language, so this catalog is the schema.
+
+## Goals and non-goals
+
+### Goals
+
+- Give an aggregator what it needs to answer "is the cache working?": hit rate, latency per tier,
+  population.
+- Keep the node's part trivial: increment, set, observe.
+- Follow Prometheus naming: `snake_case`, base units (seconds, bytes), `_total` on counters.
+- Bounded label cardinality.
+
+### Non-goals
+
+- Aggregation, rollups, rates, time windows, history, dashboards or reports in the node. External
+  aggregators do this better, and keeping it out keeps the node stateless.
+- Per-key or per-build statistics. Build analytics belong to build tools, not the cache.
+- Tracing. Possible later with OpenTelemetry.
+
+## Design
+
+### Conventions
+
+- Every metric starts with `mammoth_`.
+- `tier` is one of `memory`, `disk`, `bucket`.
+- No label ever holds a cache key, a token or any other unbounded value.
+- Only raw values are exported: monotonic counters, current gauges and histograms. Hit rate,
+  request rates and averages are computed by the aggregator, never exported.
+- Histograms, never summaries: histogram buckets can be summed across nodes, while precomputed
+  quantiles cannot.
+- Histograms use base units; bucket boundaries are chosen per metric and listed in the user guide.
+
+### Catalog
+
+#### Cache outcomes
+
+| Metric                                 | Type      | Labels                                              | Meaning                                                                 |
+| -------------------------------------- | --------- | --------------------------------------------------- | ----------------------------------------------------------------------- |
+| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                    | Loads by outcome; `tier` is the tier that served a hit, empty on a miss |
+| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `error`) | Stores by outcome                                                       |
+| `mammoth_cache_entry_size_bytes`       | histogram |                                                     | Size of each stored entry                                               |
+| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                              | Entries whose checksum did not match; served as misses                  |
+
+#### Per tier
+
+| Metric                                | Type      | Labels                                    | Meaning                                     |
+| ------------------------------------- | --------- | ----------------------------------------- | ------------------------------------------- |
+| `mammoth_tier_reads_total`            | counter   | `tier`, `result` (`hit`, `miss`, `error`) | Reads against a tier                        |
+| `mammoth_tier_read_duration_seconds`  | histogram | `tier`                                    | Time to first byte from a tier              |
+| `mammoth_tier_writes_total`           | counter   | `tier`, `result` (`ok`, `error`)          | Writes to a tier                            |
+| `mammoth_tier_write_duration_seconds` | histogram | `tier`                                    | Time to write an entry to a tier            |
+| `mammoth_tier_read_bytes_total`       | counter   | `tier`                                    | Bytes read from a tier                      |
+| `mammoth_tier_written_bytes_total`    | counter   | `tier`                                    | Bytes written to a tier                     |
+| `mammoth_tier_promotions_total`       | counter   | `from`, `to`                              | Entries copied up a tier after a hit        |
+| `mammoth_tier_evictions_total`        | counter   | `tier`, `reason` (`size`, `age`)          | Entries removed to stay within limits       |
+| `mammoth_bucket_upload_queue_entries` | gauge     |                                           | Stores waiting to be uploaded to the bucket |
+
+#### Current population
+
+| Metric                                  | Type  | Labels | Meaning                                                     |
+| --------------------------------------- | ----- | ------ | ----------------------------------------------------------- |
+| `mammoth_tier_entries`                  | gauge | `tier` | Entries held, for `memory` and `disk`                       |
+| `mammoth_tier_size_bytes`               | gauge | `tier` | Bytes held, for `memory` and `disk`                         |
+| `mammoth_tier_capacity_bytes`           | gauge | `tier` | Configured limit, for `memory` and `disk`                   |
+| `mammoth_tier_oldest_entry_age_seconds` | gauge | `tier` | Age of the least recently used entry: how much history fits |
+| `mammoth_disk_free_bytes`               | gauge |        | Free space on the disk tier's file system                   |
+
+The bucket's population is not reported: counting it means listing the bucket, which is slow and
+costs money. The provider's own metrics cover it.
+
+#### Serving
+
+| Metric                                  | Type      | Labels                     | Meaning                                    |
+| --------------------------------------- | --------- | -------------------------- | ------------------------------------------ |
+| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`  | Requests by route template and status      |
+| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`          | Time to the last byte of the response      |
+| `mammoth_http_requests_in_flight`       | gauge     | `route`                    | Requests being served                      |
+| `mammoth_auth_failures_total`           | counter   | `reason`                   | Rejected credentials, by AIP-193 `reason`  |
+| `mammoth_build_info`                    | gauge     | `version`, `revision`      | Always 1; identifies the build             |
+
+`route` is the route template (`/cache/{key}`), never the requested path. Standard `process_*`
+metrics (memory, CPU, file descriptors) are exported too.
+
+### Example queries
+
+```promql
+# Hit rate over 5 minutes
+sum(rate(mammoth_cache_lookups_total{result="hit"}[5m]))
+  / sum(rate(mammoth_cache_lookups_total[5m]))
+
+# Share of hits served from memory
+sum(rate(mammoth_cache_lookups_total{result="hit",tier="memory"}[5m]))
+  / sum(rate(mammoth_cache_lookups_total{result="hit"}[5m]))
+
+# p99 time to first byte from the bucket
+histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bucket{tier="bucket"}[5m])))
+```
+
+### Admin snapshot
+
+`GET /v1/serverStatus` returns the current population per tier and lifetime hit and miss counts, for
+a UI or `mammoth status`. Like the metrics, these are raw values with no rates or ratios. It reads
+the same values as the gauges and counters above, so the two never disagree.
+
+### Verification
+
+A test scrapes `/metrics` from a running server and checks it with `promtool check metrics`, and
+checks that every metric in this catalog is present.
+
+## Cross-cutting concerns
+
+### Performance
+
+Counters and histograms are updated without locks on the request path. Gauges for population are
+maintained incrementally, never computed by scanning a tier.
+
+### Security
+
+`/metrics` is open by default and can require a token ([0002](0002-authentication.md)). No metric
+exposes keys, tokens or user names.
+
+## Alternatives considered
+
+- **OpenTelemetry metrics only:** a broader standard, but Prometheus scraping is what most
+  operators run, and an OpenTelemetry collector can scrape Prometheus endpoints.
+- **Per-user labels:** useful for showing who pushes what, but the user list is unbounded in
+  principle. Can be added behind a setting if needed.
+
+## Open questions
+
+- Histogram bucket boundaries for each duration and size metric.
+- Whether to export per-user request counts behind a setting.
