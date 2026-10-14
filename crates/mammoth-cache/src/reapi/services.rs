@@ -46,7 +46,7 @@ use super::{
     status,
 };
 use crate::{
-    cache::{self, Admission, Cache, CacheError, upload_error},
+    cache::{self, Admission, Cache, upload_error},
     store::{self, Tier},
 };
 
@@ -122,7 +122,7 @@ impl Services {
         let mut data = BytesMut::with_capacity(usize::try_from(hit.blob.size).unwrap_or(0));
         let mut body = hit.blob.body;
         while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| status::storage(&CacheError::from(e)))?;
+            let chunk = chunk.map_err(|e| status::storage(&cache::Error::from(e)))?;
             data.extend_from_slice(&chunk);
         }
         Ok(Some(data.freeze()))
@@ -317,7 +317,7 @@ impl Services {
             .body
             .try_collect()
             .await
-            .map_err(|e| status::storage(&CacheError::from(e)))?;
+            .map_err(|e| status::storage(&cache::Error::from(e)))?;
         let Ok(result) = ActionResult::decode(data.concat().as_slice()) else {
             return Ok(Err(Unusable::Corrupt("does not decode")));
         };
@@ -621,7 +621,7 @@ impl ByteStream for Services {
             let chunks = window(hit.blob.body, offset, wanted).map(|chunk| {
                 chunk
                     .map(|data| ReadResponse { data })
-                    .map_err(|e| status::storage(&CacheError::from(e)))
+                    .map_err(|e| status::storage(&cache::Error::from(e)))
             });
             let chunks: Self::ReadStream = Box::pin(paced(chunks, self.send_timeout));
             Ok(Response::new(chunks))
@@ -811,10 +811,11 @@ impl std::fmt::Display for UploadError {
 impl std::error::Error for UploadError {}
 
 /// The status for a failed store, finding an [`UploadError`] inside the storage error.
-fn upload_status(blob: &Blob, error: &CacheError) -> Status {
-    let upload = match error {
-        CacheError::Upload(e) => cache::find::<UploadError>(e),
-        CacheError::TooLarge { .. } | CacheError::Unavailable(_) | CacheError::Internal(_) => None,
+fn upload_status(blob: &Blob, error: &cache::Error) -> Status {
+    let upload = if error.is_upload() {
+        error.find::<UploadError>()
+    } else {
+        None
     };
     match upload {
         Some(UploadError::Mismatch) => status::digest_mismatch(&blob.key),

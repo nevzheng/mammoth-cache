@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 use super::{AppState, entries, error::ApiError};
 use crate::{
-    cache::{self, CacheError},
+    cache::{self, Code},
     key::{CacheKey, Namespace},
     store::ByteStream,
 };
@@ -164,14 +164,10 @@ enum Failure {
     Api(ApiError),
 }
 
-impl From<CacheError> for Failure {
-    fn from(e: CacheError) -> Self {
-        let mismatch = match &e {
-            CacheError::Unavailable(source) | CacheError::Internal(source) => {
-                cache::find::<DigestMismatch>(source).is_some()
-            }
-            CacheError::TooLarge { .. } | CacheError::Upload(_) => false,
-        };
+impl From<cache::Error> for Failure {
+    fn from(e: cache::Error) -> Self {
+        let mismatch = matches!(e.code(), Code::Unavailable | Code::Internal)
+            && e.find::<DigestMismatch>().is_some();
         if mismatch {
             Self::Mismatch
         } else {
