@@ -15,7 +15,7 @@ from hypothesis import HealthCheck, settings
 from hypothesis.stateful import run_state_machine_as_test
 
 from mammoth_e2e import protocols
-from mammoth_e2e.model import AuthModel, CacheModel, callers, full_access
+from mammoth_e2e.model import AuthModel, CacheModel, ChaosModel, callers, full_access
 from mammoth_e2e.target import Feature
 
 if TYPE_CHECKING:
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from mammoth_e2e.target import Target
 
 EXAMPLES = int(os.environ.get("MAMMOTH_E2E_EXAMPLES", "40"))
+# Each restart or outage costs seconds, so the chaos machine runs far fewer, shorter sequences.
+CHAOS_EXAMPLES = int(os.environ.get("MAMMOTH_E2E_CHAOS_EXAMPLES", "6"))
 SETTINGS = settings(
     max_examples=EXAMPLES,
     stateful_step_count=30,
@@ -68,3 +70,21 @@ def test_access_follows_scopes(target: Target, live: Stack | None, contracts: Co
     Machine.everyone = tuple(callers(target))
     Machine.protocols = enabled(target)
     run_state_machine_as_test(Machine, settings=SETTINGS)
+
+
+@pytest.mark.requires("disk")
+@pytest.mark.control
+def test_restarts_and_bucket_outages_lose_nothing(
+    target: Target, controlled: Stack, contracts: Contracts
+) -> None:
+    """Restart the node and stop the bucket at random: every answer still matches the model."""
+
+    class Machine(ChaosModel):
+        pass
+
+    Machine.target, Machine.contracts, Machine.stack = target, contracts, controlled
+    Machine.owner = full_access(target)
+    Machine.protocols = enabled(target)
+    Machine.has_bucket = target.has(Feature.BUCKET)
+    chaos = settings(SETTINGS, max_examples=CHAOS_EXAMPLES, stateful_step_count=20)
+    run_state_machine_as_test(Machine, settings=chaos)

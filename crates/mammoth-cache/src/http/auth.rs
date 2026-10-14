@@ -3,17 +3,21 @@
 //! Each route needs one scope. The middleware reads the `Authorization` header (Basic with the
 //! token as the password, or Bearer), finds the principal and either forwards the request, with
 //! the [`Principal`] as an extension, or answers `401` or `403`. It runs before the handler reads
-//! the body, so a refused upload with `Expect: 100-continue` is never sent.
+//! the body, so a refused upload with `Expect: 100-continue` is never sent. A refused upload sent
+//! without it is read and discarded, up to the entry size limit, so the client gets its answer and
+//! can reuse the connection.
 
 use std::sync::Arc;
 
 use axum::{
+    body::Body,
     extract::{Request, State},
-    http::{HeaderMap, Method, header},
+    http::{HeaderMap, HeaderValue, Method, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use futures_util::StreamExt;
 
 use super::error::ApiError;
 use crate::{
@@ -26,6 +30,9 @@ use crate::{
 pub(crate) struct Guard {
     pub(crate) auth: Arc<Authenticator>,
     pub(crate) protocols: Protocols,
+    /// The most of a refused upload's body that is read and discarded: the entry size limit,
+    /// which any upload the node accepts may send anyway.
+    pub(crate) drain_limit: u64,
 }
 
 /// The scope a request needs, or `None` for open routes: health checks, Maven's `OPTIONS`, and
@@ -86,8 +93,25 @@ pub(crate) async fn require(
     let Some(scope) = required_scope(request.method(), request.uri().path(), &guard) else {
         return next.run(request).await;
     };
+    let Some(refusal) = refuse(auth, scope, &mut request) else {
+        return next.run(request).await;
+    };
+    let expects_continue = request
+        .headers()
+        .get(header::EXPECT)
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"100-continue"));
+    if expects_continue {
+        // The client waits for `100 Continue`, which an unread body never sends.
+        return refusal;
+    }
+    discard(request.into_body(), guard.drain_limit, refusal).await
+}
+
+/// Authenticates the request and checks it has `scope`: the refusal, or `None` with the
+/// [`Principal`] added to the request.
+fn refuse(auth: &Authenticator, scope: Scope, request: &mut Request) -> Option<Response> {
     let Ok(presented) = credentials(request.headers()) else {
-        return invalid();
+        return Some(invalid());
     };
     let creds = presented.as_ref().map(|(user, token)| {
         if user.is_empty() {
@@ -97,20 +121,50 @@ pub(crate) async fn require(
         }
     });
     let Ok(principal) = auth.authenticate(creds) else {
-        return invalid();
+        return Some(invalid());
     };
     if principal.scopes.contains(scope) {
         request.extensions_mut().insert(principal);
-        return next.run(request).await;
+        return None;
     }
-    match &principal.user {
-        None => ApiError::unauthenticated("CREDENTIALS_MISSING", "Authentication is required.")
-            .into_response(),
-        Some(user) => ApiError::permission_denied(user, scope).into_response(),
+    Some(match &principal.user {
+        None => {
+            count_failure("CREDENTIALS_MISSING");
+            ApiError::unauthenticated("CREDENTIALS_MISSING", "Authentication is required.")
+                .into_response()
+        }
+        Some(user) => {
+            count_failure("SCOPE_MISSING");
+            ApiError::permission_denied(user, scope).into_response()
+        }
+    })
+}
+
+/// Reads and discards a refused request's body before answering, so the client finishes sending
+/// and reads the answer instead of a reset. A body over `limit` is left unread and the connection
+/// closed after the answer.
+async fn discard(body: Body, limit: u64, mut refusal: Response) -> Response {
+    let mut stream = body.into_data_stream();
+    let mut read = 0_u64;
+    while let Some(Ok(chunk)) = stream.next().await {
+        read += chunk.len() as u64;
+        if read > limit {
+            refusal
+                .headers_mut()
+                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+            break;
+        }
     }
+    refusal
 }
 
 fn invalid() -> Response {
+    count_failure("CREDENTIALS_INVALID");
     ApiError::unauthenticated("CREDENTIALS_INVALID", "The credentials are not valid.")
         .into_response()
+}
+
+/// Counts a refused request by its AIP-193 `reason`, one of a fixed set.
+fn count_failure(reason: &'static str) {
+    metrics::counter!("mammoth_auth_failures_total", "reason" => reason).increment(1);
 }

@@ -107,7 +107,11 @@ pub fn router_with(
         .route("/v1/serverStatus", get(admin::get_server_status))
         .fallback(|| async { ApiError::route_not_found() })
         .layer(middleware::from_fn_with_state(
-            auth::Guard { auth, protocols },
+            auth::Guard {
+                auth,
+                protocols,
+                drain_limit: cache.max_entry_size(),
+            },
             auth::require,
         ))
         .layer(middleware::from_fn(metrics::record))
