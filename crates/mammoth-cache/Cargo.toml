@@ -32,7 +32,7 @@ foyer-common = "=0.22.6"
 foyer-memory = "=0.22.6"
 futures-core = "0.3.34"
 futures-util = { version = "0.3.34", default-features = false }
-getrandom = "0.3.4"
+getrandom = "0.4.3"
 hyper = { version = "1.12.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio", "server", "server-graceful", "service"] }
 metrics = "0.24.6"
