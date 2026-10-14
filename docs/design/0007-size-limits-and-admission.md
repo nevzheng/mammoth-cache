@@ -271,7 +271,7 @@ need care: the newcomer must be compared with every entry it would evict, not ju
 Einziger, Friedman, Eytan and Manes compare three ways of doing this
 ([2021](https://arxiv.org/abs/2105.08770)) and recommend "aggregated victims": admit only if the
 newcomer's frequency beats the sum of its victims' frequencies. The simulator uses that rule. Any
-frequency-based policy offered in 0009 ([#13](https://github.com/nevzheng/mammoth-cache/pull/13))
+frequency-based policy offered in 0010 ([#13](https://github.com/nevzheng/mammoth-cache/pull/13))
 should behave the same way with variable sizes.
 
 #### Frequency admission in L2
