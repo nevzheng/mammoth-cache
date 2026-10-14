@@ -69,10 +69,35 @@ pub fn routes(cache: Arc<Cache>, auth: Arc<Authenticator>, settings: ServerSetti
     Routes::from(
         routes
             .into_axum_router()
+            .layer(middleware::from_fn(too_large))
             .layer(middleware::from_fn_with_state(buffered, limit))
             .layer(middleware::from_fn_with_state(auth, auth::require))
             .layer(middleware::from_fn(observe::observe)),
     )
+}
+
+/// Middleware that answers a message past the decode limit with `RESOURCE_EXHAUSTED`, the gRPC
+/// convention for a message too large to receive, where tonic answers `OUT_OF_RANGE`, which
+/// clients take to mean a read past the end of a blob.
+async fn too_large(request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    let Some(status) = tonic::Status::from_header_map(response.headers()) else {
+        return response;
+    };
+    if status.code() != tonic::Code::OutOfRange
+        || !status
+            .message()
+            .contains("decoded message length too large")
+    {
+        return response;
+    }
+    status::error(
+        tonic::Code::ResourceExhausted,
+        "MESSAGE_TOO_LARGE",
+        status.message().replace("Error, decoded", "The"),
+        &[],
+    )
+    .into_http::<axum::body::Body>()
 }
 
 /// Middleware that holds one of the node's buffered-call permits while a call other than a

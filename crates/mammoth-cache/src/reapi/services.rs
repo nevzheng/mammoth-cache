@@ -467,7 +467,21 @@ impl ContentAddressableStorage for Services {
         async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
-            // The message size limit bounds the batch; each blob's digest is checked on its own.
+            // Over the advertised limit, the whole batch is refused, as for a read; within it,
+            // each blob's digest is checked on its own.
+            let total = request.requests.iter().try_fold(0_u64, |total, item| {
+                total.checked_add(item.data.len() as u64)
+            });
+            if total.is_none_or(|total| total > MAX_BATCH_BYTES) {
+                return Err(status::invalid_argument(
+                    "BATCH_TOO_LARGE",
+                    format!(
+                        "The batch carries more than max_batch_total_size_bytes, \
+                         {MAX_BATCH_BYTES} bytes, of blobs. Send fewer at once, or larger blobs \
+                         over ByteStream."
+                    ),
+                ));
+            }
             let responses = stream::iter(request.requests)
                 .map(|item| async move {
                     let outcome = match Blob::cas(item.digest.as_ref()) {

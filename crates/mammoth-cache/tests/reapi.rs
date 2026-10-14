@@ -1301,3 +1301,50 @@ async fn a_stalled_unary_request_fails() {
         .expect("the stalled request was never failed");
     assert!(result.is_err());
 }
+
+/// A batch upload over `max_batch_total_size_bytes` is refused whole, as a batch read is, and one
+/// past the message limit gets `RESOURCE_EXHAUSTED`, never `OUT_OF_RANGE`.
+#[tokio::test]
+async fn oversized_batch_uploads_are_refused_whole() {
+    let node = Node::with(16 << 20, settings()).await;
+    let update = |blobs: Vec<Vec<u8>>| {
+        let mut cas = node.cas();
+        async move {
+            cas.batch_update_blobs(BatchUpdateBlobsRequest {
+                requests: blobs
+                    .iter()
+                    .map(|b| batch_update_blobs_request::Request {
+                        digest: Some(digest_of(b)),
+                        data: Bytes::copy_from_slice(b),
+                        compressor: 0,
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .await
+        }
+    };
+    let half = (2 << 20) + (64 << 10);
+    let blobs = vec![vec![1_u8; half], vec![2_u8; half]];
+    let err = update(blobs.clone()).await.unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    assert_eq!(reason(&err), "BATCH_TOO_LARGE");
+    let missing = node
+        .cas()
+        .find_missing_blobs(FindMissingBlobsRequest {
+            blob_digests: blobs.iter().map(|b| digest_of(b)).collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        missing.missing_blob_digests.len(),
+        2,
+        "a refused batch stored a blob"
+    );
+
+    let err = update(vec![vec![3_u8; 9 << 20]]).await.unwrap_err();
+    assert_eq!(err.code(), Code::ResourceExhausted);
+    assert_eq!(reason(&err), "MESSAGE_TOO_LARGE");
+}
