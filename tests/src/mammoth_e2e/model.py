@@ -156,12 +156,8 @@ class CacheModel(RuleBasedStateMachine):
         method: str,
         key: Key,
         body: bytes | None = None,
-        *,
-        close: bool = False,
     ) -> httpx.Response:
         headers = dict(caller.headers)
-        if close:
-            headers["Connection"] = "close"
         if key.protocol == GRADLE and method == "PUT":
             headers["Content-Type"] = "application/vnd.gradle.build-cache-artifact.v2"
         try:
@@ -386,9 +382,7 @@ class AuthModel(CacheModel):
         if denial is None:
             self.store(caller, key, body)
             return
-        # A refused upload closes the connection without saying so (test_edges pins it), so it
-        # gets a connection of its own until that is fixed.
-        self.refused(self.send(caller, "PUT", key, body, close=True), denial)
+        self.refused(self.send(caller, "PUT", key, body), denial)
         self.load(self.owner, key)  # the refused store changed nothing
 
     @rule(data=st.data(), key=CacheModel.keys, method=st.sampled_from(["GET", "HEAD"]))

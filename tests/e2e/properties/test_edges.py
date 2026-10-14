@@ -70,10 +70,6 @@ def test_mismatched_empty_blob_is_refused(writer: CacheClient, contracts: Contra
 
 
 @pytest.mark.requires("auth")
-@pytest.mark.xfail(
-    strict=True,
-    reason="a refused upload closes the connection without Connection: close or reading the body",
-)
 def test_refused_upload_keeps_the_connection_usable(target: Target, live: Stack | None) -> None:
     """After refusing a `PUT`, the node must either read the body or say it is closing.
 
