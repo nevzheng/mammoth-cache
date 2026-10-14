@@ -30,9 +30,9 @@ This doc covers:
 - the metadata kept for each entry, in memory and in the shared entry format.
 
 Size limits and admission thresholds (when an entry is too big for L1, or for the node at all) are
-in the entry size limits design doc (in progress, expected as 0007) and are not repeated here.
-The disk tier's file layout is out of scope; [L2](#l2-index) only notes how it can reuse the same
-policies.
+in [0007: Entry size limits and admission](https://github.com/nevzheng/mammoth-cache/pull/17) and
+are not repeated here. The disk tier's file layout is out of scope; [L2](#l2-index) only notes how
+it can reuse the same policies.
 
 ## Goals and non-goals
 
