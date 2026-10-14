@@ -326,6 +326,31 @@ pub enum Code {
     Unauthenticated,
 }
 
+impl Code {
+    /// The canonical name, such as `INVALID_ARGUMENT`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cancelled => "CANCELLED",
+            Self::Unknown => "UNKNOWN",
+            Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
+            Self::NotFound => "NOT_FOUND",
+            Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::ResourceExhausted => "RESOURCE_EXHAUSTED",
+            Self::FailedPrecondition => "FAILED_PRECONDITION",
+            Self::Aborted => "ABORTED",
+            Self::OutOfRange => "OUT_OF_RANGE",
+            Self::Unimplemented => "UNIMPLEMENTED",
+            Self::Internal => "INTERNAL",
+            Self::Unavailable => "UNAVAILABLE",
+            Self::DataLoss => "DATA_LOSS",
+            Self::Unauthenticated => "UNAUTHENTICATED",
+        }
+    }
+}
+
 /// Typed data a mapping needs beyond the code, like an `absl::Status` payload. Added only when
 /// some mapping branches on it, never to name a failure.
 #[derive(Clone, Debug, PartialEq, Eq)]

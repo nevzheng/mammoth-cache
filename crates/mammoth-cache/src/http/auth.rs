@@ -21,6 +21,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::StreamExt;
 
 use super::error::ApiError;
+use crate::api::error::Reason;
 use crate::{
     auth::{Authenticator, Credentials, Scope},
     config::Protocols,
@@ -146,14 +147,16 @@ fn refuse(auth: &Authenticator, scope: Scope, request: &mut Request) -> Option<(
     }
     Some(match &principal.user {
         None => {
-            count_failure("CREDENTIALS_MISSING");
-            let refusal =
-                ApiError::unauthenticated("CREDENTIALS_MISSING", "Authentication is required.")
-                    .into_response();
+            count_failure(Reason::CredentialsMissing);
+            let refusal = ApiError::unauthenticated(
+                Reason::CredentialsMissing,
+                "Authentication is required.",
+            )
+            .into_response();
             (refusal, false)
         }
         Some(user) => {
-            count_failure("SCOPE_MISSING");
+            count_failure(Reason::ScopeMissing);
             (
                 ApiError::permission_denied(user, scope).into_response(),
                 true,
@@ -186,12 +189,12 @@ fn close(mut refusal: Response) -> Response {
 }
 
 fn invalid() -> Response {
-    count_failure("CREDENTIALS_INVALID");
-    ApiError::unauthenticated("CREDENTIALS_INVALID", "The credentials are not valid.")
+    count_failure(Reason::CredentialsInvalid);
+    ApiError::unauthenticated(Reason::CredentialsInvalid, "The credentials are not valid.")
         .into_response()
 }
 
 /// Counts a refused request by its AIP-193 `reason`, one of a fixed set.
-fn count_failure(reason: &'static str) {
-    metrics::counter!("mammoth_auth_failures_total", "reason" => reason).increment(1);
+fn count_failure(reason: Reason) {
+    metrics::counter!("mammoth_auth_failures_total", "reason" => reason.as_str()).increment(1);
 }

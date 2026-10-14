@@ -14,7 +14,7 @@ use std::{fmt, future::Future, io, pin::Pin};
 use bytes::Bytes;
 use futures_core::Stream;
 
-use crate::key::CacheKey;
+use crate::{api::error::Reason, key::CacheKey};
 
 /// A boxed, sendable future, so the port can be used as `dyn BlobStore`.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -180,7 +180,7 @@ pub struct HealthCheck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HealthProblem {
     /// The `ErrorInfo.reason`, such as `STORAGE_NOT_WRITABLE`.
-    pub reason: &'static str,
+    pub reason: Reason,
     /// A sentence for operators.
     pub message: String,
     /// `ErrorInfo.metadata` entries.

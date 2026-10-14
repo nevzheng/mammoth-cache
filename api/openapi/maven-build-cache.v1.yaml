@@ -247,7 +247,7 @@ components:
             error:
               code: 413
               message: Cache entry is 157286400 bytes; the limit is 104857600.
-              status: OUT_OF_RANGE
+              status: INVALID_ARGUMENT
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
                   reason: ENTRY_TOO_LARGE

@@ -237,7 +237,7 @@ components:
         oversize policy; by default it answers `200` and drops the entry. Gradle does not fail the
         build on `413`, but turns the remote cache off for the rest of it. AIP-193 alone would
         suggest `400 INVALID_ARGUMENT`, which would fail the build, so the protocol status `413`
-        wins and the body keeps the canonical name `OUT_OF_RANGE`.
+        wins and the body keeps the canonical name `INVALID_ARGUMENT`.
       content:
         application/json:
           schema:
@@ -246,7 +246,7 @@ components:
             error:
               code: 413
               message: Cache entry is 157286400 bytes; the limit is 104857600.
-              status: OUT_OF_RANGE
+              status: INVALID_ARGUMENT
               details:
                 - "@type": type.googleapis.com/google.rpc.ErrorInfo
                   reason: ENTRY_TOO_LARGE

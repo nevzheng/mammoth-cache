@@ -18,6 +18,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::stream;
 use mammoth_cache::{
+    api::error::Reason,
     auth::{Authenticator, Scope, Scopes, hash_token},
     cache::{Cache, OversizePolicy},
     config::Protocols,
@@ -112,7 +113,7 @@ impl BoundedStore for Failing {
         vec![HealthCheck {
             name: "storage-writable",
             problem: self.unhealthy.then(|| HealthProblem {
-                reason: "STORAGE_NOT_WRITABLE",
+                reason: Reason::StorageNotWritable,
                 message: "The test tier is not writable.".to_owned(),
                 metadata: Vec::new(),
             }),

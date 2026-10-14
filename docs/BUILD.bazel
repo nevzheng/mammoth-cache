@@ -19,3 +19,11 @@ filegroup(
     ],
     visibility = ["//crates/mammoth-cache:__pkg__"],
 )
+
+# The error design doc, embedded by tests/catalogue.rs so it can check the catalogue table lists
+# every reason.
+filegroup(
+    name = "error_catalogue",
+    srcs = ["design/0017-errors.md"],
+    visibility = ["//crates/mammoth-cache:__pkg__"],
+)
