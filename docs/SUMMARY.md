@@ -18,3 +18,4 @@
   - [0006: Server framework and code structure](design/0006-server-framework.md)
   - [0007: Entry size limits and admission](design/0007-size-limits-and-admission.md)
   - [0009: Releases and packaging](design/0009-releases.md)
+  - [Investigations](design/investigations.md)
