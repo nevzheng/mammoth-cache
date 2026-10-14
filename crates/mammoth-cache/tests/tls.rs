@@ -19,7 +19,7 @@ use mammoth_cache::{
     router_with_auth,
     server::{self, ServerSettings, TlsSettings},
     store::memory::MemoryStore,
-    tls::Certificates,
+    tls::{self, Certificates},
 };
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use tokio::{
@@ -35,7 +35,7 @@ use tokio_rustls::{
     rustls::{
         ClientConfig, RootCertStore,
         crypto::aws_lc_rs,
-        pki_types::{CertificateDer, ServerName},
+        pki_types::{CertificateDer, ServerName, pem::PemObject},
         version::{TLS12, TLS13},
     },
 };
@@ -261,6 +261,47 @@ async fn round_trips_over_tls_on_one_connection() {
         (200, b"jar".to_vec())
     );
     assert_eq!(request(&mut stream, "GET", "/livez", b"").await.0, 200);
+}
+
+/// `[tls] generate`: the node writes a self-signed pair, and a client that trusts the written
+/// certificate, as an operator would after copying it, connects by name and by address.
+#[tokio::test]
+async fn serves_a_generated_self_signed_certificate() {
+    let dir = tempfile::tempdir().unwrap();
+    let cert = dir.path().join("tls.crt");
+    let key = dir.path().join("tls.key");
+    assert!(tls::generate_if_missing(&cert, &key, &[]).unwrap());
+    let node = start(&cert, &key, Duration::from_secs(5)).await;
+
+    let written = CertificateDer::from_pem_file(&cert).unwrap();
+    let mut roots = RootCertStore::empty();
+    roots.add(written.clone()).unwrap();
+    let config = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
+        .with_protocol_versions(&[&TLS13, &TLS12])
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(config));
+    for (name, key) in [("localhost", KEY), ("127.0.0.1", "fedcba9876543210")] {
+        let tcp = TcpStream::connect(node.addr).await.unwrap();
+        let name = ServerName::try_from(name).unwrap();
+        let mut stream = connector.connect(name, tcp).await.unwrap();
+        assert_eq!(served_cert(&stream), written);
+        let path = format!("/cache/{key}");
+        assert_eq!(request(&mut stream, "PUT", &path, b"hello").await.0, 201);
+        assert_eq!(
+            request(&mut stream, "GET", &path, b"").await,
+            (200, b"hello".to_vec())
+        );
+    }
+    // A name the certificate wasn't made for is refused.
+    let tcp = TcpStream::connect(node.addr).await.unwrap();
+    let name = ServerName::try_from("cache.example.com").unwrap();
+    assert!(connector.connect(name, tcp).await.is_err());
+
+    // A restart reuses the pair, so a client that trusted it once still connects.
+    assert!(!tls::generate_if_missing(&cert, &key, &[]).unwrap());
+    assert_eq!(CertificateDer::from_pem_file(&cert).unwrap(), written);
 }
 
 #[tokio::test]

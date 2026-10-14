@@ -103,6 +103,7 @@ impl Default for Server {
 
 /// `[tls]`: serve HTTPS with this certificate (design doc 0014). The files are read and checked
 /// at startup, and re-read while serving, so a renewed certificate is picked up without a restart.
+/// With `generate`, a self-signed pair is written to them first if neither exists.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tls {
@@ -110,6 +111,13 @@ pub struct Tls {
     pub cert: PathBuf,
     /// PEM private key.
     pub key: PathBuf,
+    /// Write a self-signed certificate and key to `cert` and `key` when neither file exists.
+    #[serde(default)]
+    pub generate: bool,
+    /// The names and addresses a generated certificate is valid for; empty for the machine's
+    /// hostname, `localhost`, `127.0.0.1` and `::1`. Unused without `generate`.
+    #[serde(default)]
+    pub hostnames: Vec<String>,
 }
 
 /// `[protocols]`: which client protocols the node serves. A protocol that is off has no routes,
