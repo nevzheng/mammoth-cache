@@ -286,19 +286,26 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_http_request_duration_seconds",
         kind: Kind::Histogram,
         labels: &[Label("route", None), Label("method", Some(METHODS))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_http_requests_in_flight",
         kind: Kind::Gauge,
         labels: &[Label("route", None)],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_auth_failures_total",
         kind: Kind::Counter,
-        labels: &[Label("reason", None)],
-        live: false,
+        labels: &[Label(
+            "reason",
+            Some(&[
+                "CREDENTIALS_MISSING",
+                "CREDENTIALS_INVALID",
+                "SCOPE_MISSING",
+            ]),
+        )],
+        live: true,
     },
     Metric {
         name: "mammoth_build_info",
@@ -796,6 +803,38 @@ async fn workload_moves_the_live_counters() {
         0
     );
     assert_eq!(after.count("mammoth_bucket_upload_queue_entries", &[]), 0);
+    // Every request timed, none left in flight, and the rejected credential counted.
+    assert_eq!(
+        delta(
+            "mammoth_http_request_duration_seconds_count",
+            &[("route", "/cache/{key}"), ("method", "PUT")]
+        ),
+        PUTS
+    );
+    assert_eq!(
+        after.count(
+            "mammoth_http_requests_in_flight",
+            &[("route", "/cache/{key}")]
+        ),
+        0
+    );
+    assert_eq!(
+        delta(
+            "mammoth_auth_failures_total",
+            &[("reason", "CREDENTIALS_INVALID")]
+        ),
+        1
+    );
+    assert_cache_outcomes(&delta);
+    tier_counters_moved(&before, &after);
+}
+
+/// How much a series moved across [`workload`], by name and labels.
+type Delta<'a> = dyn Fn(&str, &[(&str, &str)]) -> i64 + 'a;
+
+/// The cache outcome counters after [`workload`]: store results, entry sizes and
+/// lookups by tier.
+fn assert_cache_outcomes(delta: &Delta<'_>) {
     // Store outcomes: four written, one oversized, and a size for each one written.
     let stores = |result| delta("mammoth_cache_stores_total", &[("result", result)]);
     assert_eq!(stores("stored"), STORED);
@@ -820,7 +859,6 @@ async fn workload_moves_the_live_counters() {
         ),
         MISSES
     );
-    tier_counters_moved(&before, &after);
 }
 
 /// The per-tier counters after [`workload`]: every stored entry written to the disk and the

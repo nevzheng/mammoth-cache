@@ -104,13 +104,25 @@ pub(crate) async fn require(
         return next.run(request).await;
     }
     match &principal.user {
-        None => ApiError::unauthenticated("CREDENTIALS_MISSING", "Authentication is required.")
-            .into_response(),
-        Some(user) => ApiError::permission_denied(user, scope).into_response(),
+        None => {
+            count_failure("CREDENTIALS_MISSING");
+            ApiError::unauthenticated("CREDENTIALS_MISSING", "Authentication is required.")
+                .into_response()
+        }
+        Some(user) => {
+            count_failure("SCOPE_MISSING");
+            ApiError::permission_denied(user, scope).into_response()
+        }
     }
 }
 
 fn invalid() -> Response {
+    count_failure("CREDENTIALS_INVALID");
     ApiError::unauthenticated("CREDENTIALS_INVALID", "The credentials are not valid.")
         .into_response()
+}
+
+/// Counts a refused request by its AIP-193 `reason`, one of a fixed set.
+fn count_failure(reason: &'static str) {
+    metrics::counter!("mammoth_auth_failures_total", "reason" => reason).increment(1);
 }
