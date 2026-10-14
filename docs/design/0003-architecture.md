@@ -77,20 +77,25 @@ From the environment:
 
 ### Overview
 
-```text
-                 Gradle / Maven clients
-                          │ HTTP
-            ┌─────────────┴─────────────┐
-            ▼                           ▼
-   ┌─────────────────┐         ┌─────────────────┐
-   │  node A         │         │  node B         │   stateless, interchangeable
-   │  L1  memory     │         │  L1  memory     │
-   │  L2  local disk │         │  L2  local disk │
-   └────────┬────────┘         └────────┬────────┘
-            └─────────────┬─────────────┘
-                          ▼
-              L3  object-store bucket            S3, GCS or Azure Blob; optional
+```mermaid
+flowchart TB
+    clients["Gradle and Maven clients"]
+    lb["Load balancer (optional)"]
+    subgraph a["node A"]
+        a1["L1 memory"] --- a2["L2 local disk"]
+    end
+    subgraph b["node B"]
+        b1["L1 memory"] --- b2["L2 local disk"]
+    end
+    bucket[("L3 object-store bucket<br/>S3, GCS or Azure Blob; optional")]
+    clients -- HTTP --> lb
+    lb --> a
+    lb --> b
+    a2 --> bucket
+    b2 --> bucket
 ```
+
+Nodes are stateless and interchangeable; the bucket is the only shared state.
 
 ### Tiers
 
@@ -113,6 +118,38 @@ temporary file renamed into place, so a crash never leaves a partial entry.
 
 Entries are streamed, never buffered whole, except those small enough for L1.
 
+```mermaid
+sequenceDiagram
+    participant G as Gradle
+    participant N as Node core
+    participant M as L1 memory
+    participant D as L2 disk
+    participant B as L3 bucket
+    G->>N: GET /cache/{key}
+    N->>M: get(key)
+    alt hit in memory
+        M-->>N: entry
+        N-->>G: 200 + entry
+    else miss in memory
+        N->>D: get(key)
+        alt hit on disk
+            D-->>N: entry stream
+            N-->>G: 200 + entry stream
+            N-)M: promote if small
+        else miss on disk
+            N->>B: get(key), shared by concurrent requests
+            alt hit in bucket
+                B-->>N: entry stream
+                N-->>G: 200 + entry stream
+                N-)D: write while streaming
+            else miss everywhere
+                B-->>N: not found
+                N-->>G: 404
+            end
+        end
+    end
+```
+
 ### Write path
 
 1. Reject the upload early (`413`) when `Content-Length` exceeds the entry limit, before reading
@@ -126,6 +163,26 @@ crash costs a later miss, nothing more. A node set to wait for the upload before
 `PUT` latency for a smaller window in which other nodes cannot see the entry.
 
 A `PUT` for a key already present in any tier answers at once and writes nothing.
+
+```mermaid
+sequenceDiagram
+    participant G as Gradle
+    participant N as Node core
+    participant D as L2 disk
+    participant Q as Upload queue
+    participant B as L3 bucket
+    G->>N: PUT /cache/{key} (Expect: 100-continue)
+    alt Content-Length over the limit
+        N-->>G: 413, entry skipped
+    else accepted
+        N-->>G: 100 Continue
+        G->>N: body
+        N->>D: stream to temp file, check size, rename
+        N-->>G: 201 Created
+        N-)Q: enqueue upload (dropped and counted if full)
+        Q-)B: put(key)
+    end
+```
 
 ### Integrity
 
@@ -158,14 +215,29 @@ The code follows a hexagonal (ports and adapters) structure. Every tier is a key
 immutable blobs: a key maps to bytes plus a little metadata (size, checksum, last access), with no
 updates and no transactions.
 
-```text
-  inbound adapters               core                      outbound adapters
-  ----------------      ------------------------      ---------------------------
-  Gradle HTTP     ──▶                                ──▶  memory store       (L1)
-  admin API       ──▶   tiering: lookup order,       ──▶  disk store         (L2)
-  health, metrics ──▶   promotion, eviction,         ──▶  object store       (L3)
-                        single-flight, checksums           └─ S3, GCS, Azure, file
-                                                               via an object-store library
+```mermaid
+flowchart LR
+    subgraph in["Inbound adapters"]
+        gradle["Gradle HTTP"]
+        admin["Admin API"]
+        ops["Health and metrics"]
+    end
+    subgraph core["Core"]
+        tiering["Tiering: lookup order, promotion,<br/>eviction, single-flight, checksums"]
+    end
+    subgraph out["Outbound adapters (blob store port)"]
+        mem["Memory store (L1)"]
+        disk["Disk store (L2)"]
+        obj["Object store (L3)"]
+    end
+    sdk["Object-store library:<br/>S3, GCS, Azure, file"]
+    gradle --> tiering
+    admin --> tiering
+    ops --> tiering
+    tiering --> mem
+    tiering --> disk
+    tiering --> obj
+    obj --> sdk
 ```
 
 - **Core:** the tiering rules above. It depends only on ports, never on HTTP, a file system or a
