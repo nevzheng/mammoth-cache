@@ -1,0 +1,50 @@
+# HTTPS on the node (doc 0014) with a certificate from the test harness's CA, for
+# tests/e2e/test_tls.py and tests/acceptance/test_tls.py. The harness writes /etc/mammoth/tls
+# (deploy/compose/tls on the host) before the stack starts and renews it there to test reloads.
+# Memory only. The users and tokens are the main node's (mammoth.toml).
+version = 1
+listen = "0.0.0.0:5071"
+
+[limits]
+max_entry_size = "16MiB"
+
+[memory]
+size = "256MiB"
+max_entry_size = "8MiB"
+
+[tls]
+cert = "/etc/mammoth/tls/tls.crt"
+key = "/etc/mammoth/tls/tls.key"
+
+[protocols]
+gradle = true
+maven = true
+bazel = true
+reapi = true # gRPC over TLS on [reapi] listen, 0.0.0.0:6011 by default
+
+[auth]
+anonymous = []
+
+[auth.users.ci]
+note = "Read and write"
+scopes = ["cache:read", "cache:write"]
+token_hashes = ["sha256:4d1e6aaa9c67470cab51154f354b65ea6ad43112047149fdcef91a3c7625a229"]
+
+[auth.users.developer]
+note = "Read only"
+scopes = ["cache:read"]
+token_hashes = ["sha256:ec48e51da0c37775419b67e934fa462557c0f51833e2c980c782074139ac5a0e"]
+
+[auth.users.prometheus]
+note = "Metrics only"
+scopes = ["metrics:read"]
+token_hashes = ["sha256:c0ddcdc0ce061e0dce233b7d75aff58e8cfc16026afdc13f140ac656e35f27a1"]
+
+[auth.users.admin]
+note = "Admin API only"
+scopes = ["admin:read"]
+token_hashes = ["sha256:a006dc2d0df8cfa2a64b03373f35c1be477dc9967ec8799833ed57b6fa34282b"]
+
+[log]
+level = "info"
+format = "text"

@@ -12,9 +12,11 @@ from typing import TYPE_CHECKING
 import httpx
 
 from mammoth_e2e.bucket import BucketInspector
+from mammoth_e2e.tlscerts import Authority
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from mammoth_e2e.target import Compose, Target
 
@@ -50,8 +52,14 @@ class Stack:
         return result
 
     def up(self) -> None:
+        # The TLS node reads its certificate at startup: issue one from a test CA, unless a
+        # stack kept from an earlier run (--keep-stack) still has a good one.
+        renewed = self.target.tls is not None and Authority.ensure(self.target.tls.cert_dir)[1]
         # --no-build: the image under test is built (or pulled) before the suite runs.
         self._run("up", "--detach", "--wait", "--no-build", "--remove-orphans")
+        if renewed and self.target.tls is not None:
+            # A node that was already running still serves the old CA's certificate.
+            self._run("restart", self.target.tls.service)
         self.wait_ready()
 
     def down(self) -> None:
@@ -136,6 +144,10 @@ class Stack:
             "-c", f"rm -rf /disks/{service}/* && chown 65532:65532 /disks/{service}",
         )  # fmt: skip
 
+    def copy_out(self, service: str, path: str, dest: Path) -> None:
+        """Copy a file out of a service's running container, keeping its permissions."""
+        self._run("cp", f"{service}:{path}", str(dest))
+
     def logs(self, services: Sequence[str] = (), *, tail: int = 200) -> str:
         args = ("logs", "--no-color", "--timestamps", f"--tail={tail}", *services)
         return self._run(*args, check=False).stdout
@@ -145,11 +157,14 @@ class Stack:
         deadline = time.monotonic() + timeout
         proxies = [self.target.proxy_url, self.target.proxy_defaults_url]
         proxies += self.target.topologies.values()
+        if self.target.tls is not None:
+            proxies += [self.target.tls.base_url, self.target.tls.generated_base_url]
         for base in self.target.base_urls() + [str(p).rstrip("/") for p in proxies if p]:
             url = f"{base}/readyz"
             while True:
                 try:
-                    if httpx.get(url, timeout=2.0).status_code == 200:
+                    # Readiness only: the TLS nodes' certificates are checked by the tests.
+                    if httpx.get(url, timeout=2.0, verify=False).status_code == 200:  # noqa: S501
                         break
                 except httpx.TransportError:
                     pass

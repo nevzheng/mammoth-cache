@@ -66,6 +66,13 @@ jobs:
           --csv "$RUNNER_TEMP/load/${{ matrix.run }}" --html "$RUNNER_TEMP/load/${{ matrix.run }}.html"
         env:
           RATE: ${{ inputs.rate }}
+      # The same smoke run over HTTPS against the node's built-in TLS (doc 0014), to see its cost.
+      - name: locust smoke over TLS
+        if: matrix.run == 'smoke'
+        run: >-
+          uv run locust -f load/locustfile.py --headless --only-summary --processes -1
+          --target targets/compose.toml --up --run smoke --tls --metrics-port 0
+          --csv "$RUNNER_TEMP/load/smoke-tls" --html "$RUNNER_TEMP/load/smoke-tls.html"
       - if: always()
         uses: actions/upload-artifact@v7
         with:

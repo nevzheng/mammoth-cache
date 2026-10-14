@@ -20,6 +20,7 @@ class Feature(StrEnum):
     BUCKET = "bucket"  # stores reach the bucket, and nodes refill from it
     BAZEL = "bazel"  # serves Bazel's HTTP cache on /bazel/ (doc 0012)
     REAPI = "reapi"  # serves the REAPI cache over gRPC at `reapi_address` (doc 0016)
+    TLS = "tls"  # has the built-in TLS nodes in the profile's `[tls]` (doc 0014)
 
 
 class Bucket(BaseModel):
@@ -41,6 +42,28 @@ class Credentials(BaseModel):
     username: str
     token: SecretStr
     scopes: frozenset[str] = frozenset()  # what the node grants this user (doc 0002)
+
+
+class Tls(BaseModel):
+    """The built-in TLS nodes (doc 0014). Both have the main node's users and limits."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # Serves the certificate the harness issues into `cert_dir` from its own test CA.
+    base_url: HttpUrl
+    # Serves a self-signed certificate it generated itself (`[tls] generate`).
+    generated_base_url: HttpUrl | None = None
+    # host:port of `base_url`'s node's REAPI listener, over TLS.
+    reapi_address: str | None = None
+    # Where the harness writes `ca.crt`, `ca.key`, `tls.crt` and `tls.key` before the stack starts;
+    # the `base_url` node reads the last two. Relative to the profile.
+    cert_dir: Path
+    # The Compose service behind `base_url`.
+    service: str = "mammoth-tls"
+    # The Compose service behind `generated_base_url` and where its certificate is inside it.
+    generated_service: str = "mammoth-tls-generated"
+    generated_cert: str = "/var/lib/mammoth/tls/tls.crt"
+    generated_key: str = "/var/lib/mammoth/tls/tls.key"
 
 
 class Compose(BaseModel):
@@ -90,6 +113,7 @@ class Target(BaseSettings):
     default_user: str | None = None  # sent by clients unless a test says otherwise
     anonymous_scopes: frozenset[str] = frozenset()  # [auth] anonymous on the node
     compose: Compose | None = None
+    tls: Tls | None = None
 
     @classmethod
     @override
@@ -111,6 +135,8 @@ class Target(BaseSettings):
         if "compose" in data and "file" in data["compose"]:
             # Relative compose paths are relative to the profile, not the working directory.
             data["compose"]["file"] = str((path.parent / data["compose"]["file"]).resolve())
+        if "tls" in data and "cert_dir" in data["tls"]:
+            data["tls"]["cert_dir"] = str((path.parent / data["tls"]["cert_dir"]).resolve())
         return cls(**data)
 
     def base_urls(self) -> list[str]:

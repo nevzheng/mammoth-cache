@@ -9,6 +9,7 @@ import httpx
 from prometheus_client.parser import text_string_to_metric_families
 
 if TYPE_CHECKING:
+    import ssl
     from collections.abc import Mapping
 
     from mammoth_e2e.target import Target
@@ -40,8 +41,10 @@ def parse(text: str) -> Scrape:
     return Scrape(text=text, samples=samples)
 
 
-def scrape(target: Target, *, base: str | None = None) -> Scrape:
-    response = httpx.get(target.url("/metrics", base=base), timeout=10.0)
+def scrape(
+    target: Target, *, base: str | None = None, verify: ssl.SSLContext | bool = True
+) -> Scrape:
+    response = httpx.get(target.url("/metrics", base=base), timeout=10.0, verify=verify)
     response.raise_for_status()
     return parse(response.text)
 

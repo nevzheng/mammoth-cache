@@ -23,6 +23,52 @@ _GRADLE_TASK = re.compile(
 )
 
 
+TRUST_STORE_PASSWORD = "changeit"  # noqa: S105 - the JDK default, protects nothing
+
+
+def java_trust_store(ca_cert: Path, dest: Path, java_home: str | None = None) -> Path:
+    """A PKCS#12 trust store with what the JVM already trusts plus `ca_cert`, as an operator adds
+    a private CA (docs/user/deployment.md). Starts from the trust store `JAVA_TOOL_OPTIONS` names,
+    if any (a proxy's CA), else the JDK's own."""
+    keytool = str(Path(java_home) / "bin" / "keytool") if java_home else "keytool"
+    source = _jdk_cacerts(keytool)
+    for option in os.environ.get("JAVA_TOOL_OPTIONS", "").split():
+        if option.startswith("-Djavax.net.ssl.trustStore="):
+            source = option.partition("=")[2]
+    dest.unlink(missing_ok=True)
+    for argv in (
+        [keytool, "-importkeystore", "-noprompt", "-srckeystore", source,
+         "-srcstorepass", TRUST_STORE_PASSWORD, "-destkeystore", str(dest),
+         "-deststoretype", "PKCS12", "-deststorepass", TRUST_STORE_PASSWORD],
+        [keytool, "-importcert", "-noprompt", "-alias", "mammoth-e2e-ca", "-file", str(ca_cert),
+         "-keystore", str(dest), "-storepass", TRUST_STORE_PASSWORD],
+    ):  # fmt: skip
+        result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=60)
+        if result.returncode != 0:
+            msg = f"{' '.join(argv)} failed:\n{result.stdout}{result.stderr}"
+            raise RuntimeError(msg)
+    return dest
+
+
+def _jdk_cacerts(keytool: str) -> str:
+    """The JDK's `lib/security/cacerts`, next to the `keytool` that runs."""
+    found = shutil.which(keytool)
+    if found is None:
+        raise FileNotFoundError(keytool)
+    return str(Path(found).resolve().parents[1] / "lib" / "security" / "cacerts")
+
+
+def _trust(env: dict[str, str], trust_store: Path | None) -> None:
+    """Make every JVM the build starts trust `trust_store` (later options win)."""
+    if trust_store is None:
+        return
+    options = (
+        f"-Djavax.net.ssl.trustStore={trust_store} -Djavax.net.ssl.trustStoreType=PKCS12 "
+        f"-Djavax.net.ssl.trustStorePassword={TRUST_STORE_PASSWORD}"
+    )
+    env["JAVA_TOOL_OPTIONS"] = f"{env.get('JAVA_TOOL_OPTIONS', '')} {options}".strip()
+
+
 @dataclass(frozen=True, slots=True)
 class BuildResult:
     argv: tuple[str, ...]
@@ -84,6 +130,7 @@ class GradleProject:
     credentials: Credentials | None = None
     push: bool = True
     expect_continue: bool = False
+    trust_store: Path | None = None  # for a node with [tls]; see java_trust_store
     java_home: str | None = field(default_factory=lambda: os.environ.get("JAVA_HOME"))
 
     @classmethod
@@ -118,6 +165,7 @@ class GradleProject:
             env["MAMMOTH_CACHE_PASSWORD"] = self.credentials.token.get_secret_value()
         if self.java_home:
             env["JAVA_HOME"] = self.java_home
+        _trust(env, self.trust_store)
         code, output = _run(argv, self.root, env, timeout)
         return GradleResult(argv=tuple(argv), returncode=code, output=output)
 
@@ -155,6 +203,7 @@ class MavenProject:
     cache_url: str
     credentials: Credentials | None = None
     push: bool = True
+    trust_store: Path | None = None  # for a node with [tls]; see java_trust_store
     java_home: str | None = field(default_factory=lambda: os.environ.get("JAVA_HOME"))
 
     @classmethod
@@ -207,6 +256,7 @@ class MavenProject:
         env = os.environ.copy()
         if self.java_home:
             env["JAVA_HOME"] = self.java_home
+        _trust(env, self.trust_store)
         code, output = _run(argv, self.root, env, timeout)
         return BuildResult(argv=tuple(argv), returncode=code, output=output)
 
@@ -253,6 +303,7 @@ class BazelProject:
     auth_in_header: bool = False  # Bearer via --remote_header instead of user:token in the URL
     upload: bool = True
     download: Download = "toplevel"  # Bazel's default since 7
+    tls_certificate: Path | None = None  # the CA to trust for an https cache URL
 
     @classmethod
     def create(cls, workdir: Path, version: str, cache_url: str) -> BazelProject:
@@ -317,6 +368,8 @@ class BazelProject:
             else:
                 scheme, _, rest = url.partition("://")
                 url = f"{scheme}://{self.credentials.username}:{token}@{rest}"
+        if self.tls_certificate is not None:
+            flags.append(f"--tls_certificate={self.tls_certificate}")
         flags += [
             f"--remote_cache={url}",
             f"--remote_upload_local_results={str(self.upload).lower()}",

@@ -59,8 +59,8 @@ CI runs these, plus `uv lock --check`, in the `e2e` workflow.
 
 ## Targets and features
 
-A target profile lists the server `features` it has (`config`, `auth`, `disk`, `bucket`,
-`bazel`). Tests marked `@pytest.mark.requires(...)` skip on targets without them, so the PR
+A target profile lists the server `features` it has (`config`, `auth`, `disk`, `bucket`, `bazel`,
+`reapi`, `tls`). Tests marked `@pytest.mark.requires(...)` skip on targets without them, so the PR
 that builds a feature turns it on in `targets/compose.toml` and its tests start running. Tests
 marked `control` stop or restart services and skip on targets the harness does not own.
 `MAMMOTH_E2E_*` environment variables override profile values, for example `MAMMOTH_E2E_BASE_URL`.
@@ -84,6 +84,23 @@ only), `prometheus` (`metrics:read`) and `admin` (`admin:read`). The `mammoth-op
 5073 has the same users and lets anonymous requests read. The tokens protect nothing; never reuse
 them. The `mammoth-proxied` node lets anonymous requests read and write, and is reached only through
 nginx: port 8080 with the deployment guide's settings, 8081 on nginx's defaults.
+
+## TLS
+
+The `tls` Compose profile, which `targets/compose.toml` turns on, adds two nodes that serve HTTPS
+themselves (design doc [0014](../docs/design/0014-tls.md)). Before starting the stack the harness
+makes a test CA in `deploy/compose/tls/` (git-ignored) and issues `mammoth-tls`'s certificate from
+it, keeping both while the certificate has more than a day left. `mammoth-tls` (5078, REAPI gRPC
+on 6012) has the main node's users; `mammoth-tls-generated` (5079) generates its own self-signed
+certificate (`[tls] generate`) into its volume and lets anonymous requests read and write.
+
+`e2e/test_tls.py` covers both: every protocol over HTTPS, gRPC over TLS, untrusted clients, plain
+HTTP on the TLS port, TLS versions and ALPN, the expiry gauge, a renewal picked up without a
+restart (up to two minutes, the node re-reads every 60 s), and for the generated certificate its
+key's permissions, the logged fingerprint, `curl --cacert`, and that it survives a restart and is
+replaced once deleted. `acceptance/test_tls.py` runs real Gradle and Maven builds through a JVM
+trust store with the CA imported, and Bazel with `--tls_certificate`. `--tls` points a Locust run
+at `mammoth-tls`.
 
 ## Behind a proxy
 

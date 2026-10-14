@@ -49,6 +49,8 @@ jobs:
           - { name: bazel-8-grpc, suite: "test_bazel_grpc*.py", args: --bazel 8 }
           - { name: bazel-9-grpc, suite: "test_bazel_grpc*.py", args: --bazel 9 }
           - { name: buck2, suite: test_buck2.py, args: --buck2 latest }
+          # The newest of each client against the node serving HTTPS itself (doc 0014).
+          - { name: tls, suite: test_tls.py, args: --gradle 9 --maven 3.9 --maven-extension latest --bazel 9 }
     name: ${{ matrix.name }}
     defaults:
       run:
