@@ -12,6 +12,9 @@ Gradle's HTTP build cache and the Apache Maven Build Cache Extension, and is des
 entries in memory, on local disk and in an optional S3, GCS or Azure bucket, with Prometheus
 metrics.
 
+For operators it is meant to be easy: one dependency (a bucket, and even that is optional), a few
+lines of config and a load balancer, and you're set.
+
 Pre-alpha: today it serves Gradle and Maven from memory; the disk and bucket tiers, config file and
 authentication are on the way. Try it with the `edge` image
 (`ghcr.io/nevzheng/mammoth-cache:edge`), but don't run it in production yet.
