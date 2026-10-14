@@ -12,6 +12,9 @@ mammoth-cache has one kind of credential: a generated token that belongs to a us
 | `metrics:read` | `/metrics`, when metrics require authentication        |
 | `admin:read`   | The admin API, `/v1/...`                               |
 
+Maven's `OPTIONS`, which only lists the methods, and the routes of a protocol that is off need no
+credentials; the latter answer `404` like any unknown path.
+
 The Build Cache Node's `read` level is `cache:read`, and `readwrite` is `cache:read` plus
 `cache:write`. `auth.anonymous` sets the scopes for requests without credentials, and defaults to
 none. Health checks are always open.

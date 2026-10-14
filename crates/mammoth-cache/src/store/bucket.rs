@@ -41,6 +41,8 @@ pub struct BucketConfig {
     pub region: Option<String>,
     /// An S3-compatible endpoint such as `MinIO` or Cloudflare R2, or a custom Azure endpoint.
     pub endpoint: Option<String>,
+    /// Allows `http://` endpoints, for a local S3-compatible store or Azurite. S3 and Azure only.
+    pub allow_http: bool,
     /// Uploads larger than this are multipart; also the part size. At least 5 MiB.
     pub multipart_threshold: usize,
 }
@@ -53,6 +55,7 @@ impl BucketConfig {
             url: url.into(),
             region: None,
             endpoint: None,
+            allow_http: false,
             multipart_threshold: MIN_PART_SIZE,
         }
     }
@@ -88,6 +91,10 @@ impl BucketStore {
                 if let Some(endpoint) = &config.endpoint {
                     builder = builder.with_endpoint(endpoint);
                 }
+                // Only when set, so `AWS_ALLOW_HTTP` in the environment still works.
+                if config.allow_http {
+                    builder = builder.with_allow_http(true);
+                }
                 Arc::new(builder.build().map_err(|e| invalid(&e))?)
             }
             ObjectStoreScheme::GoogleCloudStorage => Arc::new(
@@ -100,6 +107,9 @@ impl BucketStore {
                 let mut builder = MicrosoftAzureBuilder::from_env().with_url(url.as_str());
                 if let Some(endpoint) = &config.endpoint {
                     builder = builder.with_endpoint(endpoint.clone());
+                }
+                if config.allow_http {
+                    builder = builder.with_allow_http(true);
                 }
                 Arc::new(builder.build().map_err(|e| invalid(&e))?)
             }

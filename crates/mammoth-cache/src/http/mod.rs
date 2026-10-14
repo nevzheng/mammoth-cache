@@ -12,7 +12,14 @@ mod ops;
 
 use std::sync::Arc;
 
-use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
+use axum::{
+    Router,
+    extract::DefaultBodyLimit,
+    http::{HeaderValue, Method, header},
+    middleware,
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use metrics_exporter_prometheus::PrometheusHandle;
 
 use crate::{auth::Authenticator, cache::Cache, config::Protocols};
@@ -57,7 +64,8 @@ pub fn router_with(
             "/cache/{key}",
             get(gradle::load_entry)
                 .head(gradle::check_entry)
-                .put(gradle::store_entry),
+                .put(gradle::store_entry)
+                .fallback(async |method: Method| method_not_allowed(&method, "GET, HEAD, PUT")),
         );
     }
     if protocols.maven {
@@ -76,13 +84,15 @@ pub fn router_with(
                 "/bazel/ac/{digest}",
                 get(bazel::load_action)
                     .head(bazel::check_action)
-                    .put(bazel::store_action),
+                    .put(bazel::store_action)
+                    .fallback(async |method: Method| method_not_allowed(&method, "GET, HEAD, PUT")),
             )
             .route(
                 "/bazel/cas/{digest}",
                 get(bazel::load_blob)
                     .head(bazel::check_blob)
-                    .put(bazel::store_blob),
+                    .put(bazel::store_blob)
+                    .fallback(async |method: Method| method_not_allowed(&method, "GET, HEAD, PUT")),
             );
     }
     // Entry bodies are streamed and the core enforces the entry size limit.
@@ -96,7 +106,19 @@ pub fn router_with(
         .route("/metrics", get(ops::metrics))
         .route("/v1/serverStatus", get(admin::get_server_status))
         .fallback(|| async { ApiError::route_not_found() })
-        .layer(middleware::from_fn_with_state(auth, auth::require))
+        .layer(middleware::from_fn_with_state(
+            auth::Guard { auth, protocols },
+            auth::require,
+        ))
         .layer(middleware::from_fn(metrics::record))
         .with_state(AppState { cache, metrics })
+}
+
+/// An AIP-193 `405` with the route's `Allow` header, in place of axum's empty one.
+fn method_not_allowed(method: &Method, allow: &'static str) -> Response {
+    let mut response = ApiError::method_not_allowed(method).into_response();
+    response
+        .headers_mut()
+        .insert(header::ALLOW, HeaderValue::from_static(allow));
+    response
 }

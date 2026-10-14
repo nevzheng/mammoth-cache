@@ -35,4 +35,5 @@
   - [0010: Memory tier, eviction policies and entry metadata](design/0010-memory-tier-and-eviction.md)
   - [0012: Bazel HTTP cache and protocol switches](design/0012-bazel-http-cache-and-protocol-switches.md)
   - [0013: Running behind load balancers and on Kubernetes](design/0013-deployment.md)
+  - [0014: Optional built-in TLS](design/0014-tls.md)
   - [Investigations](design/investigations.md)

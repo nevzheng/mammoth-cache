@@ -4,11 +4,13 @@ use mammoth_cache::{
     auth,
     cache::{BucketWrite, Cache},
     config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
+    server::{self, ServerSettings, TlsSettings},
     store::{
         bucket::{BucketConfig, BucketStore},
         disk::{DiskConfig, DiskStore},
         memory::{MemoryConfig, MemoryStore},
     },
+    tls::{self, Certificates},
 };
 use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
@@ -55,6 +57,13 @@ fn main() -> ExitCode {
         }
     };
     if matches!(command, Command::Check) {
+        // Check the certificate too, without the startup log.
+        if let Some(tls) = &config.tls
+            && let Err(error) = Certificates::load(&tls.cert, &tls.key)
+        {
+            eprintln!("mammoth: {error}");
+            return ExitCode::FAILURE;
+        }
         eprintln!("config ok");
         return ExitCode::SUCCESS;
     }
@@ -157,13 +166,18 @@ fn init_logging(config: &Config) {
 
 async fn serve(config: Config) -> io::Result<()> {
     let auth = config.auth.authenticator(&config.metrics);
-    if config.auth.is_configured(&config.metrics) {
-        tracing::warn!(
-            "authentication is on and this server speaks plain HTTP: serve it behind a proxy \
-             that terminates TLS, or tokens cross the network in clear"
-        );
-    } else {
+    // Before anything else, so a bad certificate fails fast.
+    let certificates = match &config.tls {
+        Some(tls) => Some(Arc::new(Certificates::load(&tls.cert, &tls.key)?)),
+        None => None,
+    };
+    if !config.auth.is_configured(&config.metrics) {
         tracing::warn!("no [auth] users configured: every request is allowed");
+    } else if certificates.is_none() {
+        tracing::warn!(
+            "authentication is on and this server speaks plain HTTP: set [tls] or serve it \
+             behind a proxy that terminates TLS, or tokens cross the network in clear"
+        );
     }
     let cache = build_cache(&config).await?;
     let protocols = &config.protocols;
@@ -174,22 +188,48 @@ async fn serve(config: Config) -> io::Result<()> {
         "protocols"
     );
     let listener = TcpListener::bind(config.listen).await?;
-    tracing::info!(addr = %listener.local_addr()?, "mammoth-cache listening");
+    tracing::info!(
+        addr = %listener.local_addr()?,
+        scheme = if certificates.is_some() { "https" } else { "http" },
+        "mammoth-cache listening"
+    );
 
     let metrics = PrometheusBuilder::new()
         .install_recorder()
         .map_err(io::Error::other)?;
-    axum::serve(
-        listener,
-        mammoth_cache::router_with(
-            Arc::new(cache),
-            Some(metrics),
-            Arc::new(auth),
-            config.protocols,
-        ),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
+    let cache = Arc::new(cache);
+    let app = mammoth_cache::router_with(
+        cache.clone(),
+        Some(metrics),
+        Arc::new(auth),
+        config.protocols,
+    );
+    let settings = ServerSettings {
+        shutdown_delay: config.server.shutdown_delay.0,
+        shutdown_timeout: config.server.shutdown_timeout.0,
+        idle_timeout: config.server.idle_timeout.0,
+        body_read_timeout: config.server.body_read_timeout.0,
+    };
+    let signal = async {
+        shutdown_signal().await;
+        // A second signal skips the drain.
+        tokio::spawn(async {
+            shutdown_signal().await;
+            tracing::warn!("second shutdown signal; exiting without draining");
+            std::process::exit(130);
+        });
+    };
+    match certificates {
+        Some(certificates) => {
+            let tls = TlsSettings {
+                config: certificates.server_config()?,
+                handshake_timeout: tls::HANDSHAKE_TIMEOUT,
+            };
+            tokio::spawn(certificates.watch(tls::RELOAD_INTERVAL));
+            server::serve_tls(listener, tls, app, cache, settings, signal).await
+        }
+        None => server::serve(listener, app, cache, settings, signal).await,
+    }
 }
 
 /// Builds the tiers in lookup order: memory, then disk, then the bucket.
@@ -209,6 +249,7 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
             path: disk.path.clone(),
             capacity_bytes: disk.size.bytes(),
             max_entry_age: disk.max_entry_age.map(|age| age.0),
+            free_space_buffer: disk.free_space_buffer.bytes(),
         })
         .await?;
         builder = builder.bounded_tier(Arc::new(store));
@@ -219,6 +260,7 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         let store = BucketStore::open(&BucketConfig {
             region: bucket.region.clone(),
             endpoint: bucket.endpoint.clone(),
+            allow_http: bucket.allow_http,
             ..BucketConfig::new(bucket.url.clone())
         })?;
         let write = match bucket.write {
@@ -257,5 +299,5 @@ async fn shutdown_signal() {
         () = ctrl_c => "interrupt",
         () = terminate => "SIGTERM",
     };
-    tracing::info!(signal = name, "shutting down; finishing requests in flight");
+    tracing::info!(signal = name, "shutdown signal received");
 }
