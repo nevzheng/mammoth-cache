@@ -10,7 +10,7 @@ use mammoth_cache::{
     auth,
     cache::{BucketLimits, BucketWrite, Cache},
     config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
-    reapi::{self, GrpcSettings},
+    reapi,
     server::{self, ServerSettings, TlsSettings},
     store::{
         bucket::{BucketConfig, BucketStore},
@@ -225,7 +225,13 @@ async fn serve(config: Config) -> io::Result<()> {
         body_read_timeout: config.server.body_read_timeout.0,
         send_timeout: config.server.send_timeout.0,
     };
-    let signal = shutdown_signals();
+    let stop = shutdown_signals();
+    let signal = || {
+        let mut stopped = stop.subscribe();
+        async move {
+            let _ = stopped.wait_for(|stop| *stop).await;
+        }
+    };
     let tls = match certificates {
         Some(certificates) => {
             let tls = TlsSettings {
@@ -237,52 +243,39 @@ async fn serve(config: Config) -> io::Result<()> {
         }
         None => None,
     };
-    let grpc = grpc_listener.map(|listener| {
+    let mut servers = Vec::new();
+    if let Some(listener) = grpc_listener {
         let routes = reapi::routes(cache.clone(), auth, settings.body_read_timeout);
-        let grpc_settings = GrpcSettings {
-            shutdown_delay: settings.shutdown_delay,
-            shutdown_timeout: settings.shutdown_timeout,
-            idle_timeout: settings.body_read_timeout,
-        };
-        tokio::spawn(reapi::serve(
-            listener,
-            tls.clone(),
-            routes,
-            grpc_settings,
-            signal(),
-        ))
-    });
-    let http = match tls {
-        Some(tls) => server::serve_tls(listener, tls, app, cache, settings, signal()).await,
-        None => server::serve(listener, app, cache, settings, signal()).await,
-    };
-    if let Some(grpc) = grpc {
-        match grpc.await {
-            Ok(result) => result?,
-            Err(error) => return Err(io::Error::other(error)),
-        }
+        let served = reapi::serve(listener, tls.clone(), routes, settings, signal());
+        servers.push(("gRPC", tokio::spawn(served)));
     }
-    http
+    let http = {
+        let cache = cache.clone();
+        let signal = signal();
+        async move {
+            match tls {
+                Some(tls) => server::serve_tls(listener, tls, app, cache, settings, signal).await,
+                None => server::serve(listener, app, cache, settings, signal).await,
+            }
+        }
+    };
+    servers.push(("HTTP", tokio::spawn(http)));
+    server::run_node(&cache, servers, &stop, settings.shutdown_timeout).await
 }
 
-/// Watches for the shutdown signal and returns a maker of futures that resolve on it, one per
-/// listener, so one signal stops both. A second signal exits without draining.
-fn shutdown_signals() -> impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-{
-    let (stop, stopped) = tokio::sync::watch::channel(false);
+/// Watches for the shutdown signal, which sets the returned flag; the servers drain when it is
+/// set. A second signal exits without draining.
+fn shutdown_signals() -> tokio::sync::watch::Sender<bool> {
+    let (stop, _) = tokio::sync::watch::channel(false);
+    let signalled = stop.clone();
     tokio::spawn(async move {
         shutdown_signal().await;
-        let _ = stop.send(true);
+        let _ = signalled.send(true);
         shutdown_signal().await;
         tracing::warn!("second shutdown signal; exiting without draining");
         std::process::exit(130);
     });
-    move || {
-        let mut stopped = stopped.clone();
-        Box::pin(async move {
-            let _ = stopped.wait_for(|stop| *stop).await;
-        })
-    }
+    stop
 }
 
 /// Builds the tiers in lookup order: memory, then disk, then the bucket.
