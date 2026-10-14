@@ -65,6 +65,47 @@ module's artifacts and zipped extra outputs next to it, and
 and `v1.2` for 1.3.x. With WebDAV turned on it also sends `OPTIONS` and `MKCOL`. The contracts for
 these routes live in `api/openapi/`.
 
+### How requests flow
+
+The server is hexagonal. Each protocol is its own inbound adapter, an axum router. Every router
+calls the same `Cache` core, which reaches the storage tiers only through the `BlobStore` port.
+Supporting a new client means adding a router; the core and the tiers don't change.
+
+```mermaid
+flowchart TB
+    gradle["Gradle 7.6 to 9.x"]
+    maven["Maven Build Cache Extension 1.2+"]
+    ops["Prometheus, probes"]
+    admin["Admin"]
+    subgraph inbound["Inbound adapters (axum routers)"]
+        rcache["/cache/{key}<br/>http/gradle.rs"]
+        rmaven["/maven/{path...}<br/>http/maven.rs"]
+        rops["/ping /livez /readyz /metrics<br/>http/ops.rs"]
+        radmin["/v1/serverStatus<br/>http/admin.rs"]
+    end
+    mw["Shared middleware: auth, metrics client label"]
+    core["Cache core (cache.rs)<br/>namespaced keys, size limit (accept and drop),<br/>read L1 then L2 then L3, fill upper tiers on hit"]
+    port{{"BlobStore port (store/mod.rs)"}}
+    l1["L1 memory"]
+    l2["L2 local disk"]
+    l3[("L3 object-store bucket")]
+    gradle --> rcache
+    maven --> rmaven
+    ops --> rops
+    admin --> radmin
+    rcache --> mw
+    rmaven --> mw
+    mw --> core
+    radmin --> core
+    core --> port
+    port --> l1
+    port --> l2
+    port --> l3
+```
+
+The Gradle namespace is write-once, because its keys are content hashes. The Maven namespace
+allows overwrites, because its paths are not content-addressed.
+
 ### Client behaviour the server must respect
 
 Gradle (7.6 to 9.x):
