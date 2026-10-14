@@ -35,6 +35,8 @@ build:release --strip=always
 # The Compose-backed Python suites (//tests:e2e, //tests:acceptance_*), which drive Docker, Java,
 # Gradle, Maven, Bazel and Buck2 on the host. Pass any other MAMMOTH_E2E_* override with
 # --test_env=NAME.
+# CI selects Hypothesis's ci profile (derandomized, no example database), as under `uv run`.
+test:e2e --test_env=CI
 test:e2e --test_env=HOME
 test:e2e --test_env=XDG_CACHE_HOME
 test:e2e --test_env=PATH
