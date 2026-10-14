@@ -61,3 +61,6 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
 
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1.1.5", features = ["fs", "process"] }

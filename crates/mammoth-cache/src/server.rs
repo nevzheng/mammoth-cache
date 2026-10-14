@@ -117,10 +117,17 @@ async fn run(
         body_read_timeout,
     ));
     let graceful = GracefulShutdown::new();
+    let mut paused = AcceptErrors::default();
     let mut signal = pin!(signal);
     loop {
         tokio::select! {
-            accepted = listener.accept() => accept(accepted, &app, &graceful, settings, tls.as_ref()),
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    paused.recovered();
+                    accept(stream, &app, &graceful, settings, tls.as_ref());
+                }
+                Err(error) => paused.failed(&error).await,
+            },
             () = &mut signal => break,
         }
     }
@@ -136,7 +143,13 @@ async fn run(
     let mut stop_accepting = pin!(stop_accepting);
     loop {
         tokio::select! {
-            accepted = listener.accept() => accept(accepted, &app, &graceful, settings, tls.as_ref()),
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    paused.recovered();
+                    accept(stream, &app, &graceful, settings, tls.as_ref());
+                }
+                Err(error) => paused.failed(&error).await,
+            },
             () = &mut stop_accepting => break,
         }
     }
@@ -165,23 +178,51 @@ async fn run(
     Ok(())
 }
 
+/// How long the accept loop pauses after an error such as running out of file descriptors. Without
+/// the pause the listener stays readable and the loop spins, logging at full speed.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Accept errors, logged once when they start and once when they stop.
+#[derive(Default)]
+struct AcceptErrors {
+    failing: bool,
+}
+
+impl AcceptErrors {
+    async fn failed(&mut self, error: &io::Error) {
+        // The client gave up before the accept: nothing is wrong with the node.
+        if matches!(
+            error.kind(),
+            io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset
+        ) {
+            tracing::debug!(%error, "connection closed before it was accepted");
+            return;
+        }
+        if !self.failing {
+            self.failing = true;
+            // Usually out of file descriptors; connections wait in the backlog meanwhile.
+            tracing::warn!(%error, "cannot accept connections; retrying every 100ms");
+        }
+        tokio::time::sleep(ACCEPT_BACKOFF).await;
+    }
+
+    fn recovered(&mut self) {
+        if self.failing {
+            self.failing = false;
+            tracing::info!("accepting connections again");
+        }
+    }
+}
+
 /// Starts serving one accepted connection, after a TLS handshake if `tls` is set. The handshake
 /// runs in the connection's own task, so a slow client cannot hold up the accept loop.
 fn accept(
-    accepted: io::Result<(TcpStream, std::net::SocketAddr)>,
+    stream: TcpStream,
     app: &Router,
     graceful: &GracefulShutdown,
     settings: ServerSettings,
     tls: Option<&Tls>,
 ) {
-    let stream = match accepted {
-        Ok((stream, _)) => stream,
-        Err(error) => {
-            // Usually out of file descriptors; the next accept may succeed.
-            tracing::warn!(%error, "could not accept a connection");
-            return;
-        }
-    };
     // Small responses (HEAD answers, misses) must not wait for Nagle's algorithm.
     if let Err(error) = stream.set_nodelay(true) {
         tracing::debug!(%error, "could not set TCP_NODELAY");
