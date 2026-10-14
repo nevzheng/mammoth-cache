@@ -4,12 +4,20 @@
 //! Clients choose both, so they label metrics and logs and nothing else. Every label value is
 //! drawn from a small fixed set or normalised, so a client cannot create unbounded series.
 
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+    time::Instant,
+};
+
 use axum::{
+    body::{Body, Bytes, HttpBody},
     extract::{MatchedPath, Request},
     http::{HeaderMap, Method},
     middleware::Next,
     response::Response,
 };
+use hyper::body::{Frame, SizeHint};
 
 /// The kind of client that sent a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +90,8 @@ fn method_label(method: &Method) -> &'static str {
     }
 }
 
-/// Middleware that counts every request by route template, method, status and client.
+/// Middleware that counts every request by route template, method, status and client, and times
+/// it to the last byte of the response.
 pub(super) async fn record(request: Request, next: Next) -> Response {
     let route = request
         .extensions()
@@ -91,6 +100,7 @@ pub(super) async fn record(request: Request, next: Next) -> Response {
     let method = method_label(request.method());
     let client = Client::from_headers(request.headers());
     let gradle_version = gradle_version(request.headers());
+    let serving = Serving::start(route.clone(), method);
 
     let response = next.run(request).await;
 
@@ -106,7 +116,70 @@ pub(super) async fn record(request: Request, next: Next) -> Response {
         metrics::counter!("mammoth_gradle_requests_total", "gradle_version" => version)
             .increment(1);
     }
-    response
+    // The request is served once its body is sent, or dropped by a client that walked away.
+    response.map(|body| {
+        Body::new(Observed {
+            body,
+            _serving: serving,
+        })
+    })
+}
+
+/// A request being served: in `mammoth_http_requests_in_flight` until dropped, then timed.
+struct Serving {
+    route: String,
+    method: &'static str,
+    started: Instant,
+}
+
+impl Serving {
+    fn start(route: String, method: &'static str) -> Self {
+        metrics::gauge!("mammoth_http_requests_in_flight", "route" => route.clone()).increment(1.0);
+        Self {
+            route,
+            method,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        let route = std::mem::take(&mut self.route);
+        metrics::gauge!("mammoth_http_requests_in_flight", "route" => route.clone()).decrement(1.0);
+        metrics::histogram!(
+            "mammoth_http_request_duration_seconds",
+            "route" => route,
+            "method" => self.method,
+        )
+        .record(self.started.elapsed().as_secs_f64());
+    }
+}
+
+/// A response body that holds its request's [`Serving`] until the body is done.
+struct Observed {
+    body: Body,
+    _serving: Serving,
+}
+
+impl HttpBody for Observed {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        Pin::new(&mut self.body).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,8 @@
 
 > [!NOTE]
 > Exported today: `mammoth_http_requests_total`, `mammoth_gradle_requests_total`,
+> `mammoth_http_request_duration_seconds`, `mammoth_http_requests_in_flight`,
+> `mammoth_auth_failures_total`,
 > `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total` (memory tier),
 > `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
 > `mammoth_bucket_uploads_total`, `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`,

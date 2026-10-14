@@ -285,19 +285,26 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_http_request_duration_seconds",
         kind: Kind::Histogram,
         labels: &[Label("route", None), Label("method", Some(METHODS))],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_http_requests_in_flight",
         kind: Kind::Gauge,
         labels: &[Label("route", None)],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_auth_failures_total",
         kind: Kind::Counter,
-        labels: &[Label("reason", None)],
-        live: false,
+        labels: &[Label(
+            "reason",
+            Some(&[
+                "CREDENTIALS_MISSING",
+                "CREDENTIALS_INVALID",
+                "SCOPE_MISSING",
+            ]),
+        )],
+        live: true,
     },
     Metric {
         name: "mammoth_build_info",
@@ -795,6 +802,28 @@ async fn workload_moves_the_live_counters() {
         0
     );
     assert_eq!(after.count("mammoth_bucket_upload_queue_entries", &[]), 0);
+    // Every request timed, none left in flight, and the rejected credential counted.
+    assert_eq!(
+        delta(
+            "mammoth_http_request_duration_seconds_count",
+            &[("route", "/cache/{key}"), ("method", "PUT")]
+        ),
+        PUTS
+    );
+    assert_eq!(
+        after.count(
+            "mammoth_http_requests_in_flight",
+            &[("route", "/cache/{key}")]
+        ),
+        0
+    );
+    assert_eq!(
+        delta(
+            "mammoth_auth_failures_total",
+            &[("reason", "CREDENTIALS_INVALID")]
+        ),
+        1
+    );
 }
 
 #[tokio::test]
