@@ -25,8 +25,9 @@ info:
     name: MIT OR Apache-2.0
     identifier: MIT OR Apache-2.0
 servers:
-  - url: http://localhost:5071
-    description: Local default
+  - url: https://localhost:5071
+    description: Local, with TLS enabled. Without TLS the scheme is `http`.
+    x-internal: false
 security:
   - basicAuth: []
   - {}
@@ -62,13 +63,18 @@ paths:
             application/octet-stream:
               schema:
                 type: string
+                format: binary
                 contentMediaType: application/octet-stream
+        "400":
+          $ref: "#/components/responses/InvalidKey"
         "404":
           $ref: "#/components/responses/Miss"
         "401":
           $ref: "./common.yaml#/components/responses/Unauthenticated"
         "403":
           $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
         "503":
           $ref: "./common.yaml#/components/responses/Unavailable"
     head:
@@ -84,12 +90,19 @@ paths:
               description: Size of the entry in bytes.
               schema:
                 type: integer
+                format: int64
+                minimum: 0
+                maximum: 9223372036854775807
+        "400":
+          description: The key is not a lowercase hex string.
         "404":
           description: The entry does not exist.
         "401":
           description: Credentials are missing or wrong.
         "403":
           description: The user may not read the cache.
+        "500":
+          description: An unexpected server error.
         "503":
           description: The server cannot serve the request right now.
     put:
@@ -108,18 +121,23 @@ paths:
           "*/*":
             schema:
               type: string
+              format: binary
               contentMediaType: application/octet-stream
       responses:
         "201":
           description: Stored.
         "200":
           description: The entry was already present; nothing was written.
+        "400":
+          $ref: "#/components/responses/InvalidKey"
         "413":
           $ref: "#/components/responses/EntryTooLarge"
         "401":
           $ref: "./common.yaml#/components/responses/Unauthenticated"
         "403":
           $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
         "503":
           $ref: "./common.yaml#/components/responses/Unavailable"
 components:
@@ -127,6 +145,23 @@ components:
     basicAuth:
       $ref: "./common.yaml#/components/securitySchemes/basicAuth"
   responses:
+    InvalidKey:
+      description: |
+        The key is not a lowercase hex string. Gradle never sends one, and would fail the build on
+        `400`; this exists for other clients.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 400
+              message: Cache key must be lowercase hex.
+              status: INVALID_ARGUMENT
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: INVALID_CACHE_KEY
+                  domain: mammoth-cache.dev
     Miss:
       description: Miss. Not an error for Gradle; it runs the task.
       content:

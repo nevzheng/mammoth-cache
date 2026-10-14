@@ -1,0 +1,57 @@
+name: api
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUF_VERSION: "1.73.0"
+  API_LINTER_VERSION: "1.72.0"
+
+jobs:
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: ${{ env.BUF_VERSION }}
+          setup_only: true
+      # buf.lock is not committed yet; resolve googleapis from the Buf Schema Registry.
+      - run: test -f buf.lock || buf dep update
+      - run: buf lint
+      - run: buf format --diff --exit-code
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - run: go install "github.com/googleapis/api-linter/cmd/api-linter@v${API_LINTER_VERSION}"
+      # api-linter checks the AIP rules; buf supplies the googleapis imports.
+      - run: buf build api/proto -o "${RUNNER_TEMP}/image.binpb"
+      - working-directory: api/proto
+        run: |
+          find . -name '*.proto' -printf '%P\n' | sort \
+            | xargs api-linter --set-exit-status --descriptor-set-in "${RUNNER_TEMP}/image.binpb"
+
+  openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: >-
+          npm install --no-save --no-package-lock
+          @stoplight/spectral-cli@6.17.0
+          @stoplight/spectral-owasp-ruleset@2.0.1
+          @redocly/cli@1.34.21
+      - run: npx spectral lint --fail-severity=warn -r api/.spectral.yaml api/openapi/*.yaml
+      - run: npx redocly lint --config api/redocly.yaml
