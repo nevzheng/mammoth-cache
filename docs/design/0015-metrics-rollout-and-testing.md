@@ -203,6 +203,53 @@ The k6 load profiles from 0011 use the same series for their thresholds, so the 
 hit-rate and latency assertions for free once `mammoth_cache_lookups_total` and
 `mammoth_http_request_duration_seconds` exist.
 
+### Alerting
+
+The node does not alert. 0004's rule that the node holds raw numbers and nothing else applies to
+alerting as much as to rates: alert evaluation is state, history and a notification path, which
+Prometheus and Alertmanager already do and every operator already runs. The node's job is to
+expose the signals an alert needs, and the docs ship the rules.
+
+The signals that are missing today are the bucket's. Persona audit #4 found that a bucket outage
+shows up nowhere: `Cache::get` logs a warning and treats the error as a miss, and background
+uploads log and count only in `mammoth_bucket_uploads_total{result="error"}`. After
+instrumentation pull request 3, `mammoth_tier_reads_total{tier="bucket",result="error"}` and
+`mammoth_tier_writes_total{tier="bucket",result="error"}` carry the outage, and the read-duration
+histogram carries a slow bucket. One gauge is added to 0004 so an outage is a level, not only a
+rate:
+
+| Metric            | Type  | Labels | Meaning                                                         |
+| ----------------- | ----- | ------ | --------------------------------------------------------------- |
+| `mammoth_tier_up` | gauge | `tier` | 1 after a tier's last operation succeeded, 0 after it failed    |
+
+It is set from the same wrapper that counts reads and writes, so it costs nothing extra. A failed
+tier does not fail `/readyz`: the node still serves from memory and disk, and
+[0013](0013-deployment.md) keeps readiness about the node, not its dependencies.
+
+`docs/user/metrics.md` gets an "Alerting" section with recommended rules operators paste into
+Prometheus, written so a copy works with no edits:
+
+| Alert                     | Expression (sketch)                                                             | For  |
+| ------------------------- | ------------------------------------------------------------------------------- | ---- |
+| `MammothDown`             | `up{job="mammoth"} == 0`                                                        | 1m   |
+| `MammothBucketDown`       | `mammoth_tier_up{tier="bucket"} == 0`                                           | 5m   |
+| `MammothBucketErrors`     | `rate(mammoth_tier_reads_total{tier="bucket",result="error"}[5m]) > 0`          | 10m  |
+| `MammothUploadsDropped`   | `increase(mammoth_bucket_uploads_dropped_total[10m]) > 0`                       | 0m   |
+| `MammothUploadQueueStuck` | `mammoth_bucket_upload_queue_entries > 0` and not decreasing over 15m           | 15m  |
+| `MammothIntegrityErrors`  | `increase(mammoth_cache_integrity_errors_total[1h]) > 0`                        | 0m   |
+| `MammothDiskFull`         | `mammoth_disk_free_bytes < 1 GiB`                                               | 10m  |
+| `MammothHitRateLow`       | hit-rate query from 0004 `< 0.5`                                                | 1h   |
+| `MammothSlowRequests`     | `histogram_quantile(0.99, ... mammoth_http_request_duration_seconds ...) > 1`   | 15m  |
+| `MammothAuthFailures`     | `rate(mammoth_auth_failures_total[5m]) > 1`                                     | 15m  |
+| `MammothOversizedStores`  | `rate(mammoth_cache_stores_total{result="too_large"}[1h]) > 0`                  | 1h   |
+
+Thresholds are starting points, said so in the docs. The end-to-end suite loads the same rules
+into its Prometheus (0011 already runs one) and checks that `MammothBucketDown` fires when the
+SeaweedFS container is stopped, which is also the test for the gauge.
+
+Out of scope: webhooks, email or any notification path from the node, and health-check failure on
+a bucket outage.
+
 ### Who does what
 
 | Piece                                        | Owner               | Where                                   |

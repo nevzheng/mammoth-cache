@@ -124,6 +124,14 @@ sum(rate(mammoth_cache_lookups_total{result="hit",tier="memory"}[5m]))
 histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bucket{tier="bucket"}[5m])))
 ```
 
+### Alerting
+
+The node does not alert, for the same reason it does not aggregate: rules, state and notification
+belong to Prometheus and Alertmanager. The user guide ships recommended alert rules over this
+catalog. A tier outage, the bucket's above all, is visible as `mammoth_tier_up{tier}` and as
+`result="error"` on that tier's reads and writes; it does not fail `/readyz`, which is about the
+node ([0013](0013-deployment.md)).
+
 ### Admin snapshot
 
 `GET /v1/serverStatus` returns the current population per tier and lifetime hit and miss counts, for

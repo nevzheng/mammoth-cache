@@ -199,6 +199,12 @@ const CATALOG: &[Metric] = &[
         // Only a full upload queue produces one.
         live: false,
     },
+    Metric {
+        name: "mammoth_tier_up",
+        kind: Kind::Gauge,
+        labels: &[Label("tier", Some(TIERS))],
+        live: false,
+    },
     // Current population
     Metric {
         name: "mammoth_tier_entries",

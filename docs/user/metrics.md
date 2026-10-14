@@ -90,6 +90,13 @@ cloud provider's metrics.
 from the `User-Agent`. The standard `process_*` metrics (memory, CPU, file descriptors) are planned
 too.
 
+## Alerting
+
+mammoth-cache does not send alerts; Prometheus and Alertmanager do. A bucket outage does not fail
+`/readyz`, because the node keeps serving from memory and disk, so alert on
+`mammoth_tier_up{tier="bucket"} == 0` and on `result="error"` for the bucket's reads and writes.
+Recommended rules will be listed here as the metrics they need land.
+
 ## Useful queries
 
 ```promql
