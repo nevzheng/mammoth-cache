@@ -132,6 +132,9 @@ key = "/etc/mammoth/tls/tls.key"
 - **Disk.** Put `disk.path` on a PersistentVolumeClaim (a StatefulSet) to keep the disk tier warm
   across restarts: the node indexes the files already there when it starts. An `emptyDir` works too
   but starts cold. Set `disk.size` below the volume size, leaving room for `disk.free_space_buffer`.
+  Each `disk.path` serves one process, and a second pod on the same volume fails to start. With a
+  ReadWriteOnce volume, use a StatefulSet, or a Deployment with the `Recreate` strategy, so a
+  rolling update doesn't start the new pod while the old one still holds the directory.
 - **Filesystem.** Only `disk.path` is written, so the root filesystem can be read-only.
 
 ## Config and credentials
