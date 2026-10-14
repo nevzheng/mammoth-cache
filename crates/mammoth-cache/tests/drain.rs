@@ -203,15 +203,16 @@ async fn an_upload_that_stops_sending_fails_and_stores_nothing() {
 
 #[tokio::test]
 async fn readiness_reports_the_disk_tier() {
-    let dir = tempfile::tempdir().unwrap();
-    let disk = |free_space_buffer| DiskConfig {
+    // One directory per node: a directory serves one store at a time.
+    let (dir, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let disk = |dir: &tempfile::TempDir, free_space_buffer| DiskConfig {
         path: dir.path().to_path_buf(),
         capacity_bytes: 1 << 20,
         max_entry_age: None,
         free_space_buffer,
     };
 
-    let healthy = DiskStore::open(disk(0)).await.unwrap();
+    let healthy = DiskStore::open(disk(&dir, 0)).await.unwrap();
     let node = start_with(
         Cache::builder().bounded_tier(Arc::new(healthy)).build(),
         fast(),
@@ -229,7 +230,7 @@ async fn readiness_reports_the_disk_tier() {
     }
 
     // A buffer larger than any volume.
-    let short = DiskStore::open(disk(u64::MAX / 2)).await.unwrap();
+    let short = DiskStore::open(disk(&other, u64::MAX / 2)).await.unwrap();
     let node = start_with(
         Cache::builder().bounded_tier(Arc::new(short)).build(),
         fast(),

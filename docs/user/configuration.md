@@ -139,7 +139,7 @@ restart; see [TLS on the node](deployment.md#tls-on-the-node).
 | Key                 | Type     | Default  | Meaning                                                       |
 | ------------------- | -------- | -------- | ------------------------------------------------------------- |
 | `path`              | path     | required | Directory for entries; each node needs its own                |
-| `size`              | size     | `10GiB`  | Space for entries                                             |
+| `size`              | size     | `10GiB`  | Space for entries, counting each file in whole 4 KiB blocks   |
 | `free_space_buffer` | size     | `1GiB`   | Free space to keep on the volume; the tier shrinks to keep it |
 | `max_entry_age`     | duration | none     | Evict entries older than this                                 |
 
@@ -148,9 +148,17 @@ entry. Each file carries a CRC32C checksum, checked on every read; a damaged ent
 miss and removed. On startup the node indexes the files already on disk, so a restarted node
 starts warm.
 
+`disk.path` belongs to one process. The node holds a lock on `mammoth.lock` in that directory while
+it runs, and a second node pointed at the same directory fails to start. On startup the node
+deletes only files it wrote: temporary files under `tmp/` named by its own scheme, and damaged
+entry files under `v1/`. Other files are logged and left alone, but don't point `disk.path` at a
+directory that holds anything else.
+
 Every 5 seconds the node writes and removes a probe file and reads the volume's free space. If free
 space drops below `free_space_buffer`, it evicts entries until the buffer is free again, and
-`/readyz` fails while it cannot. Those results are what `/readyz` reports.
+`/readyz` fails while it cannot. Those results are what `/readyz` reports. A write that finds the
+volume full evicts entries until the tier is down to 90 % of its size, then carries on, so a full
+volume costs a batch of evictions rather than failed stores.
 
 ### `[bucket]` (L3)
 

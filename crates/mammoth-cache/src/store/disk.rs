@@ -12,13 +12,20 @@
 //! Writes go to `<path>/tmp/` and are renamed into place, so a crash never leaves a partial entry.
 //! Files are not fsynced: a cache entry lost to a power cut costs one rebuild.
 //!
+//! The tier holds an exclusive lock on `<path>/mammoth.lock` while it is open, so a second process
+//! pointed at the same directory fails to start instead of deleting the first one's uploads. At
+//! startup it deletes only files it recognizes: temporary files named by its own scheme and entry
+//! files whose names are entry hashes. Anything else is logged and left alone.
+//!
 //! An in-memory index tracks every entry's size, metadata and recency. It is rebuilt from the file
 //! headers at startup, so a restarted node starts warm. Eviction is least recently used by bytes,
-//! plus an optional maximum age.
+//! plus an optional maximum age. Sizes are counted in whole filesystem blocks, since that is what a
+//! file uses on disk.
 //!
 //! A background task probes the directory every few seconds: it writes and removes a file, and
 //! reads the volume's free space. The tier shrinks so that `free_space_buffer` bytes stay free on
-//! the volume, and `/readyz` reports both results.
+//! the volume, and `/readyz` reports both results. A write that finds the volume full evicts
+//! entries and carries on once.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -59,13 +66,25 @@ const READ_CHUNK: usize = 64 * 1024;
 const READ_WHOLE: u64 = 1024 * 1024;
 /// How often the directory is probed for writability and free space.
 const PROBE_INTERVAL: Duration = Duration::from_secs(5);
+/// The allocation unit sizes are rounded up to. Most Linux filesystems use 4 KiB blocks.
+const BLOCK_SIZE: u64 = 4096;
+/// When a write finds the volume full, the tier shrinks to this percentage of its size (or of
+/// its capacity, if smaller), so that the writes that follow do not each have to evict again.
+const LOW_WATER_PERCENT: u64 = 90;
+/// The lock file held while the tier is open.
+const LOCK_FILE: &str = "mammoth.lock";
+/// Temporary files are named `<TMP_PREFIX><pid>-<nonce>-<counter><TMP_SUFFIX>`.
+const TMP_PREFIX: &str = "mmth-";
+const TMP_SUFFIX: &str = ".tmp";
+/// The file the probe writes and removes in `tmp/`.
+const PROBE_FILE: &str = "probe";
 
 /// Settings for a [`DiskStore`].
 #[derive(Debug, Clone)]
 pub struct DiskConfig {
     /// The directory the tier owns. Created if missing.
     pub path: PathBuf,
-    /// Bytes on disk the tier may use, counting headers.
+    /// Bytes on disk the tier may use, counting headers and rounding each file up to whole blocks.
     pub capacity_bytes: u64,
     /// Entries older than this are evicted, when set.
     pub max_entry_age: Option<Duration>,
@@ -90,7 +109,14 @@ struct Inner {
     space_cap: AtomicU64,
     probe: Mutex<Probe>,
     index: Mutex<Index>,
+    /// Makes temporary file names unique to this process: `<TMP_PREFIX><pid>-<nonce>-`.
+    tmp_prefix: String,
     next_tmp: AtomicU64,
+    /// Held for the life of the tier; dropping it releases the lock.
+    _lock: std_fs::File,
+    /// Test hook: the n-th piece written from now fails as if the volume were full.
+    #[cfg(test)]
+    fail_write: AtomicU64,
 }
 
 /// What the last probe of the directory found.
@@ -114,40 +140,69 @@ struct Index {
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     meta: EntryMeta,
-    file_len: u64,
+    /// The file's size rounded up to whole blocks.
+    disk_bytes: u64,
     tick: u64,
+    /// Unique to this insertion, so a reader can tell whether the entry it looked up is still the
+    /// one in the index.
+    generation: u64,
+}
+
+/// What a lookup found: the entry's metadata and the generation it was stored under.
+#[derive(Debug, Clone, Copy)]
+struct Found {
+    meta: EntryMeta,
+    generation: u64,
 }
 
 impl Index {
     fn insert(&mut self, key: CacheKey, meta: EntryMeta, file_len: u64) {
         self.remove(&key);
         let tick = self.tick();
+        let disk_bytes = disk_usage(file_len);
         self.lru.insert(tick, key.clone());
         self.entries.insert(
             key,
             Slot {
                 meta,
-                file_len,
+                disk_bytes,
                 tick,
+                generation: tick,
             },
         );
-        self.size_bytes += file_len;
+        self.size_bytes += disk_bytes;
     }
 
     fn remove(&mut self, key: &CacheKey) -> Option<Slot> {
         let slot = self.entries.remove(key)?;
         self.lru.remove(&slot.tick);
-        self.size_bytes -= slot.file_len;
+        self.size_bytes -= slot.disk_bytes;
         Some(slot)
     }
 
-    fn touch(&mut self, key: &CacheKey) -> Option<EntryMeta> {
+    /// Removes `key` if it is still the entry stored under `generation`. Returns false if the
+    /// index holds a newer entry for the key, which must be left alone.
+    fn remove_generation(&mut self, key: &CacheKey, generation: u64) -> bool {
+        match self.entries.get(key) {
+            Some(slot) if slot.generation == generation => {
+                self.remove(key);
+                true
+            }
+            Some(_) => false,
+            None => true,
+        }
+    }
+
+    fn touch(&mut self, key: &CacheKey) -> Option<Found> {
         let tick = self.tick();
         let slot = self.entries.get_mut(key)?;
         self.lru.remove(&slot.tick);
         slot.tick = tick;
         self.lru.insert(tick, key.clone());
-        Some(slot.meta)
+        Some(Found {
+            meta: slot.meta,
+            generation: slot.generation,
+        })
     }
 
     fn tick(&mut self) -> u64 {
@@ -163,7 +218,7 @@ impl Index {
                 break;
             };
             if let Some(slot) = self.entries.remove(&key) {
-                self.size_bytes -= slot.file_len;
+                self.size_bytes -= slot.disk_bytes;
             }
             evicted.push(key);
         }
@@ -174,22 +229,28 @@ impl Index {
 impl DiskStore {
     /// Opens the tier at `config.path`, rebuilding the index from the entry files already there.
     ///
-    /// Leftover temporary files and damaged or expired entries are deleted, and the tier is
-    /// trimmed to its capacity.
+    /// Fails if another process has the directory open. Leftover temporary files and damaged or
+    /// expired entries are deleted, and the tier is trimmed to its capacity.
     pub async fn open(config: DiskConfig) -> io::Result<Self> {
+        let path = config.path.clone();
         let entries_dir = config.path.join("v1");
         let tmp_dir = config.path.join("tmp");
-        let (scanned, entries_dir, tmp_dir) = tokio::task::spawn_blocking(move || {
+        let (lock, scanned, entries_dir, tmp_dir) = tokio::task::spawn_blocking(move || {
+            std_fs::create_dir_all(&path)?;
+            let lock = lock_dir(&path)?;
             std_fs::create_dir_all(&entries_dir)?;
-            if tmp_dir.exists() {
-                std_fs::remove_dir_all(&tmp_dir)?;
-            }
             std_fs::create_dir_all(&tmp_dir)?;
+            clean_tmp(&tmp_dir)?;
             let scanned = scan(&entries_dir)?;
-            Ok::<_, io::Error>((scanned, entries_dir, tmp_dir))
+            Ok::<_, io::Error>((lock, scanned, entries_dir, tmp_dir))
         })
         .await
         .map_err(io::Error::other)??;
+        let nonce = getrandom::u32().unwrap_or_else(|_| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos())
+        });
 
         let store = Self {
             inner: Arc::new(Inner {
@@ -201,7 +262,11 @@ impl DiskStore {
                 space_cap: AtomicU64::new(u64::MAX),
                 probe: Mutex::default(),
                 index: Mutex::default(),
+                tmp_prefix: format!("{TMP_PREFIX}{}-{nonce:08x}-", std::process::id()),
                 next_tmp: AtomicU64::new(0),
+                _lock: lock,
+                #[cfg(test)]
+                fail_write: AtomicU64::new(0),
             }),
         };
         let mut expired = Vec::new();
@@ -228,6 +293,84 @@ impl DiskStore {
     }
 }
 
+/// Takes an exclusive lock on the directory's lock file, failing if another process holds it.
+#[cfg(unix)]
+fn lock_dir(dir: &Path) -> io::Result<std_fs::File> {
+    let path = dir.join(LOCK_FILE);
+    let file = std_fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+    match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(file),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "disk.path {} is in use by another mammoth-cache process ({} is locked); each \
+                 process needs its own directory",
+                dir.display(),
+                path.display()
+            ),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Opens the lock file. Without `flock`, the directory is not protected from a second process.
+#[cfg(not(unix))]
+fn lock_dir(dir: &Path) -> io::Result<std_fs::File> {
+    std_fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(LOCK_FILE))
+}
+
+/// Deletes leftover temporary files: only names this tier writes, in case `tmp/` is not ours.
+fn clean_tmp(tmp_dir: &Path) -> io::Result<()> {
+    for entry in std_fs::read_dir(tmp_dir)? {
+        let entry = entry?;
+        let ours = entry.file_name().to_str().is_some_and(is_tmp_name);
+        if ours && entry.file_type()?.is_file() {
+            std_fs::remove_file(entry.path())?;
+        } else {
+            tracing::warn!(path = %entry.path().display(), "leaving an unknown file in the disk tier");
+        }
+    }
+    Ok(())
+}
+
+/// Whether `name` is a temporary file name this tier writes, or wrote before names were unique
+/// per process (a bare counter).
+fn is_tmp_name(name: &str) -> bool {
+    let current = name
+        .strip_prefix(TMP_PREFIX)
+        .and_then(|n| n.strip_suffix(TMP_SUFFIX));
+    current.is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+        || name == PROBE_FILE
+        || (!name.is_empty() && name.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether `name` is an entry file name: the first 32 hex digits of a key's hash.
+fn is_entry_name(name: &str) -> bool {
+    name.len() == 32 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The size to shrink to when the volume is full: the low-water mark of the tier's size, or of
+/// its capacity if that is smaller.
+fn low_water(size_bytes: u64, capacity: u64) -> u64 {
+    let from = size_bytes.min(capacity);
+    from - from / 100 * (100 - LOW_WATER_PERCENT)
+}
+
+/// The space a file of `len` bytes uses on disk.
+fn disk_usage(len: u64) -> u64 {
+    len.div_ceil(BLOCK_SIZE).saturating_mul(BLOCK_SIZE)
+}
+
 /// Probes the directory until the store is dropped.
 async fn probe_periodically(inner: Weak<Inner>) {
     let mut interval = tokio::time::interval(PROBE_INTERVAL);
@@ -242,7 +385,7 @@ async fn probe_periodically(inner: Weak<Inner>) {
 
 /// Writes and removes a file in `tmp_dir`, and reads the free space under `entries_dir`.
 fn probe(tmp_dir: &Path, entries_dir: &Path) -> Probe {
-    let file = tmp_dir.join("probe");
+    let file = tmp_dir.join(PROBE_FILE);
     let not_writable = std_fs::write(&file, b"probe")
         .and_then(|()| std_fs::remove_file(&file))
         .err()
@@ -337,59 +480,88 @@ impl Inner {
     }
 
     /// Looks an entry up, touching its recency. Expired entries are removed and miss.
-    async fn lookup(&self, key: &CacheKey) -> Option<EntryMeta> {
-        let meta = self.lock().touch(key)?;
-        if self.is_expired(&meta) {
-            self.forget(key).await;
+    async fn lookup(&self, key: &CacheKey) -> Option<Found> {
+        let found = self.lock().touch(key)?;
+        if self.is_expired(&found.meta) {
+            self.forget(key, found.generation).await;
             return None;
         }
-        Some(meta)
+        Some(found)
     }
 
     /// Treats a damaged entry as a miss: counts it and deletes it.
-    async fn damaged(&self, key: &CacheKey, what: &str) {
+    async fn damaged(&self, key: &CacheKey, generation: u64, what: &str) {
         tracing::warn!(%key, what, "damaged disk entry; treating it as a miss");
         metrics::counter!("mammoth_cache_integrity_errors_total", "tier" => "disk").increment(1);
-        self.forget(key).await;
+        self.forget(key, generation).await;
     }
 
-    /// Drops an entry from the index and deletes its file.
-    async fn forget(&self, key: &CacheKey) {
-        self.lock().remove(key);
-        self.delete_files(std::slice::from_ref(key)).await;
+    /// Drops the entry stored under `generation` from the index and deletes its file. A newer
+    /// entry stored for the key since is left alone, file and all.
+    async fn forget(&self, key: &CacheKey, generation: u64) {
+        let removed = self.lock().remove_generation(key, generation);
+        if removed {
+            self.delete_file(key).await;
+        }
     }
 
+    /// Deletes the files of entries already dropped from the index, except keys stored again since.
     async fn delete_files(&self, keys: &[CacheKey]) {
         for key in keys {
-            match fs::remove_file(self.entry_path(key)).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => tracing::warn!(%key, %error, "could not delete disk entry"),
+            let stored_again = self.lock().entries.contains_key(key);
+            if !stored_again {
+                self.delete_file(key).await;
             }
         }
     }
 
+    /// Deletes `key`'s file.
+    async fn delete_file(&self, key: &CacheKey) {
+        match fs::remove_file(self.entry_path(key)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(%key, %error, "could not delete disk entry"),
+        }
+    }
+
+    /// Makes room on a full volume: evicts least recently used entries down to the low-water
+    /// mark, then probes the volume again, which evicts more if the free space buffer is short.
+    async fn make_room(&self) {
+        let evicted = {
+            let mut index = self.lock();
+            let target = low_water(index.size_bytes, self.effective_capacity());
+            index.evict_to(target)
+        };
+        tracing::warn!(
+            entries = evicted.len(),
+            "disk volume is full; evicting entries to make room"
+        );
+        self.delete_files(&evicted).await;
+        self.refresh().await;
+    }
+
     async fn read(self: Arc<Self>, key: &CacheKey) -> io::Result<Option<Blob>> {
-        let Some(meta) = self.lookup(key).await else {
+        let Some(Found { generation, .. }) = self.lookup(key).await else {
             return Ok(None);
         };
         let mut file = match fs::File::open(self.entry_path(key)).await {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                self.lock().remove(key);
+                self.lock().remove_generation(key, generation);
                 return Ok(None);
             }
             Err(e) => return Err(e),
         };
+        // The file is checked against its own header and trailer, not the index: a PUT may have
+        // replaced it since the lookup, and the new entry is as good an answer as the old one.
         let header = match read_header(&mut file).await {
-            Ok(header) if header.key == key.as_str() && header.meta.size == meta.size => header,
+            Ok(header) if header.key == key.as_str() => header,
             Ok(_) | Err(_) => {
-                self.damaged(key, "header").await;
+                self.damaged(key, generation, "header").await;
                 return Ok(None);
             }
         };
         let size = header.meta.size;
-        let expected = meta.checksum;
 
         // The checksum is checked before the first byte is served: once a response has started,
         // a failure can only truncate it, and a truncated download turns Gradle's cache off.
@@ -399,15 +571,15 @@ impl Inner {
                 if e.kind() != io::ErrorKind::UnexpectedEof {
                     return Err(e);
                 }
-                self.damaged(key, "length").await;
+                self.damaged(key, generation, "length").await;
                 return Ok(None);
             }
             let trailer = buf.split_off(buf.len() - 4);
             let stored = Checksum(u32::from_le_bytes([
                 trailer[0], trailer[1], trailer[2], trailer[3],
             ]));
-            if stored != expected || Checksum::of(&buf) != expected {
-                self.damaged(key, "checksum").await;
+            if Checksum::of(&buf) != stored {
+                self.damaged(key, generation, "checksum").await;
                 return Ok(None);
             }
             let body = stream::once(async move { Ok(buf.freeze()) });
@@ -417,18 +589,18 @@ impl Inner {
             }));
         }
         let body_start = file.stream_position().await?;
-        match verify_body(&mut file, size, expected).await {
-            Ok(true) => {}
-            Ok(false) => {
-                self.damaged(key, "checksum").await;
+        let expected = match verify_body(&mut file, size).await {
+            Ok(Some(checksum)) => checksum,
+            Ok(None) => {
+                self.damaged(key, generation, "checksum").await;
                 return Ok(None);
             }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                self.damaged(key, "length").await;
+                self.damaged(key, generation, "length").await;
                 return Ok(None);
             }
             Err(e) => return Err(e),
-        }
+        };
         file.seek(io::SeekFrom::Start(body_start)).await?;
 
         let state = ReadState {
@@ -437,6 +609,7 @@ impl Inner {
             checksum: Checksum::EMPTY,
             store: self.clone(),
             key: key.clone(),
+            generation,
         };
         let body = stream::unfold(Some(state), move |state| async move {
             let mut state = state?;
@@ -444,7 +617,7 @@ impl Inner {
                 Ok(Some(chunk)) => Some((Ok(chunk), Some(state))),
                 Ok(None) => None,
                 Err(e) => {
-                    state.store.forget(&state.key).await;
+                    state.store.forget(&state.key, state.generation).await;
                     Some((Err(e), None))
                 }
             }
@@ -464,10 +637,15 @@ impl Inner {
         if key.namespace().is_immutable() && self.lookup(key).await.is_some() {
             return Ok(PutOutcome::Exists);
         }
-        let tmp = self
-            .tmp_dir
-            .join(self.next_tmp.fetch_add(1, Ordering::Relaxed).to_string());
-        let written = write_entry(&tmp, key, size_hint, body).await;
+        if let Some(size) = size_hint {
+            self.reserve(entry_len(key, size)).await;
+        }
+        let tmp = self.tmp_dir.join(format!(
+            "{}{}{TMP_SUFFIX}",
+            self.tmp_prefix,
+            self.next_tmp.fetch_add(1, Ordering::Relaxed)
+        ));
+        let written = self.write_entry(&tmp, key, size_hint, body).await;
         let (meta, file_len) = match written {
             Ok(written) => written,
             Err(e) => {
@@ -476,11 +654,10 @@ impl Inner {
             }
         };
         let path = self.entry_path(key);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await?;
+        if let Err(e) = rename_into_place(&tmp, &path).await {
+            let _ = fs::remove_file(&tmp).await;
+            return Err(e);
         }
-        fs::rename(&tmp, &path).await?;
-
         let evicted = {
             let mut index = self.lock();
             index.insert(key.clone(), meta, file_len);
@@ -489,10 +666,152 @@ impl Inner {
         self.delete_files(&evicted).await;
         Ok(PutOutcome::Stored)
     }
+
+    /// Before a write of `len` bytes, evicts entries if free space is what limits the tier, so
+    /// that the write does not eat into the free space buffer.
+    async fn reserve(&self, len: u64) {
+        let space_cap = self.space_cap.load(Ordering::Relaxed);
+        if space_cap >= self.capacity_bytes {
+            return;
+        }
+        let evicted = self
+            .lock()
+            .evict_to(space_cap.saturating_sub(disk_usage(len)));
+        self.delete_files(&evicted).await;
+    }
+
+    /// Streams `body` into a new entry file at `path`, returning its metadata and file length.
+    ///
+    /// If the volume is full, entries are evicted to make room and the write carries on, once.
+    async fn write_entry(
+        &self,
+        path: &Path,
+        key: &CacheKey,
+        size_hint: Option<u64>,
+        mut body: ByteStream,
+    ) -> io::Result<(EntryMeta, u64)> {
+        let created = unix_now();
+        let key_bytes = key.as_str().as_bytes();
+        let key_len = u32::try_from(key_bytes.len()).map_err(io::Error::other)?;
+
+        let mut header = Vec::with_capacity(FIXED_HEADER_LEN + key_bytes.len());
+        header.extend_from_slice(MAGIC);
+        header.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        header.extend_from_slice(&CHECKSUM_CRC32C.to_le_bytes());
+        header.extend_from_slice(&created.to_le_bytes());
+        header.extend_from_slice(&size_hint.unwrap_or(0).to_le_bytes());
+        header.extend_from_slice(&key_len.to_le_bytes());
+        header.extend_from_slice(key_bytes);
+
+        let mut out = EntryFile {
+            file: fs::File::create(path).await?,
+            offset: 0,
+            last: Bytes::new(),
+            room_made: false,
+        };
+        self.append(&mut out, Bytes::from(header)).await?;
+
+        let mut size = 0_u64;
+        let mut checksum = Checksum::EMPTY;
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk?;
+            checksum = checksum.update(&chunk);
+            size += chunk.len() as u64;
+            self.append(&mut out, chunk).await?;
+        }
+        let file_len = entry_len(key, size);
+        let trailer = Bytes::copy_from_slice(&checksum.0.to_le_bytes());
+        self.append(&mut out, trailer).await?;
+        let unhinted = (size_hint != Some(size)).then_some(size);
+        if let Err(e) = finish(&mut out.file, unhinted).await {
+            self.recover(&mut out, e).await?;
+            finish(&mut out.file, unhinted).await?;
+        }
+
+        let meta = EntryMeta {
+            size,
+            checksum,
+            created,
+        };
+        Ok((meta, file_len))
+    }
+
+    /// Writes `piece` after the pieces already written.
+    async fn append(&self, out: &mut EntryFile, piece: Bytes) -> io::Result<()> {
+        if let Err(e) = self.write_piece(&mut out.file, &piece).await {
+            self.recover(out, e).await?;
+            self.write_piece(&mut out.file, &piece).await?;
+        }
+        out.offset += out.last.len() as u64;
+        out.last = piece;
+        Ok(())
+    }
+
+    /// Recovers from a failed write if the volume was full and no room has been made for this
+    /// file yet: evicts entries, then rewrites the last piece, which the failure may have cut
+    /// short. Any other failure is returned.
+    async fn recover(&self, out: &mut EntryFile, error: io::Error) -> io::Result<()> {
+        if error.kind() != io::ErrorKind::StorageFull || out.room_made {
+            return Err(error);
+        }
+        out.room_made = true;
+        self.make_room().await;
+        out.file.seek(io::SeekFrom::Start(out.offset)).await?;
+        self.write_piece(&mut out.file, &out.last).await
+    }
+
+    /// Writes one piece of an entry file.
+    #[cfg_attr(not(test), allow(clippy::unused_self))]
+    async fn write_piece(&self, file: &mut fs::File, piece: &[u8]) -> io::Result<()> {
+        #[cfg(test)]
+        if self.fail_write.load(Ordering::Relaxed) > 0
+            && self.fail_write.fetch_sub(1, Ordering::Relaxed) == 1
+        {
+            // Half the piece reaches the file, as when a real write runs out of space.
+            file.write_all(&piece[..piece.len() / 2]).await?;
+            return Err(io::ErrorKind::StorageFull.into());
+        }
+        file.write_all(piece).await
+    }
 }
 
-/// Reads `size` body bytes and the trailer, and reports whether both match `expected`.
-async fn verify_body(file: &mut fs::File, size: u64, expected: Checksum) -> io::Result<bool> {
+/// An entry file being written.
+///
+/// A failed write is reported by the file's next operation, so the last piece written is kept
+/// until a later write confirms it, to be written again after making room.
+struct EntryFile {
+    file: fs::File,
+    /// Where `last` starts in the file.
+    offset: u64,
+    last: Bytes,
+    /// Whether entries have already been evicted for this file. Room is made once.
+    room_made: bool,
+}
+
+/// The length of the file for an entry of `size` bytes.
+fn entry_len(key: &CacheKey, size: u64) -> u64 {
+    (FIXED_HEADER_LEN + key.as_str().len()) as u64 + size.saturating_add(TRAILER_LEN)
+}
+
+/// Patches the size field, if the body's size was not known up front, and flushes the file.
+async fn finish(file: &mut fs::File, size: Option<u64>) -> io::Result<()> {
+    if let Some(size) = size {
+        file.seek(io::SeekFrom::Start(SIZE_OFFSET)).await?;
+        file.write_all(&size.to_le_bytes()).await?;
+    }
+    file.flush().await
+}
+
+/// Moves a written temporary file to its entry path.
+async fn rename_into_place(tmp: &Path, path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    fs::rename(tmp, path).await
+}
+
+/// Reads `size` body bytes and the trailer. Returns the stored checksum if the body matches it.
+async fn verify_body(file: &mut fs::File, size: u64) -> io::Result<Option<Checksum>> {
     let mut buf = vec![0_u8; READ_CHUNK];
     let mut remaining = size;
     let mut checksum = Checksum::EMPTY;
@@ -503,7 +822,7 @@ async fn verify_body(file: &mut fs::File, size: u64, expected: Checksum) -> io::
         remaining -= want as u64;
     }
     let stored = Checksum(file.read_u32_le().await?);
-    Ok(stored == expected && checksum == expected)
+    Ok((stored == checksum).then_some(stored))
 }
 
 struct ReadState {
@@ -512,6 +831,7 @@ struct ReadState {
     checksum: Checksum,
     store: Arc<Inner>,
     key: CacheKey,
+    generation: u64,
 }
 
 impl ReadState {
@@ -569,7 +889,7 @@ async fn read_header(file: &mut fs::File) -> io::Result<Header> {
     let mut key = vec![0_u8; key_len as usize];
     file.read_exact(&mut key).await?;
     let key = String::from_utf8(key).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    // The checksum lives in the trailer; reads verify against the index's copy.
+    // The checksum lives in the trailer; reads verify the body against it.
     Ok(Header {
         key,
         meta: EntryMeta {
@@ -580,59 +900,14 @@ async fn read_header(file: &mut fs::File) -> io::Result<Header> {
     })
 }
 
-/// Streams `body` into a new entry file at `path`, returning its metadata and file length.
-async fn write_entry(
-    path: &Path,
-    key: &CacheKey,
-    size_hint: Option<u64>,
-    mut body: ByteStream,
-) -> io::Result<(EntryMeta, u64)> {
-    let created = unix_now();
-    let key_bytes = key.as_str().as_bytes();
-    let key_len = u32::try_from(key_bytes.len()).map_err(io::Error::other)?;
-
-    let mut file = fs::File::create(path).await?;
-    let mut header = Vec::with_capacity(FIXED_HEADER_LEN + key_bytes.len());
-    header.extend_from_slice(MAGIC);
-    header.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-    header.extend_from_slice(&CHECKSUM_CRC32C.to_le_bytes());
-    header.extend_from_slice(&created.to_le_bytes());
-    header.extend_from_slice(&size_hint.unwrap_or(0).to_le_bytes());
-    header.extend_from_slice(&key_len.to_le_bytes());
-    header.extend_from_slice(key_bytes);
-    file.write_all(&header).await?;
-
-    let mut size = 0_u64;
-    let mut checksum = Checksum::EMPTY;
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk?;
-        checksum = checksum.update(&chunk);
-        size += chunk.len() as u64;
-        file.write_all(&chunk).await?;
-    }
-    file.write_all(&checksum.0.to_le_bytes()).await?;
-    if size_hint != Some(size) {
-        file.seek(io::SeekFrom::Start(SIZE_OFFSET)).await?;
-        file.write_all(&size.to_le_bytes()).await?;
-    }
-    file.flush().await?;
-
-    let meta = EntryMeta {
-        size,
-        checksum,
-        created,
-    };
-    Ok((meta, header.len() as u64 + size + TRAILER_LEN))
-}
-
 struct Scanned {
     key: CacheKey,
     meta: EntryMeta,
     file_len: u64,
 }
 
-/// Reads every entry header under `dir`, oldest access first. Files that are not valid entries
-/// are deleted.
+/// Reads every entry header under `dir`, oldest access first. Files named like entries that are
+/// not valid entries are deleted; files with other names are left alone.
 fn scan(dir: &Path) -> io::Result<Vec<Scanned>> {
     let mut found = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -642,7 +917,10 @@ fn scan(dir: &Path) -> io::Result<Vec<Scanned>> {
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
                 stack.push(entry.path());
-            } else if file_type.is_file() {
+            } else if !file_type.is_file() || !entry.file_name().to_str().is_some_and(is_entry_name)
+            {
+                tracing::warn!(path = %entry.path().display(), "leaving an unknown file in the disk tier");
+            } else {
                 match scan_file(&entry.path()) {
                     Ok(scanned) => found.push(scanned),
                     Err(error) => {
@@ -721,7 +999,7 @@ impl BlobStore for DiskStore {
     }
 
     fn head<'a>(&'a self, key: &'a CacheKey) -> BoxFuture<'a, io::Result<Option<u64>>> {
-        Box::pin(async move { Ok(self.inner.lookup(key).await.map(|meta| meta.size)) })
+        Box::pin(async move { Ok(self.inner.lookup(key).await.map(|found| found.meta.size)) })
     }
 
     fn put<'a>(
@@ -938,8 +1216,11 @@ mod tests {
     async fn evicts_least_recently_used_by_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let (a, b, c) = (gradle("aa"), gradle("bb"), gradle("cc"));
-        // Each entry is header + 9-byte key + 100 bytes + trailer = 145 bytes; two fit.
-        let store = DiskStore::open(config(dir.path(), 300)).await.unwrap();
+        // Each entry is header + 9-byte key + 100 bytes + trailer = 145 bytes, which takes one
+        // 4 KiB block on disk; two fit.
+        let store = DiskStore::open(config(dir.path(), 3 * BLOCK_SIZE - 1))
+            .await
+            .unwrap();
         let hundred: &'static [u8] = &[7; 100];
         store.put(&a, None, body(&[hundred])).await.unwrap();
         store.put(&b, None, body(&[hundred])).await.unwrap();
@@ -950,7 +1231,7 @@ mod tests {
         assert_eq!(store.head(&b).await.unwrap(), None);
         assert!(store.head(&c).await.unwrap().is_some());
         let usage = store.usage();
-        assert_eq!((usage.entries, usage.size_bytes), (2, 290));
+        assert_eq!((usage.entries, usage.size_bytes), (2, 2 * BLOCK_SIZE));
         assert!(!store.inner.entry_path(&b).exists());
     }
 
@@ -1009,17 +1290,195 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_deletes_files_that_are_not_entries() {
+    async fn open_deletes_only_its_own_files() {
         let dir = tempfile::tempdir().unwrap();
-        let junk = dir.path().join("v1/gradle/zz/junk");
-        std_fs::create_dir_all(junk.parent().unwrap()).unwrap();
-        std_fs::write(&junk, b"not an entry").unwrap();
-        std_fs::create_dir_all(dir.path().join("tmp")).unwrap();
-        std_fs::write(dir.path().join("tmp/7"), b"half written").unwrap();
+        let shard = dir.path().join("v1/gradle/zz");
+        std_fs::create_dir_all(&shard).unwrap();
+        let damaged = shard.join("0123456789abcdef0123456789abcdef");
+        std_fs::write(&damaged, b"not an entry").unwrap();
+        let unknown = shard.join("notes.txt");
+        std_fs::write(&unknown, b"someone else's").unwrap();
+        let tmp = dir.path().join("tmp");
+        std_fs::create_dir_all(&tmp).unwrap();
+        for name in ["7", "probe", "mmth-12-0badf00d-3.tmp"] {
+            std_fs::write(tmp.join(name), b"half written").unwrap();
+        }
+        std_fs::write(tmp.join("backup.tar"), b"someone else's").unwrap();
 
         let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
         assert_eq!(store.usage().entries, 0);
-        assert!(!junk.exists());
+        assert!(!damaged.exists());
+        assert!(unknown.exists());
+        let left: Vec<_> = std_fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["backup.tar"]);
+    }
+
+    #[tokio::test]
+    async fn a_second_store_cannot_open_the_same_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+        let err = DiskStore::open(config(dir.path(), 1 << 20))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert!(err.to_string().contains("in use"), "{err}");
+        assert!(
+            store
+                .inner
+                .tmp_prefix
+                .starts_with(&format!("{TMP_PREFIX}{}-", std::process::id()))
+        );
+        drop(store);
+        DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+    }
+
+    /// Writes a new entry for `key` and renames it over the stored one without telling the index,
+    /// as a PUT does just before it records the new entry.
+    async fn replace_behind_the_index(store: &DiskStore, key: &CacheKey, bytes: &'static [u8]) {
+        let tmp = store.inner.tmp_dir.join("replacement");
+        let (meta, file_len) = store
+            .inner
+            .write_entry(&tmp, key, None, body(&[bytes]))
+            .await
+            .unwrap();
+        std_fs::rename(&tmp, store.inner.entry_path(key)).unwrap();
+        // What the PUT does next.
+        store.inner.lock().insert(key.clone(), meta, file_len);
+    }
+
+    #[tokio::test]
+    async fn a_get_racing_a_replacing_put_keeps_the_new_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+        // A new size, then the same size with other bytes.
+        for (old, new) in [(&b"old"[..], &b"newer"[..]), (b"abc", b"xyz")] {
+            let key = CacheKey::maven("v1.1/g/a/cs/buildinfo.xml").unwrap();
+            store.put(&key, None, body(&[old])).await.unwrap();
+            let Found { generation, .. } = store.inner.lookup(&key).await.unwrap();
+
+            let tmp = store.inner.tmp_dir.join("replacement");
+            store
+                .inner
+                .write_entry(&tmp, &key, None, body(&[new]))
+                .await
+                .unwrap();
+            std_fs::rename(&tmp, store.inner.entry_path(&key)).unwrap();
+
+            // The GET took the old metadata from the index and opens the new file.
+            let read = read_all(&store, &key).await.unwrap();
+            assert_eq!(read.as_deref(), Some(new));
+            assert!(store.inner.entry_path(&key).exists());
+
+            // A damaged old entry is only forgotten if the index still holds it.
+            replace_behind_the_index(&store, &key, new).await;
+            store.inner.damaged(&key, generation, "test").await;
+            assert!(store.inner.entry_path(&key).exists());
+            assert_eq!(read_all(&store, &key).await.unwrap().as_deref(), Some(new));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn readers_never_lose_an_entry_being_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskStore::open(config(dir.path(), 1 << 30)).await.unwrap();
+        let key = CacheKey::maven("v1.1/g/a/cs/buildinfo.xml").unwrap();
+        store.put(&key, None, body(&[b"first"])).await.unwrap();
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let readers: Vec<_> = (0..6)
+            .map(|_| {
+                let (store, key, done) = (store.clone(), key.clone(), done.clone());
+                tokio::spawn(async move {
+                    while !done.load(Ordering::Relaxed) {
+                        let _ = read_all(&store, &key).await;
+                        tokio::task::yield_now().await;
+                    }
+                })
+            })
+            .collect();
+        let mut lost = 0;
+        for i in 0..500_u32 {
+            // Sizes vary, so a stale size cannot match by luck.
+            let bytes = vec![b'x'; 1 + (i % 7) as usize];
+            let chunks: ByteStream = Box::pin(stream::iter([Ok(Bytes::from(bytes))]));
+            let stored = store.put(&key, None, chunks).await.unwrap();
+            assert_eq!(stored, PutOutcome::Stored);
+            if read_all(&store, &key).await.unwrap().is_none() {
+                lost += 1;
+            }
+        }
+        done.store(true, Ordering::Relaxed);
+        for reader in readers {
+            reader.await.unwrap();
+        }
+        assert_eq!(lost, 0, "entries missing right after a successful put");
+    }
+
+    #[test]
+    fn a_full_volume_shrinks_to_the_low_water_mark() {
+        assert_eq!(low_water(1000, u64::MAX), 900);
+        assert_eq!(low_water(1000, 500), 450);
+        assert_eq!(low_water(0, 500), 0);
+    }
+
+    #[tokio::test]
+    async fn a_full_volume_evicts_and_carries_on() {
+        // Fail the header, each body chunk, and the trailer in turn.
+        for piece in 1..=4 {
+            let dir = tempfile::tempdir().unwrap();
+            let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+            // Twenty one-block entries, oldest first.
+            let old: Vec<_> = (10..30).map(|i| gradle(&format!("{i}"))).collect();
+            let hundred: &'static [u8] = &[7; 100];
+            for key in &old {
+                store.put(key, Some(100), body(&[hundred])).await.unwrap();
+            }
+            let c = gradle("cc");
+
+            store.inner.fail_write.store(piece, Ordering::Relaxed);
+            let outcome = store.put(&c, None, body(&[b"hello ", b"full disk"])).await;
+            assert_eq!(outcome.unwrap(), PutOutcome::Stored, "piece {piece}");
+            // Down to 90 % of 20 blocks: the two oldest go, not just one.
+            for key in &old[..2] {
+                assert_eq!(store.head(key).await.unwrap(), None, "piece {piece}");
+                assert!(!store.inner.entry_path(key).exists());
+            }
+            for key in &old[2..] {
+                assert!(store.head(key).await.unwrap().is_some(), "piece {piece}");
+            }
+            let bytes = read_all(&store, &c).await.unwrap();
+            assert_eq!(
+                bytes.as_deref(),
+                Some(&b"hello full disk"[..]),
+                "piece {piece}"
+            );
+            drop(store);
+
+            // The file is whole: it survives a reopen.
+            let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+            let bytes = read_all(&store, &c).await.unwrap();
+            assert_eq!(
+                bytes.as_deref(),
+                Some(&b"hello full disk"[..]),
+                "piece {piece}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_rename_removes_the_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
+        let key = gradle("abc123");
+        // A file where the entry's directory should be.
+        let shard = store.inner.entry_path(&key).parent().unwrap().to_path_buf();
+        std_fs::create_dir_all(shard.parent().unwrap()).unwrap();
+        std_fs::write(&shard, b"in the way").unwrap();
+
+        assert!(store.put(&key, None, body(&[b"bytes"])).await.is_err());
+        assert_eq!(store.head(&key).await.unwrap(), None);
         assert_eq!(std_fs::read_dir(dir.path().join("tmp")).unwrap().count(), 0);
     }
 }
