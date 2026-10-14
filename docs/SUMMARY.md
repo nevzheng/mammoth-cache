@@ -41,4 +41,5 @@
   - [0015: Metrics rollout and testing](design/0015-metrics-rollout-and-testing.md)
   - [0016: Cache-only REAPI over gRPC](design/0016-reapi-cache.md)
   - [0017: Errors](design/0017-errors.md)
+  - [0018: Logging](design/0018-logging.md)
   - [Investigations](design/investigations.md)
