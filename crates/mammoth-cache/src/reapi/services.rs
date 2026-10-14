@@ -168,7 +168,7 @@ impl Services {
                     blob.size
                 ),
             )
-            .with("key", blob.key.name())
+            .with("digest", blob.key.name())
             .into());
         }
         if Sha256::digest(&data).as_slice() != blob.sha256() {
