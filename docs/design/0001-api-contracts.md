@@ -98,7 +98,11 @@ These are the Kubernetes conventions. The AIPs do not cover health checks.
 Defined in `api/proto/mammoth/admin/v1/` and checked with Google's
 [api-linter](https://linter.aip.dev). Routes come from `google.api.http` annotations
 ([AIP-127](https://google.aip.dev/127)), so the HTTP/JSON form is fixed by the protos. The first
-resource is the `serverStatus` singleton; users, configuration and purge follow.
+resource is the `serverStatus` singleton.
+
+The admin API is deliberately small. Configuration, including users and their token hashes, comes
+from a static config file and is never changed through the API or a UI: a cache should be only as
+complex as it needs to be. The API reads state; a cache purge is the only write being considered.
 
 ### Transports
 

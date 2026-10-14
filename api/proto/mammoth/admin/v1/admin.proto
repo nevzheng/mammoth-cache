@@ -18,8 +18,8 @@ option java_package = "dev.mammothcache.mammoth.admin.v1";
 // Manages a mammoth-cache node. Errors follow AIP-193: a `google.rpc.Status` carrying one
 // `google.rpc.ErrorInfo` with domain `mammoth-cache.dev`.
 //
-// Stub: only the status singleton is defined so far. Users, configuration and cache purge
-// come next.
+// Read-only by design: configuration comes from a static config file and is never changed
+// through this API. A cache purge is the only write being considered.
 service AdminService {
   option (google.api.default_host) = "localhost:5071";
 
