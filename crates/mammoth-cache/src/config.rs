@@ -194,6 +194,9 @@ pub struct Bucket {
     pub region: Option<String>,
     /// An S3-compatible endpoint such as `MinIO` or Cloudflare R2.
     pub endpoint: Option<String>,
+    /// Allows an `http://` endpoint, such as a local `MinIO`, `SeaweedFS` or Azurite.
+    #[serde(default)]
+    pub allow_http: bool,
     /// When a `PUT` is answered relative to the upload.
     #[serde(default)]
     pub write: BucketWrite,
@@ -706,6 +709,7 @@ mod tests {
             [bucket]
             url = "s3://acme-build-cache/mammoth/"
             region = "us-east-1"
+            allow_http = true
             write = "async"
             upload_queue = 1000
 
@@ -733,6 +737,7 @@ mod tests {
         assert_eq!(age, Duration::from_hours(30 * 24));
         let bucket = config.bucket.unwrap();
         assert_eq!(bucket.region.as_deref(), Some("us-east-1"));
+        assert!(bucket.allow_http);
         let ci = &config.auth.users["ci"];
         assert_eq!(ci.scopes, [Scope::CacheRead, Scope::CacheWrite]);
         assert_eq!(ci.token_hashes[0].0[0], 0x9f);

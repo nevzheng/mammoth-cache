@@ -8,11 +8,12 @@ entries are lost on restart, and entries over `memory.max_entry_size` are treate
 ## The config file
 
 mammoth-cache reads one TOML file at startup and never writes to it. To change a setting, edit the
-file and restart the node. On Kubernetes, mount the file from a ConfigMap; a rollout restarts the
-pods.
+file and restart the node. On Kubernetes, mount the file from a Secret, since it holds token
+hashes; a rollout restarts the pods.
 
 The file is found at the path given by `--config`, else `MAMMOTH_CONFIG`, else `./mammoth.toml`.
-That is the only flag or variable that affects settings: there are no per-key overrides.
+That is the only flag or variable that affects settings: there are no per-key overrides. The one
+exception is `RUST_LOG`, which replaces `log.level` when set, for debugging one module.
 
 Every key except `version` and `disk.path` is optional. Unknown keys, wrong types, bad units and
 contradictions are errors at startup. `mammoth config check` runs the same validation without
@@ -63,10 +64,10 @@ format = "json"
 
 ### Top level
 
-| Key       | Type    | Default        | Meaning                                                  |
-| --------- | ------- | -------------- | -------------------------------------------------------- |
-| `version` | integer | required       | Schema version of the file; `1`                          |
-| `listen`  | string  | `0.0.0.0:5071` | Address and port. 5071 is the Build Cache Node's port.   |
+| Key       | Type    | Default        | Meaning                                                                        |
+| --------- | ------- | -------------- | ------------------------------------------------------------------------------ |
+| `version` | integer | required       | Schema version of the file; `1`                                                |
+| `listen`  | string  | `0.0.0.0:5071` | Address and port; 5071 is the Build Cache Node's port. Use `[::]:5071` on IPv6 |
 
 ### `[protocols]`
 
@@ -161,12 +162,15 @@ tier is built on the `object_store` crate.
 | `url`          | string  | required             | `s3://`, `gs://`, `az://` or `file://` URL, with an optional prefix    |
 | `region`       | string  | from the environment | Region, for S3                                                         |
 | `endpoint`     | string  | none                 | Endpoint for S3-compatible stores such as MinIO or R2                  |
+| `allow_http`   | boolean | `false`              | Allow an `http://` endpoint, such as a local MinIO, SeaweedFS, Azurite |
 | `write`        | string  | `async`              | `async` answers a store once it's on disk; `sync` waits for the upload |
 | `upload_queue` | integer | `1000`               | Uploads waiting at once, for `async`; more are dropped and counted     |
 
-Credentials come from the cloud's default credential chain (environment, instance or workload
-identity), never from the file. Entries are never deleted from the bucket; set a lifecycle rule,
-for example 30 days, to expire them.
+Credentials come from the environment, never from the file: workload identity (EKS IRSA or Pod
+Identity, GKE, AKS), instance roles and VM service accounts, or keys in the cloud's usual variables
+(`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for S3-compatible stores). AWS profiles and SSO are
+not read. Design doc [0003](../design/0003-architecture.md#bucket-access) lists what works. Entries
+are never deleted from the bucket; set a lifecycle rule, for example 30 days, to expire them.
 
 ### `[auth]`
 

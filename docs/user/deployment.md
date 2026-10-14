@@ -29,7 +29,7 @@ What a node needs to run well on Kubernetes, and where each part is covered:
 | Large uploads through the proxy          | [Proxy settings](#proxy-settings)                       | Done     |
 | Idle timeout above the load balancer's   | `server.idle_timeout`, 75 s by default                  | Done     |
 | Config and token hashes from a Secret    | [Config and credentials](#config-and-credentials)       | Done     |
-| Bucket access without keys               | Workload identity                                       | Done     |
+| Bucket access without keys               | [Bucket access](#bucket-access)                         | Done     |
 | Non-root, read-only root filesystem      | The distroless image writes only `disk.path`            | Done     |
 | Memory under the container limit         | [Memory and disk sizing](#memory-and-disk-sizing)       | Done     |
 | `/metrics` not exposed publicly          | [Metrics](#metrics)                                     | Done     |
@@ -137,11 +137,16 @@ key = "/etc/mammoth/tls/tls.key"
 ## Config and credentials
 
 Mount `mammoth.toml` from a Secret, since it holds token hashes, and point `MAMMOTH_CONFIG` at it.
-A change to the file needs a rollout. Bucket credentials come from each cloud's default chain, so
-IRSA or EKS Pod Identity, GKE Workload Identity and Azure Workload Identity work with no keys in the
-file. The parts of a pod spec that matter:
+A change to the file needs a rollout. Bucket credentials never go in the file; see
+[Bucket access](#bucket-access). The image runs as the nonroot user (UID and GID 65532), so give the
+pod `fsGroup: 65532`, or a fresh PersistentVolumeClaim is owned by root and the node can't write
+`disk.path`. The parts of a pod spec that matter:
 
 ```yaml
+# Pod
+securityContext:
+  fsGroup: 65532
+# Container
 env:
   - name: MAMMOTH_CONFIG
     value: /etc/mammoth/mammoth.toml
@@ -159,6 +164,50 @@ volumeMounts:
 ```
 
 Probes are on [Health checks](health.md#kubernetes).
+
+## Bucket access
+
+The node finds bucket credentials in its environment, the way the cloud's own tools do, so the
+config file names only the bucket. Give the node's identity read and write on the bucket's prefix:
+it never lists or deletes. Pick the row for where the node runs:
+
+| Where the node runs | Bucket            | How it gets access                                                         |
+| ------------------- | ----------------- | -------------------------------------------------------------------------- |
+| EKS                 | S3                | IRSA (`eks.amazonaws.com/role-arn` on the ServiceAccount) or Pod Identity  |
+| ECS or EC2          | S3                | The task role or instance profile                                          |
+| GKE                 | GCS               | Workload Identity on the Kubernetes ServiceAccount                         |
+| Compute Engine      | GCS               | The VM's service account                                                   |
+| AKS                 | Azure Blob        | Workload Identity (`azure.workload.identity/use: "true"` on the pod)       |
+| Azure VM            | Azure Blob        | Managed identity                                                           |
+| Anywhere else       | S3-compatible     | `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` from a Secret              |
+| Anywhere else       | GCS               | A service account key file from a Secret, `GOOGLE_APPLICATION_CREDENTIALS` |
+| Anywhere else       | Azure Blob        | `AZURE_STORAGE_ACCOUNT_KEY` or a SAS token from a Secret                   |
+
+The permissions a node needs, on its prefix only:
+
+| Cloud | Grant                                                                                    |
+| ----- | ---------------------------------------------------------------------------------------- |
+| AWS   | `s3:GetObject`, `s3:PutObject`, `s3:AbortMultipartUpload`; `s3:ListBucket` on the prefix |
+| GCP   | `roles/storage.objectUser`, or `storage.objects.get` and `storage.objects.create`        |
+| Azure | `Storage Blob Data Contributor`, scoped to the container                                 |
+
+On S3, `s3:ListBucket` is what makes a missing entry answer `404` rather than `403`; the node never
+lists, but without it every miss is logged as a bucket error. For a bucket in another AWS account,
+let the IRSA role live in that account, or grant the node's role in the bucket policy. For MinIO,
+SeaweedFS, Cloudflare R2 and other S3-compatible stores, set `bucket.endpoint`, and
+`bucket.allow_http = true` if the endpoint is plain `http://`:
+
+```toml
+[bucket]
+url = "s3://build-cache/mammoth"
+endpoint = "http://seaweedfs:8333"
+region = "us-east-1"
+allow_http = true
+```
+
+Not supported: AWS profiles and SSO from `~/.aws/config`, and GCP federation from outside Google
+Cloud (external-account files). Use keys from a Secret there. Entries are never deleted from the
+bucket, so set a lifecycle rule to expire them, for example after 30 days.
 
 ## Metrics
 
