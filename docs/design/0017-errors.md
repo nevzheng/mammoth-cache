@@ -110,6 +110,24 @@ They matter for operators, scripts and the next protocol.
 
 ## Design
 
+### Principles
+
+1. **Inside: a standard vocabulary, a little more detailed.** Every internal error is described
+   with Google's canonical codes (`google.rpc.Code`), the vocabulary AIP-193, gRPC and Google's own
+   `absl::Status` share. The cache may have its own semantics, but it describes them in that
+   vocabulary, so they translate to any protocol. Where the code alone is too coarse for a mapping
+   to do its job, a small set of typed details adds cache meaning (the entry is too large, the
+   stored copy is corrupt). Details exist only when some mapping branches on them; anything else
+   is `anyhow` context for the logs.
+2. **Not an overly detailed taxonomy.** No variant per failure (`DiskFull`, `RenameFailed`,
+   `BucketTimeout`): nobody acts on the difference, and every new failure would become an API
+   change. A new detail needs a mapping that uses it.
+3. **At the boundary: AIP-193, or the protocol's own rules.** Where a protocol defines nothing,
+   errors are AIP-193. Where it does (Gradle's status codes, REAPI's per-method codes, a future
+   protocol's own error body), the protocol wins and AIP-193 fills only what it leaves open.
+4. **One mapping per protocol, exhaustive.** Each protocol's mapping matches every code and
+   detail, so a new one fails the build until every protocol has decided what it means.
+
 ```mermaid
 flowchart LR
   T[Tiers: io::Error + anyhow context] --> C[Core: cache::Error<br/>kind + context]
@@ -255,6 +273,30 @@ Gradle's accept-and-drop stays a success path in the handler, not an error.
   plain text.
 - **Logging** happens once, where the response is rendered, at a level chosen by code: client
   errors at `debug`, `UNAVAILABLE` at `warn`, `INTERNAL` at `error` with the `source` chain.
+
+### gRPC and REAPI
+
+On gRPC, AIP-193 is not a translation: it is gRPC's own error model. A gRPC error is a canonical
+code and a message; AIP-193 adds a serialized `google.rpc.Status` carrying the same code plus
+`ErrorInfo` in the `grpc-status-details-bin` trailer. So the REAPI mapping uses AIP-193 directly:
+the core code becomes the `tonic::Code` one to one, and the reason and metadata go in `ErrorInfo`
+through `tonic-types`.
+
+REAPI layers its own rules on top, and those win where they speak:
+
+- **Per-method codes.** REAPI documents what each method returns, for example `NOT_FOUND` from
+  `GetActionResult` on a miss, and a digest that does not match its content as `INVALID_ARGUMENT`.
+  The mapping follows the spec's wording method by method.
+- **Per-blob statuses.** `BatchUpdateBlobs` and `BatchReadBlobs` succeed as calls and carry a
+  `google.rpc.Status` per blob. The same mapping fills those, so a blob's error has the same code
+  and reason as it would as a call error.
+- **Not errors at all.** `FindMissingBlobs` answers with a list, and a `ByteStream.Write` of a blob
+  that already exists finishes early with its full `committed_size` rather than an error.
+- **Where the spec allows a choice, the client's behaviour decides.** An oversized blob is
+  `INVALID_ARGUMENT`, not `RESOURCE_EXHAUSTED`, because Bazel retries the latter (0016).
+
+Clients such as Bazel and Buck2 read the code; `ErrorInfo` is for people and tools reading the
+error. That is why the reasons match the HTTP ones: an operator sees `ENTRY_TOO_LARGE` in both.
 
 ### Catalogue
 
