@@ -103,7 +103,7 @@ const CATALOG: &[Metric] = &[
         kind: Kind::Counter,
         labels: &[Label(
             "result",
-            Some(&["stored", "exists", "too_large", "error"]),
+            Some(&["stored", "exists", "too_large", "client_error", "error"]),
         )],
         live: true,
     },
@@ -1081,4 +1081,32 @@ fn parser_reads_labels_and_histograms() {
         scrape.count("quoted", &[("route", "/cache/{key}"), ("q", "a\"b")]),
         1
     );
+}
+
+/// An upload that breaks off on the client's side counts as `client_error`, not as a storage
+/// `error`.
+#[tokio::test]
+async fn a_broken_upload_is_a_client_error() {
+    let _serial = serial().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = three_tier_app(dir.path(), authenticator()).await;
+    let before = scrape(&app).await;
+    let chunks: Vec<Result<Vec<u8>, std::io::Error>> = vec![
+        Ok(vec![0xAB; 100]),
+        Err(std::io::Error::other("connection reset")),
+    ];
+    let request = Request::put("/cache/a3f5e1c09b2d4e7f8a1b6c3d5e9f0b01")
+        .header(header::USER_AGENT, GRADLE_AGENT)
+        .header(header::CONTENT_LENGTH, 1000)
+        .body(Body::from_stream(futures_util::stream::iter(chunks)))
+        .unwrap();
+    let response = send(&app, request).await;
+    assert!(response.status().is_client_error(), "{}", response.status());
+    let after = scrape(&app).await;
+    let delta = |result| {
+        after.count("mammoth_cache_stores_total", &[("result", result)])
+            - before.count("mammoth_cache_stores_total", &[("result", result)])
+    };
+    assert_eq!(delta("client_error"), 1);
+    assert_eq!(delta("error"), 0);
 }
