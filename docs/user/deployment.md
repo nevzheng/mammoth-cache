@@ -110,9 +110,15 @@ warning at startup as a reminder that tokens must not cross the network in clear
 
 Mount `mammoth.toml` from a Secret, since it holds token hashes, and point `MAMMOTH_CONFIG` at it.
 A change to the file needs a rollout. Bucket credentials never go in the file; see
-[Bucket access](#bucket-access). The parts of a pod spec that matter:
+[Bucket access](#bucket-access). The image runs as the nonroot user (UID and GID 65532), so give the
+pod `fsGroup: 65532`, or a fresh PersistentVolumeClaim is owned by root and the node can't write
+`disk.path`. The parts of a pod spec that matter:
 
 ```yaml
+# Pod
+securityContext:
+  fsGroup: 65532
+# Container
 env:
   - name: MAMMOTH_CONFIG
     value: /etc/mammoth/mammoth.toml

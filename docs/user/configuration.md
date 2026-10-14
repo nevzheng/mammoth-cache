@@ -8,11 +8,12 @@ entries are lost on restart, and entries over `memory.max_entry_size` are treate
 ## The config file
 
 mammoth-cache reads one TOML file at startup and never writes to it. To change a setting, edit the
-file and restart the node. On Kubernetes, mount the file from a ConfigMap; a rollout restarts the
-pods.
+file and restart the node. On Kubernetes, mount the file from a Secret, since it holds token
+hashes; a rollout restarts the pods.
 
 The file is found at the path given by `--config`, else `MAMMOTH_CONFIG`, else `./mammoth.toml`.
-That is the only flag or variable that affects settings: there are no per-key overrides.
+That is the only flag or variable that affects settings: there are no per-key overrides. The one
+exception is `RUST_LOG`, which replaces `log.level` when set, for debugging one module.
 
 Every key except `version` and `disk.path` is optional. Unknown keys, wrong types, bad units and
 contradictions are errors at startup. `mammoth config check` runs the same validation without
@@ -63,10 +64,10 @@ format = "json"
 
 ### Top level
 
-| Key       | Type    | Default        | Meaning                                                  |
-| --------- | ------- | -------------- | -------------------------------------------------------- |
-| `version` | integer | required       | Schema version of the file; `1`                          |
-| `listen`  | string  | `0.0.0.0:5071` | Address and port. 5071 is the Build Cache Node's port.   |
+| Key       | Type    | Default        | Meaning                                                                        |
+| --------- | ------- | -------------- | ------------------------------------------------------------------------------ |
+| `version` | integer | required       | Schema version of the file; `1`                                                |
+| `listen`  | string  | `0.0.0.0:5071` | Address and port; 5071 is the Build Cache Node's port. Use `[::]:5071` on IPv6 |
 
 ### `[protocols]`
 
