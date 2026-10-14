@@ -88,6 +88,7 @@ and [deployment guide](docs/user/deployment.md) take it from there.
 | Area                                                   | Today                              |
 | ------------------------------------------------------ | ---------------------------------- |
 | Gradle, Maven and Bazel HTTP protocols                 | Served; acceptance suite in review |
+| Bazel gRPC cache (REAPI ActionCache, CAS, ByteStream)  | In progress                        |
 | Memory, disk and bucket tiers                          | Done                               |
 | `mammoth.toml`, users, tokens and scopes               | Done                               |
 | Graceful shutdown, readiness checks, timeouts          | Done                               |
@@ -99,9 +100,9 @@ Details per feature are in the [user guide](docs/user/README.md#feature-status).
 
 ## Non-goals
 
-- **No remote execution and no REAPI.** mammoth-cache is a cache, not a build system. For Bazel's
-  gRPC cache or remote execution, use [bazel-remote](https://github.com/buchgr/bazel-remote) or a
-  REAPI server.
+- **No remote execution.** mammoth-cache is a cache, not a build system. The gRPC cache side of
+  Bazel's Remote Execution API (Capabilities, ActionCache, CAS, ByteStream) is in progress; the
+  Execution service never will be. For remote execution, use a REAPI build service.
 - **No Develocity.** The Develocity Gradle plugin, Maven extension and build scans are not
   supported; use the clients' built-in HTTP caches.
 - **No web UI, no runtime configuration API.** Configuration is a file; dashboards live in Grafana.

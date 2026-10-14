@@ -38,9 +38,9 @@ refills from the bucket as it serves. Without one, a single node works like the 
 | [Apache Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/) | 1.2.0 and later, on Maven 3.9.x | Available |
 | Bazel's [HTTP remote cache](https://bazel.build/remote/caching#http-caching), off by default           | SHA-256 digests                 | Available |
 
-Develocity's own Gradle plugin connector and Maven extension are not supported. Bazel's remote
-execution and gRPC cache (REAPI) are out of scope: mammoth-cache is a cache, not a remote build
-system, and [bazel-remote](https://github.com/buchgr/bazel-remote) already serves REAPI well.
+Develocity's own Gradle plugin connector and Maven extension are not supported. The cache side of
+Bazel's gRPC Remote Execution API (Capabilities, ActionCache, CAS and ByteStream) is in progress;
+remote execution itself is out of scope: mammoth-cache is a cache, not a remote build system.
 
 ## Feature status
 

@@ -31,10 +31,10 @@ builds keep their cache.
 
 ## What it is not
 
-Not a remote execution system or a REAPI server (use
-[bazel-remote](https://github.com/buchgr/bazel-remote) for Bazel's gRPC cache), not a Develocity
-replacement (its plugin, extension and build scans are out of scope), not a web UI, and not a
-replicated cluster: the bucket is the shared state.
+Not a remote execution system (the cache side of Bazel's gRPC Remote Execution API is in progress;
+the Execution service is out of scope for good), not a Develocity replacement (its plugin, extension
+and build scans are out of scope), not a web UI, and not a replicated cluster: the bucket is the
+shared state.
 
 ## How it works
 
