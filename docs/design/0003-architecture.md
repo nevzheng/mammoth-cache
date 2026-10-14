@@ -119,11 +119,61 @@ loses the cache, which is acceptable for a cache.
 - Routing requests for the same key to the same node, for example with a consistent-hash load
   balancer on the request path, raises L1 and L2 hit rates. Recommended, not required.
 
+### Code structure: ports and adapters
+
+The code follows a hexagonal (ports and adapters) structure. Every tier is a key-value store of
+immutable blobs: a key maps to bytes plus a little metadata (size, checksum, last access), with no
+updates and no transactions.
+
+```text
+  inbound adapters               core                      outbound adapters
+  ----------------      ------------------------      ---------------------------
+  Gradle HTTP     ──▶                                ──▶  memory store       (L1)
+  admin API       ──▶   tiering: lookup order,       ──▶  disk store         (L2)
+  health, metrics ──▶   promotion, eviction,         ──▶  object store       (L3)
+                        single-flight, checksums           └─ S3, GCS, Azure, file
+                                                               via an object-store library
+```
+
+- **Core:** the tiering rules above. It depends only on ports, never on HTTP, a file system or a
+  cloud SDK.
+- **Blob store port:** `get` (a stream), `put` (a stream), `head`. All three tiers implement it, so
+  implementations can be swapped and tests can use in-memory fakes.
+- **Bounded store port:** what only the local tiers have, which is capacity, current size and
+  eviction. The bucket does not implement it; its expiry is lifecycle rules.
+- **Inbound adapters:** the protocol routes from [0001](0001-api-contracts.md). They translate HTTP
+  to core calls and core errors to AIP-193 responses.
+
+### Flow control
+
+Gradle has no backoff: it ignores `Retry-After`, and a `429` or `503` turns the remote cache off for
+the rest of the build. So there is no rate limiting, and the server avoids refusing work. Overload
+is handled inside instead:
+
+- Bounded concurrency for each tier's I/O, with bounded queues in front of it, so a slow disk or
+  bucket slows requests rather than exhausting memory.
+- Timeouts on every tier operation. A bucket read that times out is a miss, not an error.
+- A limit on open connections, so excess clients wait in the listen queue.
+- When the bucket upload queue is full, the upload is dropped and counted. That costs a later miss
+  only.
+- Optionally, under sustained overload, answer `PUT` with `413`. It is the one refusal Gradle
+  treats as "skip this entry" without turning the cache off. It stretches the status's meaning, so
+  it is off by default.
+
 ## Cross-cutting concerns
 
 ### Performance
 
-Initial targets, to be checked by benchmarks before they are relied on:
+What matters, in order:
+
+1. **Hit rate.** The largest effect on build time, set by capacity and eviction.
+2. **Tail latency of hits and misses.** A build performs hundreds to thousands of lookups on its
+   critical path. With a bucket, every miss pays an object-store round trip, often tens of
+   milliseconds.
+3. **Throughput.** Large entries and many concurrent CI agents, bounded by disk and network.
+
+Network round trips usually outweigh server time, so the aim is server overhead small enough not
+to matter. Initial targets, to be checked by benchmarks before they are relied on:
 
 | Measure                                         | Target                          |
 | ----------------------------------------------- | ------------------------------- |
@@ -181,3 +231,5 @@ Every tier reports hits, misses, latency, size and evictions. The metric catalog
 - The default L1 size threshold for an entry.
 - Whether to index L2 on restart or start cold.
 - Which object stores to support first.
+- Whether to put a short-lived negative cache or a filter (for example a Bloom filter) in front of
+  the bucket, so misses avoid an object-store round trip.
