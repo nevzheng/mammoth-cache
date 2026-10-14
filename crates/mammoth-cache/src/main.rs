@@ -237,9 +237,30 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
     Ok(builder.build())
 }
 
+/// Resolves on Ctrl-C or, on Unix, `SIGTERM`, which is how Kubernetes and Docker stop a container.
+/// As PID 1 the process gets no default `SIGTERM` handler, so without this it would be killed only
+/// after the grace period.
 async fn shutdown_signal() {
-    // If the handler can't be installed, run until killed rather than exit at once.
-    if tokio::signal::ctrl_c().await.is_err() {
-        std::future::pending::<()>().await;
-    }
+    // If a handler can't be installed, wait on the other rather than exit at once.
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    let name = tokio::select! {
+        () = ctrl_c => "interrupt",
+        () = terminate => "SIGTERM",
+    };
+    tracing::info!(signal = name, "shutting down; finishing requests in flight");
 }
