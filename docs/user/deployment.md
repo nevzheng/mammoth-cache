@@ -1,10 +1,10 @@
 # Deployment
 
 mammoth-cache is built to run as a few stateless nodes behind a load balancer, often on Kubernetes.
-Each node serves plain HTTP on one port. The proxy in front terminates TLS and routes requests, and
-an optional bucket shares entries between nodes. This page covers what to set up around the nodes.
-Design doc [0013](../design/0013-deployment.md) has the reasoning. The project ships no Helm chart
-or manifests: the snippets below are what to put in your own.
+Each node serves one port, plain HTTP by default. The proxy in front terminates TLS and routes
+requests, and an optional bucket shares entries between nodes. This page covers what to set up
+around the nodes. Design doc [0013](../design/0013-deployment.md) has the reasoning. The project
+ships no Helm chart or manifests: the snippets below are what to put in your own.
 
 ```mermaid
 flowchart LR

@@ -48,6 +48,8 @@ readinessProbe:
   periodSeconds: 5
 ```
 
+With [`[tls]`](deployment.md#tls-on-the-node) set, add `scheme: HTTPS` to each `httpGet`.
+
 The node opens its port only after the disk tier has indexed the entries already on disk, so with a
 large disk the port refuses connections for a while after start. The `startupProbe` keeps
 Kubernetes from restarting it during that time.
