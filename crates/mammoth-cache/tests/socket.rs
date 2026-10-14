@@ -319,3 +319,42 @@ async fn a_slow_answer_to_expect_continue_still_reads_the_body() {
         201
     );
 }
+
+#[tokio::test]
+async fn a_refused_upload_without_credentials_is_drained_and_the_connection_reused() {
+    let addr = start_with_limit(4 << 20).await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    // Large enough that the client is still sending when the answer comes.
+    let body = vec![b'x'; 1 << 20];
+    assert_eq!(
+        send(
+            &mut stream,
+            &put_head("a9", body.len() as u64, false, None),
+            &body
+        )
+        .await,
+        401
+    );
+    assert_eq!(
+        send(&mut stream, &put_head("a9", 2, false, Some(CI)), b"ok").await,
+        201
+    );
+}
+
+#[tokio::test]
+async fn a_refused_upload_over_the_entry_limit_closes_the_connection() {
+    let addr = start().await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let body = vec![b'x'; usize::try_from(LIMIT).unwrap() * 4];
+    stream
+        .write_all(put_head("a8", body.len() as u64, false, None).as_bytes())
+        .await
+        .unwrap();
+    stream.write_all(&body).await.unwrap();
+    let (status, head) = read_head(&mut stream).await;
+    assert_eq!(status, 401);
+    assert!(
+        head.to_ascii_lowercase().contains("connection: close"),
+        "{head}"
+    );
+}

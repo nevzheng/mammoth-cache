@@ -71,7 +71,10 @@ See [Gradle](gradle.md#credentials) and [Maven](maven.md#credentials) for client
 | Valid credentials, missing scope              | `403`  | `SCOPE_MISSING`       |
 
 Every `401` carries `WWW-Authenticate`. Both statuses fail a Gradle build, which is what a
-misconfigured credential should do.
+misconfigured credential should do. A refused upload sent with `Expect: 100-continue` is answered
+before its body is sent. One sent without it is read and discarded first, up to the entry size
+limit, so the client can reuse the connection; past the limit the node answers and closes it.
 
-Send credentials only over TLS. The node doesn't serve TLS itself yet, so put it behind a proxy
-that terminates TLS; with authentication on, it logs a warning at startup until then.
+Send credentials only over TLS: terminate it at a proxy or ingress, or turn on the node's own
+[`[tls]`](configuration.md#tls). With authentication on and no `[tls]`, it logs a warning at
+startup.
