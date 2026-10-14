@@ -82,7 +82,8 @@ cloud provider's metrics.
 | `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build         |
 
 `route` is the route template, such as `/cache/{key}`. `client` is `gradle`, `maven` or `other`,
-from the `User-Agent`. The standard `process_*` metrics are exported too.
+from the `User-Agent`. The standard `process_*` metrics (memory, CPU, file descriptors) are planned
+too.
 
 ## Useful queries
 

@@ -7,16 +7,12 @@ build is as fast as the default one.
 
 > [!NOTE]
 > The library's Rust API is not stable before 1.0, and the crate is not published to crates.io.
-> Depend on it from git and pin a tag or commit.
+> Depend on it from git and pin a commit; tags come with the first release.
 
 ## Cargo features
 
-Optional parts ship behind Cargo features, so the default binary stays small. Build with a
-different set from a clone of the repository:
-
-```sh
-cargo build --release --bin mammoth --no-default-features --features jemalloc
-```
+Optional parts ship behind Cargo features, so the default binary stays small. None exist on
+`main` yet; the first are proposed:
 
 | Feature    | Default | What it does                                         | Status   |
 | ---------- | ------- | ---------------------------------------------------- | -------- |
@@ -30,7 +26,7 @@ Optional storage backends will be added to this table as they land.
 ## Your own storage backend
 
 mammoth-cache is a library with a thin `mammoth` binary on top. Every storage tier implements one
-trait, `BlobStore`: get, head and put of immutable, streamed entries. To use storage the default
+trait, `BlobStore`: get, head and put of streamed entries. To use storage the default
 build doesn't support, implement the trait in your own crate and write a small `main` that wires
 it in.
 
@@ -48,7 +44,7 @@ use std::{io, sync::Arc};
 use mammoth_cache::{
     cache::Cache,
     key::CacheKey,
-    store::{Blob, BlobStore, BoxFuture, ByteStream, PutOutcome, Tier, memory::MemoryStore},
+    store::{Blob, BlobStore, BoxFuture, ByteStream, PutOutcome, Tier},
 };
 
 #[derive(Debug)]
@@ -79,19 +75,24 @@ impl BlobStore for MyStore {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let cache = Cache::builder()
-        .bounded_tier(Arc::new(MemoryStore::new(1024 * 1024 * 1024)))
-        .tier(Arc::new(MyStore {}))
-        .build();
+    let cache = Cache::builder().tier(Arc::new(MyStore {})).build();
     let listener = tokio::net::TcpListener::bind("0.0.0.0:5071").await?;
-    axum::serve(listener, mammoth_cache::router(Arc::new(cache))).await
+    axum::serve(listener, mammoth_cache::router(Arc::new(cache), None)).await
 }
 ```
 
-Tiers are looked up in the order they are added. The rules a store must follow:
+Passing `None` for metrics makes `/metrics` answer `501`; to export them, install a
+`metrics-exporter-prometheus` recorder and pass its handle, as the default
+[`main.rs`](https://github.com/nevzheng/mammoth-cache/blob/main/crates/mammoth-cache/src/main.rs)
+does.
 
-- Entries are immutable. A `put` for a key that already exists writes nothing and returns
-  `PutOutcome::Exists`.
+Tiers are looked up in the order they are added. For now the core writes only to the first tier;
+the full write path (disk first, then a background bucket upload) arrives with the bucket tier. So
+until then, add your store as the first or only tier. The rules a store must follow:
+
+- Gradle entries are immutable: when `key.namespace().is_immutable()`, a `put` for a key that
+  already exists writes nothing and returns `PutOutcome::Exists`. Maven keys are not immutable, so
+  a `put` for one replaces the entry.
 - A `put` whose body stream fails must leave nothing behind, so a partial upload never becomes a
   hit.
 - Stream bytes through; don't buffer whole entries.

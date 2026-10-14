@@ -8,7 +8,8 @@ Health checks need no authentication, and follow the Kubernetes conventions.
 | `/livez`  | `ok` while the process answers         | Liveness probes                             | Available |
 | `/readyz` | `ok`, or `503` naming the failed check | Readiness probes and load balancer checks   | Available |
 
-`/livez` never looks at storage, so a full disk takes a node out of rotation without restarting it.
+`/livez` never looks at storage and `/readyz` will, so a full disk takes a node out of rotation
+through `/readyz` without restarting it.
 
 `/readyz?verbose` lists each check:
 
@@ -68,7 +69,8 @@ curl http://localhost:5071/v1/serverStatus
 }
 ```
 
-The response uses the proto3 JSON mapping, so 64-bit numbers are strings. Its contract is
+The response uses the proto3 JSON mapping, so 64-bit numbers are strings. The memory tier's
+`capacityBytes` is a placeholder until that tier enforces a limit. Its contract is
 [`admin.proto`](https://github.com/nevzheng/mammoth-cache/blob/main/api/proto/mammoth/admin/v1/admin.proto).
 Today the route is open; once [authentication](authentication.md) lands it needs a Bearer token
 with the `admin:read` scope. For monitoring over time, use [metrics](metrics.md) instead: the

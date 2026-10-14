@@ -13,8 +13,9 @@
 | `MAMMOTH_ADDR` | `0.0.0.0:5071` | Address and port to listen on                                                                                                |
 | `RUST_LOG`     | `info`         | Log filter, in [`tracing` syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) |
 
-The memory tier is fixed at 1 GiB and the entry size limit at 100 MiB. Both variables go away when
-the config file lands.
+The entry size limit is fixed at 100 MiB. The memory tier is a placeholder with no size limit or
+eviction: `/v1/serverStatus` reports a 1 GiB capacity, but it isn't enforced yet. Both variables go
+away when the config file lands.
 
 ## The config file
 
@@ -103,8 +104,8 @@ authentication on and no TLS, the node logs a warning at startup.
 | `max_entry_size` | size   | `1MiB`    | Larger entries skip memory, so one big entry can't flush many small ones |
 | `eviction`       | string | `s3-fifo` | Proposed: `s3-fifo`, `lru`, `w-tinylfu`, `sieve` or `fifo`               |
 
-`memory.max_entry_size` may not be larger than `limits.max_entry_size`. The `eviction` key is a
-proposal under review.
+`memory.max_entry_size` may not be larger than `limits.max_entry_size`. The `eviction` key is
+proposed in [PR #13](https://github.com/nevzheng/mammoth-cache/pull/13), under review.
 
 ### `[disk]` (L2)
 

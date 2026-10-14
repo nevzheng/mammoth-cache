@@ -1,8 +1,9 @@
 # Gradle
 
 mammoth-cache speaks Gradle's built-in HTTP build cache protocol on `/cache/`, the same path as the
-Build Cache Node. Gradle 7.6 through 9.x is supported and tested. Older versions back to 4.3 use
-the same protocol and are expected to work, but are not tested.
+Build Cache Node. Gradle 7.6 through 9.x is supported. The acceptance suite that runs those Gradle
+versions against the node in CI ([0008](../design/0008-supported-clients.md)) is still to come.
+Older versions back to 4.3 use the same protocol and are expected to work, but won't be tested.
 
 ## Configure the build
 
@@ -99,8 +100,8 @@ logs or using curl. Gradle ignores them.
 Entries over 100 MiB, the Build Cache Node's default, are not stored. The upload is answered with
 `200` and dropped, because Gradle's client turns the remote cache off after any non-2xx answer to a
 store, `413` included, whatever its user guide says. With `isUseExpectContinue = true` and a
-`Content-Length` over the limit, the node answers before Gradle sends the body, so no bytes are
-wasted. Without it, the body is read and thrown away.
+`Content-Length` over the limit, the node decides before it reads the body, so Gradle never sends it
+and no bytes are wasted. Without it, the body is read and thrown away.
 
 The limit will be set by `limits.max_entry_size` in the [config file](configuration.md). Design doc
 [0007](../design/0007-size-limits-and-admission.md) explains why a limit helps the hit rate.
