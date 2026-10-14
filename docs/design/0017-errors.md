@@ -6,14 +6,16 @@ Draft
 
 ## Summary
 
-Inside, errors are coarse: the core and the tiers report a handful of kinds (`thiserror`) that
-say what a caller can do about the failure, with the detail carried as `anyhow` context for the
-logs. At the edge, a translation layer per port turns them into AIP-193: a stable `reason`, a
-canonical `google.rpc.Code` and fixed metadata in the `mammoth-cache.dev` domain. The specific
-reasons (`INVALID_DIGEST`, `OFFSET_OUT_OF_RANGE`) belong to the adapters that parse that input,
-not to the core. One shared catalogue of reasons keeps HTTP and gRPC consistent. A protocol may
-override the status code where its clients need it (Gradle on `/cache/`), never the reason.
-Tests hold the catalogue, this doc, the OpenAPI specs and every adapter to each other.
+Inside, errors use Google's standard: a canonical `google.rpc.Code` (the same 17 codes as
+`absl::StatusCode`), a typed detail only where a caller needs data, and `anyhow` context for the
+logs, on a `thiserror` type. No private error vocabulary. At the edge, each protocol owns a mapping
+to what its clients understand. AIP-193 is the default: a stable `reason`, the code and fixed
+metadata in the `mammoth-cache.dev` domain, from one shared catalogue that keeps HTTP and gRPC
+consistent. Protocols whose clients read only status codes (Gradle, Maven, Bazel HTTP) override
+the status, and a future protocol with its own error shape gets a fully custom mapping. The
+specific reasons (`INVALID_DIGEST`, `OFFSET_OUT_OF_RANGE`) belong to the adapters that parse that
+input, not to the core. Tests hold the catalogue, this doc, the OpenAPI specs and every mapping to
+each other.
 
 ## Context and scope
 
@@ -81,12 +83,14 @@ They matter for operators, scripts and the next protocol.
 
 ### Goals
 
-- A small, protocol-neutral error model in the core: few kinds, rich context, no wire concerns.
-- Adapters render; they do not decide reasons. Status-code overrides are explicit, per protocol,
-  and listed in one table.
+- A protocol-neutral core error built on the canonical codes, with rich context and no wire
+  concerns.
+- Each protocol owns its error mapping. AIP-193 is the default; overrides and non-AIP protocols
+  are explicit and listed in one table.
 - One catalogue of reasons with their code, metadata keys and default message. Adding a reason is
   one enum variant, and the build fails until every adapter and the doc handle it.
-- Every error response on every surface is AIP-193, including framework rejections and panics.
+- Every error response is well formed for its protocol, including framework rejections and
+  panics: AIP-193 wherever the protocol does not define its own shape.
 - The same failure has the same reason and metadata on HTTP and gRPC.
 
 ### Non-goals
@@ -117,46 +121,63 @@ flowchart LR
   R[axum rejections, panics] --> H
 ```
 
-### Core: few kinds, rich context
+### Core: canonical codes, rich context
 
-The core error says what a caller can do, not everything that went wrong:
+Google already has the standard: the 17 canonical codes of `google.rpc.Code` (`INVALID_ARGUMENT`,
+`NOT_FOUND`, `UNAVAILABLE`, `INTERNAL`, ...). They are what AIP-193 sends, and inside Google they
+are also the internal error vocabulary: C++ code returns `absl::Status`, an `absl::StatusCode` (the
+same 17 codes) plus a message and optional typed payloads, across every layer. The core adopts the
+same model instead of inventing its own kinds:
 
 ```rust
-/// Why a cache operation failed. Matched on by callers; the detail is in `source`.
+/// The canonical codes, `google.rpc.Code` / `absl::StatusCode`. No HTTP or gRPC types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Code { Cancelled, InvalidArgument, DeadlineExceeded, NotFound, /* ... all 17 */ }
+
+/// Why an operation failed: a canonical code, a typed detail when a caller needs data, and
+/// `anyhow` context for the logs.
 #[derive(Debug, thiserror::Error)]
-#[error("{kind}")]
+#[error("{code:?}: {source}")]
 pub struct Error {
-    kind: ErrorKind,
+    code: Code,
+    detail: Option<Detail>,
     #[source]
     source: anyhow::Error, // "writing generation 7 of /var/cache/...: No space left on device"
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum ErrorKind {
-    #[error("the entry is over the size limit")]
+/// Typed payloads, like `absl::Status` payloads or `google.rpc` details. Added only when a
+/// mapping needs the data, never to name a failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Detail {
     TooLarge { size: Option<u64>, limit: u64 },
-    #[error("the client's upload failed")]
-    Upload,           // client reset, truncated, stalled, or its content failed a check
-    #[error("storage is unavailable")]
-    Unavailable,      // may pass: a timeout, a tier cooling down
-    #[error("internal error")]
-    Internal,         // a bug or an unexpected storage failure
 }
 ```
 
-That is the whole core vocabulary, and it already matches `CacheError` today; the change is the
-shape. Tiers and the core attach detail with `anyhow::Context`
-(`.context("renaming the temp file")`) instead of growing variants, and the kind is chosen once
-where the failure is understood. A miss stays `Ok(None)`. An adapter that needs more than the kind,
-such as the gRPC adapter telling a digest mismatch from a stalled upload, downcasts the source to
-the error type it put there itself; the core never needs to know those types. This follows Google's
-own Rust client libraries: `google-cloud-gax`'s `Error` is an opaque struct with a few predicates
-(`is_timeout`, `is_exhausted`, ...) and a `status()` accessor for the AIP-193 payload, rather than a
-public enum per failure.
+The codes the core actually uses, and when:
+
+| Code                | Core meaning                                              | Today             |
+| ------------------- | --------------------------------------------------------- | ----------------- |
+| `INVALID_ARGUMENT`  | Over the size limit (with `Detail::TooLarge`); an upload  | `TooLarge`,       |
+|                     | that ended short of its length                            | `Upload`          |
+| `CANCELLED`         | The client went away mid-upload                           | `Upload`          |
+| `DEADLINE_EXCEEDED` | The client stalled mid-upload                             | `Upload`          |
+| `UNAVAILABLE`       | A tier failed in a way that may pass (timeout, cooldown)  | `Unavailable`     |
+| `DATA_LOSS`         | A stored entry failed its check on read (it is also       | treated as a miss |
+|                     | dropped and the read answers as a miss)                   |                   |
+| `INTERNAL`          | Anything else: a bug or an unexpected storage failure     | `Internal`        |
+
+A miss is not an error: it stays `Ok(None)`, so `NOT_FOUND` is produced by the adapters. Tiers and
+the core attach detail with `anyhow::Context` (`.context("renaming the temp file")`) instead of
+growing variants, and the code is chosen once, where the failure is understood. An adapter that
+needs more than the code, such as the gRPC adapter telling a digest mismatch from a stalled upload,
+downcasts the source to the error type it put there itself; the core never needs to know those
+types. Google's Rust client libraries take the same shape from the other side: `google-cloud-gax`'s
+`Error` is an opaque struct with a few predicates and a `status()` accessor for the AIP-193 payload,
+not an enum per failure.
 
 `anyhow` is also right for startup: `main`, config loading and TLS setup report one message chain
 and an exit code, and nothing matches on them. `thiserror` is for types that cross a boundary and
-get matched: `ErrorKind`, `ConfigError`'s user-facing cases, the adapters' input errors.
+get matched: the core `Error`, `ConfigError`'s user-facing cases, the adapters' input errors.
 
 ### Translation layer: `api::error`
 
@@ -179,27 +200,52 @@ pub struct Status { reason: Reason, message: Cow<'static, str>, metadata: Vec<(&
 pub const DOMAIN: &str = "mammoth-cache.dev";
 ```
 
-`From<&cache::Error> for Status` maps the four kinds, once, for both protocols. Adapter-specific
-reasons (`INVALID_DIGEST`, `INVALID_RESOURCE_NAME`, `OFFSET_OUT_OF_RANGE`) are built by the
-adapter that parses that input, from the same catalogue, so they stay unique and documented
-without leaking into the core. Metadata keys are camelCase and fixed per reason
+`From<&cache::Error> for Status` maps the core codes, once, for every AIP-193 mapping.
+Adapter-specific reasons (`INVALID_DIGEST`, `INVALID_RESOURCE_NAME`, `OFFSET_OUT_OF_RANGE`) are
+built by the adapter that parses that input, from the same catalogue, so they stay unique and
+documented without leaking into the core. Metadata keys are camelCase and fixed per reason
 (`ENTRY_TOO_LARGE` always has `maxEntryBytes` and, when known, `entryBytes`).
 
-### Adapters: render and override
+### Protocol mappings
 
-- **HTTP** keeps `ApiError` as the rendering of an `error::Status`. Its status code is
-  `reason.code().http_status()` unless the route's protocol overrides it:
+Not every protocol speaks AIP. Each protocol owns a mapping from the core `Error` (and its own
+input errors) to what its clients understand. AIP-193 is the default mapping, not a requirement:
 
-  | Protocol     | Reason               | AIP-193 | Sent  | Why                              |
-  | ------------ | -------------------- | ------- | ----- | -------------------------------- |
-  | Gradle       | `ENTRY_TOO_LARGE`    | `400`   | `413` | Under `Reject`; `Drop` sends 200 |
-  | Maven, Bazel | `ENTRY_TOO_LARGE`    | `400`   | `413` | Clients log and carry on         |
-  | all HTTP     | `METHOD_NOT_ALLOWED` | `501`   | `405` | HTTP semantics, with `Allow`     |
-  | all HTTP     | `CREDENTIALS_*`      | `401`   | `401` | Adds the Basic challenge         |
+```rust
+/// How one protocol answers a failure. AIP-193 unless the protocol says otherwise.
+trait ErrorMapping {
+    fn respond(&self, status: &api::error::Status) -> Response {
+        aip193::render(status) // canonical code -> HTTP status, JSON google.rpc.Status
+    }
+}
+```
 
-  Gradle's accept-and-drop stays a success path in the handler, not an error.
-- **gRPC** renders `code` directly and keeps `ENTRY_TOO_LARGE` as `INVALID_ARGUMENT` (0016:
-  clients retry `RESOURCE_EXHAUSTED`). The `ErrorInfo` detail is built with `tonic-types`
+| Protocol                           | Clients read                    | Mapping                        |
+| ---------------------------------- | ------------------------------- | ------------------------------ |
+| Admin, health (`/v1/*`, `/readyz`) | AIP-193                         | Default                        |
+| REAPI gRPC                         | gRPC code + `google.rpc` detail | Default, as `tonic::Status`    |
+| Gradle `/cache/`                   | Status code only; any non-2xx   | Own status codes (below); body |
+|                                    | store turns the cache off       | stays AIP-193                  |
+| Maven `/maven/`                    | Status code; logs failures      | Own status codes; AIP-193 body |
+| Bazel HTTP `/bazel/`               | Status code                     | Own status codes; AIP-193 body |
+| Future non-AIP protocols           | Their own error shape           | Fully custom, for example S3   |
+|                                    |                                 | XML `<Error><Code>`, or a JSON |
+|                                    |                                 | body a client already parses   |
+
+Every mapping is an exhaustive `match` on `Code`, so a protocol cannot silently miss a case. The
+status-code overrides for today's HTTP protocols:
+
+| Protocol     | Reason               | AIP-193 | Sent  | Why                              |
+| ------------ | -------------------- | ------- | ----- | -------------------------------- |
+| Gradle       | `ENTRY_TOO_LARGE`    | `400`   | `413` | Under `Reject`; `Drop` sends 200 |
+| Maven, Bazel | `ENTRY_TOO_LARGE`    | `400`   | `413` | Clients log and carry on         |
+| all HTTP     | `METHOD_NOT_ALLOWED` | `501`   | `405` | HTTP semantics, with `Allow`     |
+| all HTTP     | `CREDENTIALS_*`      | `401`   | `401` | Adds the Basic challenge         |
+
+Gradle's accept-and-drop stays a success path in the handler, not an error.
+
+- **gRPC** keeps `ENTRY_TOO_LARGE` as `INVALID_ARGUMENT` (0016: clients retry
+  `RESOURCE_EXHAUSTED`). The `ErrorInfo` detail is built with `tonic-types`
   (`Status::with_error_details`), the gRPC richer-error-model helpers, in place of the hand-encoded
   `google.rpc` protos in `reapi/status.rs`.
 - **Rejections and panics.** Handlers take a thin `Path` wrapper whose rejection is
@@ -276,8 +322,8 @@ now: the gRPC adapter has not shipped in a release.
 Each step is one PR that keeps CI green.
 
 1. This doc, as Draft. Review the catalogue and the two renames.
-2. Core: `cache::Error` as kind plus `anyhow` context, `thiserror` on the error types, `anyhow`
-   in `main` and config loading. No behaviour change.
+2. Core: `cache::Error` as canonical code, typed detail and `anyhow` context, `thiserror` on the
+   error types, `anyhow` in `main` and config loading. No behaviour change.
 3. Translation layer: `api::error` (`Reason`, `Code`, `Status`, `DOMAIN`) and the catalogue test.
    Both adapters render through it, which fixes gaps 1 to 4 and 7. No status code changes; the two
    gRPC reasons are renamed.
@@ -296,8 +342,11 @@ Each step is one PR that keeps CI green.
 
 ## Alternatives considered
 
-- **`anyhow` everywhere, no kinds.** Adapters would have to downcast to tell a timeout from a bug.
-  The kind is the one thing a caller needs; `anyhow` carries the rest.
+- **`anyhow` everywhere, no codes.** Adapters would have to downcast to tell a timeout from a bug.
+  The code is the one thing a caller needs; `anyhow` carries the rest.
+- **Our own core kinds** (`TooLarge`, `Upload`, `Unavailable`, `Internal`, as today). Works, but
+  is a private vocabulary every mapping translates twice; the canonical codes are already
+  documented, already what AIP-193 and gRPC send, and what Google uses internally.
 - **A specific core variant per failure** (`DiskFull`, `RenameFailed`, `BucketTimeout`, ...).
   Callers cannot act on the difference, every new failure becomes an API change, and the variants
   drift towards wire reasons. Detail belongs in context and logs.
