@@ -32,6 +32,7 @@ html:not(.js) {
     --mc-heading: var(--mc-light-fg-strong);
     --mc-code-bg-current: var(--mc-light-code-bg);
     --mc-primary-current: var(--mc-light-primary);
+    --mc-logo: url("../assets/branding/logo.svg");
     --color-scheme: light;
 }
 
@@ -66,6 +67,7 @@ html:not(.js) {
     --mc-heading: var(--mc-dark-fg-strong);
     --mc-code-bg-current: var(--mc-dark-code-bg);
     --mc-primary-current: var(--mc-dark-primary);
+    --mc-logo: url("../assets/branding/logo-dark.svg");
     --color-scheme: dark;
 }
 
@@ -86,5 +88,5 @@ html:not(.js) {
     display: block;
     height: 48px;
     margin: 4px 0 12px;
-    background: url("../assets/branding/logo.svg") left center / contain no-repeat;
+    background: var(--mc-logo) left center / contain no-repeat;
 }

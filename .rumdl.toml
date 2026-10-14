@@ -46,6 +46,10 @@ style = "underscore" # _emphasis_
 [MD050]
 style = "asterisk" # **strong**
 
+# Inline HTML: only the <picture> pattern for light/dark logos.
+[MD033]
+allowed-elements = ["picture", "source", "img"]
+
 # GitHub inserts the PR template into the PR body, so it has no top-level heading.
 [per-file-ignores]
 ".github/pull_request_template.md" = ["MD041"]
