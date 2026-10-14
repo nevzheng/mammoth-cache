@@ -1,14 +1,23 @@
 //! Load, check and store, shared by every protocol adapter. Each adapter parses its own key and
 //! keeps its own status rules; the core decides immutability and oversize handling by namespace.
 
-use std::io;
+use std::{
+    io,
+    pin::Pin,
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, ready},
+};
 
 use axum::{
-    body::Body,
+    body::{Body, BodyDataStream},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use futures_util::{StreamExt, TryStreamExt};
+use bytes::Bytes;
+use futures_util::{Stream, StreamExt, TryStreamExt};
 
 use super::{AppState, error::ApiError};
 use crate::{
@@ -77,23 +86,75 @@ pub(super) async fn store_through<E: From<CacheError>>(
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
-    match state.cache.admit(key, declared_size) {
-        Admission::Accept => {}
-        Admission::Reject(e) => return Err(e.into()),
-        Admission::Drop => {
-            // Without `Expect: 100-continue` the body is already on its way. Read and discard it,
-            // so the client finishes its upload and gets a clean response, not a reset.
-            if !expects_continue(headers) {
-                let mut stream = body.into_data_stream();
-                while let Some(Ok(_)) = stream.next().await {}
-            }
-            return Ok(StatusCode::OK);
+    let body = UploadBody::new(body);
+    // Without `Expect: 100-continue` the body is on its way whatever the answer. Whenever the
+    // store returns before reading all of it, read and discard the rest, so the client finishes
+    // its upload and gets a clean response, not a reset. With `Expect` and an unread body, the
+    // client is waiting for `100 Continue` and sends nothing.
+    let in_flight = !expects_continue(headers);
+    let result = match state.cache.admit(key, declared_size) {
+        Admission::Accept => {
+            let stream = wrap(body.clone().map_err(io::Error::other).boxed());
+            state
+                .cache
+                .put(key, declared_size, stream)
+                .await
+                .map_err(E::from)
+                .map(|outcome| match outcome {
+                    StoreOutcome::Stored => StatusCode::CREATED,
+                    StoreOutcome::Exists | StoreOutcome::Dropped => StatusCode::OK,
+                })
+        }
+        Admission::Reject(e) => Err(e.into()),
+        Admission::Drop => Ok(StatusCode::OK),
+    };
+    if in_flight || body.started() {
+        body.drain().await;
+    }
+    result
+}
+
+/// A request body that can be handed to the store and still drained afterwards.
+#[derive(Clone)]
+struct UploadBody {
+    /// `None` once the body has ended or failed, so it is never polled again.
+    stream: Arc<Mutex<Option<BodyDataStream>>>,
+    started: Arc<AtomicBool>,
+}
+
+impl UploadBody {
+    fn new(body: Body) -> Self {
+        Self {
+            stream: Arc::new(Mutex::new(Some(body.into_data_stream()))),
+            started: Arc::new(AtomicBool::new(false)),
         }
     }
-    let stream = wrap(body.into_data_stream().map_err(io::Error::other).boxed());
-    match state.cache.put(key, declared_size, stream).await? {
-        StoreOutcome::Stored => Ok(StatusCode::CREATED),
-        StoreOutcome::Exists | StoreOutcome::Dropped => Ok(StatusCode::OK),
+
+    /// Whether anything has read from the body, which sends `100 Continue` if it was expected.
+    fn started(&self) -> bool {
+        self.started.load(Ordering::Relaxed)
+    }
+
+    /// Reads and discards what is left of the body, stopping at the first error.
+    async fn drain(mut self) {
+        while let Some(Ok(_)) = self.next().await {}
+    }
+}
+
+impl Stream for UploadBody {
+    type Item = Result<Bytes, axum::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.started.store(true, Ordering::Relaxed);
+        let mut stream = self.stream.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(body) = stream.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let item = ready!(body.poll_next_unpin(cx));
+        if !matches!(item, Some(Ok(_))) {
+            *stream = None;
+        }
+        Poll::Ready(item)
     }
 }
 

@@ -432,6 +432,9 @@ const TOKEN: &str = "Bearer ci-token";
 
 /// All three tiers, with a memory tier so small that a second entry evicts the first.
 async fn three_tier_app(dir: &std::path::Path, auth: Authenticator) -> Router {
+    // Before the stores: `DiskStore::open` sets `mammoth_disk_free_bytes` from its first probe,
+    // and a gauge set before the recorder exists goes to the no-op recorder and is lost.
+    let handle = recorder();
     let disk = DiskStore::open(DiskConfig {
         path: dir.to_path_buf(),
         capacity_bytes: 1 << 20,
@@ -459,7 +462,7 @@ async fn three_tier_app(dir: &std::path::Path, auth: Authenticator) -> Router {
         .max_entry_size(MAX_ENTRY)
         .oversize(OversizePolicy::Drop)
         .build();
-    router_with_auth(Arc::new(cache), Some(recorder()), Arc::new(auth))
+    router_with_auth(Arc::new(cache), Some(handle), Arc::new(auth))
 }
 
 fn authenticator() -> Authenticator {

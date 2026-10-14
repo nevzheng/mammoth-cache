@@ -72,7 +72,7 @@ Two setups keep the hit rate up:
 
 - **A shared bucket.** Any node can serve any entry once it is uploaded. This is the simplest
   setup. With `bucket.write = "sync"`, a store answers only after the upload, so there is no window
-  where other nodes miss, at the cost of slower stores.
+  where other nodes miss, at the cost of slower stores. A failed upload still answers success.
 - **A shared bucket plus consistent hashing on the path.** Each key always lands on the same node,
   so that node's memory and disk see every hit for it. Use ingress-nginx
   `upstream-hash-by: "$request_uri"`, Envoy or Istio `consistentHash` (ring hash or Maglev), or
