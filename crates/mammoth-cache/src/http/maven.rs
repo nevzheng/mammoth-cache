@@ -7,33 +7,33 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
 
-use super::{AppState, entries, error::ApiError};
+use super::{AppState, entries, error::ApiError, name::Name};
 use crate::key::CacheKey;
 
 const ALLOW: HeaderValue = HeaderValue::from_static("GET, HEAD, PUT, OPTIONS");
 
 pub(super) async fn load_object(
     State(state): State<AppState>,
-    Path(path): Path<String>,
+    Name(path): Name,
 ) -> Result<Response, ApiError> {
     entries::load(&state, &CacheKey::maven(&path)?).await
 }
 
 pub(super) async fn check_object(
     State(state): State<AppState>,
-    Path(path): Path<String>,
+    Name(path): Name,
 ) -> Result<Response, ApiError> {
     entries::check(&state, &CacheKey::maven(&path)?).await
 }
 
 pub(super) async fn store_object(
     State(state): State<AppState>,
-    Path(path): Path<String>,
+    Name(path): Name,
     headers: HeaderMap,
     body: Body,
 ) -> Result<StatusCode, ApiError> {
@@ -41,14 +41,14 @@ pub(super) async fn store_object(
 }
 
 /// `OPTIONS`, sent when the client has `WebDAV` on. No `DAV` header, so the client skips `MKCOL`.
-pub(super) async fn describe_object(Path(path): Path<String>) -> Result<Response, ApiError> {
+pub(super) async fn describe_object(Name(path): Name) -> Result<Response, ApiError> {
     CacheKey::maven(&path)?;
     Ok((StatusCode::NO_CONTENT, [(header::ALLOW, ALLOW)]).into_response())
 }
 
 /// Every other method. A stray `WebDAV` `MKCOL` gets `201` and does nothing, because directories
 /// are implicit; anything else is `405`.
-pub(super) async fn other_method(method: Method, Path(path): Path<String>) -> Response {
+pub(super) async fn other_method(method: Method, Name(path): Name) -> Response {
     if let Err(e) = CacheKey::maven(&path) {
         return ApiError::from(e).into_response();
     }

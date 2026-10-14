@@ -46,6 +46,7 @@ use super::{
     status,
 };
 use crate::{
+    access,
     api::error::{self, Reason},
     cache::{self, Admission, Cache, upload_error},
     store::{self, Tier},
@@ -168,7 +169,7 @@ impl Services {
                     blob.size
                 ),
             )
-            .with("key", blob.key.name())
+            .with("digest", blob.key.name())
             .into());
         }
         if Sha256::digest(&data).as_slice() != blob.sha256() {
@@ -194,14 +195,17 @@ impl Services {
     ) -> Result<(), Status> {
         match self.cache.admit(&blob.key, size) {
             Admission::Accept => {}
-            Admission::Reject(e) => return Err(status::storage(&e)),
+            Admission::Reject(e) => {
+                access::outcome(&blob.key, "too_large", None);
+                return Err(status::storage(&e));
+            }
             // Bazel namespaces always refuse; never dropped.
             Admission::Drop => return Ok(()),
         }
         self.cache
             .put(&blob.key, size, body)
             .await
-            .map(|_| ())
+            .map(|outcome| access::stored(&blob.key, outcome))
             .map_err(|e| upload_status(blob, &e))
     }
 }
@@ -368,6 +372,7 @@ impl ActionCache for Services {
         // The lookup counts as a hit only if the result is usable.
         match self.action_result(&action).await? {
             Ok((result, tier)) => {
+                access::outcome(&action.key, "hit", Some(tier));
                 self.cache.count_lookup(Some(tier));
                 Ok(Response::new(result))
             }
@@ -375,6 +380,7 @@ impl ActionCache for Services {
                 if let Unusable::Corrupt(why) = unusable {
                     tracing::warn!(key = %action.key, "stored action result {why}; a miss");
                 }
+                access::outcome(&action.key, "miss", None);
                 self.cache.count_lookup(None);
                 Err(status::not_found(&action.key))
             }
@@ -440,6 +446,7 @@ impl ContentAddressableStorage for Services {
         async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
+            access::digests(request.blob_digests.len());
             if request.blob_digests.len() > MAX_FIND_MISSING {
                 return Err(status::error(
                     Reason::TooManyDigests,
@@ -470,6 +477,7 @@ impl ContentAddressableStorage for Services {
         async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
+            access::digests(request.requests.len());
             // Over the advertised limit, the whole batch is refused, as for a read; within it,
             // each blob's digest is checked on its own.
             let total = request.requests.iter().try_fold(0_u64, |total, item| {
@@ -517,6 +525,7 @@ impl ContentAddressableStorage for Services {
         async {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
+            access::digests(request.digests.len());
             let blobs = batch_blobs(&request.digests)?;
             let responses = stream::iter(blobs)
                 .map(|blob| async move {
@@ -603,12 +612,16 @@ impl ByteStream for Services {
                 let empty: Self::ReadStream = Box::pin(stream::empty());
                 return Ok(Response::new(empty));
             }
-            let hit = self
+            let Some(hit) = self
                 .cache
                 .get(&blob.key)
                 .await
                 .map_err(|e| status::storage(&e))?
-                .ok_or_else(|| status::not_found(&blob.key))?;
+            else {
+                access::outcome(&blob.key, "miss", None);
+                return Err(status::not_found(&blob.key));
+            };
+            access::outcome(&blob.key, "hit", Some(hit.tier));
             if hit.blob.size != blob.size {
                 tracing::warn!(key = %blob.key, stored = hit.blob.size, "size differs from digest");
                 return Err(status::not_found(&blob.key));

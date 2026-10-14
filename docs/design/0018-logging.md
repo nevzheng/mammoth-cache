@@ -95,9 +95,10 @@ adds anything the node needs.
 - No log file by default (Nevin, 2026-10-14): stdout is the only sink. Docker, Kubernetes and
   journald already collect stdout, and keeping files off avoids rotation and disk-fill problems. If
   a `log.file` option is ever added, it is off unless set.
-- Writes are synchronous through a line-buffered stdout. If the load test shows the access log
-  costs more than 5% of p99 latency or throughput, switch to `tracing-appender`'s non-blocking
-  writer and count dropped lines in a metric (open question 3).
+- Logging is best effort (Nevin, 2026-10-14). Lines go through `tracing-appender`'s non-blocking
+  writer: a background thread writes them from a buffer of `log.buffer_lines` lines (default
+  128,000), so a slow log pipe never holds up a request. When the buffer is full, lines are dropped
+  and counted in `mammoth_log_lines_dropped_total`.
 
 ### The JSON line
 
@@ -113,11 +114,11 @@ a flat object:
 
 | Field       | Content                                           | Why this name                                                                        |
 | ----------- | ------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `timestamp` | RFC 3339, UTC, microseconds                       | Read as the event time by Cloud Logging, Datadog, Loki and Elastic                   |
+| `timestamp` | RFC 3339, UTC, microseconds                       | Datadog's date field; Loki, Elastic and the Collector map it with one line of config |
 | `severity`  | `DEBUG`, `INFO`, `WARNING`, `ERROR`               | Cloud Logging's severity field and values; one of Datadog's default status fields    |
 | `target`    | The Rust module, or `mammoth::access`             | The topic: route or filter access lines by it                                        |
 | `message`   | Human-readable text                               | The message field on every platform                                                  |
-| `trace_id`  | 32 hex digits, when known                         | OpenTelemetry log data model; joins the line to the load balancer's log              |
+| `trace_id`  | 32 hex digits, when known (not in 0.1.0)          | OpenTelemetry log data model; joins the line to the load balancer's log              |
 | others      | Flat, dotted attribute names (below)              | OpenTelemetry attribute names, as an OTLP exporter would write them                  |
 
 `TRACE` events are written with `severity` `DEBUG`, since Cloud Logging has no trace level. The
@@ -211,6 +212,7 @@ HTTP:
 | `user_agent.original`       | `Gradle/8.10 (…)` |                                                                         |
 | `user.name`                 | `ci`              | Or `anonymous`                                                          |
 | `mammoth.protocol`          | `gradle`          | `gradle`, `maven`, `bazel`, `admin`, `other`                            |
+| `mammoth.cache.key`         | `gradle/4f1c…`    | The entry, named as operational lines name it                           |
 | `mammoth.cache.result`      | `hit`             | Cache routes: `hit`, `miss`, `stored`, `exists`, `too_large`, `refused` |
 | `mammoth.cache.tier`        | `disk`            | On a hit: the tier that served it                                       |
 | `mammoth.duration_ms`       | `3.214`           | Request start to last byte or disconnect, to the microsecond            |
@@ -219,7 +221,9 @@ HTTP:
 
 gRPC uses `rpc.system` (`grpc`), `rpc.service`, `rpc.method` and `rpc.grpc.status_code` from the
 OpenTelemetry RPC conventions, plus the sizes, client, user, duration, `trace_id` and, for
-`FindMissingBlobs`, `BatchReadBlobs` and `BatchUpdateBlobs`, `mammoth.digests` (how many).
+`FindMissingBlobs`, `BatchReadBlobs` and `BatchUpdateBlobs`, `mammoth.digests` (how many). Both
+carry `mammoth.protocol` (`reapi` for gRPC), and the key, result and tier when the request touched
+exactly one entry.
 
 `message` is `request` for HTTP and `call` for gRPC.
 
@@ -237,10 +241,11 @@ read. Malformed CIDRs and CIDRs with host bits set (`10.0.0.1/8`) fail config va
 **Trace id.** Taken from the first that is present: W3C `traceparent` (sent by Google Cloud load
 balancers and OpenTelemetry-instrumented proxies), `X-Cloud-Trace-Context`, or AWS
 `X-Amzn-Trace-Id` (its `Root=1-xxxxxxxx-yyyy…` becomes the 32-digit W3C form, the same conversion
-X-Ray uses). Nothing is generated when none is present. Pull request 4 attaches it to operational
-lines written while serving the request.
+X-Ray uses). Nothing is generated when none is present: the node is not where a request
+originates (Nevin, 2026-10-14). Not in 0.1.0; see "Scope for 0.1.0".
 
-**Volume.** At 5,000 requests a second a line of about 400 bytes is 2 MB/s, roughly 170 GB a day.
+**Volume.** At 5,000 requests a second, lines of 450 to 650 bytes (measured on simulated traffic)
+are 2.3 to 3.3 MB/s, roughly 200 to 280 GB a day.
 The user guide says so next to `log.access_log`, with the kubelet and Docker settings that keep
 rotation from losing lines, and the way to turn the access log off.
 
@@ -249,15 +254,15 @@ rotation from losing lines, and the way to turn the access log off.
 No platform code in the binary. The user guide gets a "Logs" page with the schema and short
 recipes:
 
-| Platform                      | What the operator does                                                                    |
-| ----------------------------- | ----------------------------------------------------------------------------------------- |
-| Google Cloud (GKE, Cloud Run) | Nothing: the built-in agent reads `severity`, `message` and `timestamp`                   |
-| Datadog                       | Agent with container log collection; no pipeline needed for severity                      |
-| Grafana Loki / Alloy          | `json` stage; label by `severity` and `target`                                            |
-| AWS (ECS, EKS, EC2)           | `awslogs` driver or Fluent Bit to CloudWatch; Logs Insights reads the JSON fields         |
-| Elastic                       | Filebeat or Elastic Agent with JSON decoding                                              |
-| OpenTelemetry Collector       | `filelog` receiver with the JSON parser; `severity` and `timestamp` map to the data model |
-| systemd                       | journald captures stdout; `journalctl -u mammoth -o cat`                                  |
+| Platform                      | What the operator does                                                                             |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- |
+| Google Cloud (GKE, Cloud Run) | Nothing: the built-in agent reads `severity` and `message`; the time is when it collected the line |
+| Datadog                       | Agent with container log collection; no pipeline needed for severity                               |
+| Grafana Loki / Alloy          | `json` stage; label by `severity` and `target`                                                     |
+| AWS (ECS, EKS, EC2)           | `awslogs` driver or Fluent Bit to CloudWatch; Logs Insights reads the JSON fields                  |
+| Elastic                       | Filebeat or Elastic Agent with JSON decoding                                                       |
+| OpenTelemetry Collector       | `filelog` receiver with the JSON parser; `severity` and `timestamp` map to the data model          |
+| systemd                       | journald captures stdout; `journalctl -u mammoth -o cat`                                           |
 
 Each recipe is checked against the platform's documentation when the page is written, not taken
 from this table.
@@ -282,7 +287,34 @@ environment variables. Only if someone asks; a collector reading stdout does the
   with `user.name` `ci`, and, through the nginx target with `trusted_proxies` set, finds the test
   runner's address in `client.address`.
 
-## Rollout
+## Scope for 0.1.0
+
+Agreed with Nevin on 2026-10-14, after research on vendors and a simulation of the access log
+(`/mnt/project-files/plans/logging-and-audit-plan.md` in the project files). The design above
+stands; 0.1.0 ships the part an operator needs, in two pull requests:
+
+1. **Line format.** The JSON formatter, the buffered writer and its dropped-lines metric, throttling
+   for the failures that repeat on every request, the test that no token reaches a log line, and
+   the user guide's Logs page with recipes for Google Cloud, Datadog and Loki. Existing call sites
+   keep their field names (`key`, `tier`, `error`) for now.
+2. **Access log (#86).** The `mammoth::access` lines for HTTP and gRPC, with the cache key, the
+   result and the tier, and `server.trusted_proxies`.
+
+Later, and only when someone asks: trace ids and correlation, renaming every call site to the
+attribute vocabulary, a `log.format = "gcp"` that writes Cloud Logging's `time` and trace fields,
+privacy controls (truncating or hashing client addresses), OTLP export, and recipes for the other
+platforms.
+
+Not planned: an audit log. A build cache holds rebuildable artifacts, not private data, and the
+access log already records every write and every refused request with the user, the client and
+the key (Nevin, 2026-10-14).
+
+One correction, from checking each vendor's documentation: the `timestamp` row above overstated
+it. Cloud Logging reads the event time only from a `time` string, so on Google Cloud a line's time
+is when it was collected, and the OpenTelemetry Collector, Elastic and CloudWatch need their JSON
+parser configured, as the platform table says.
+
+## Rollout (full design)
 
 1. **Formatter and schema.** The JSON formatter, the `severity` mapping, the user guide "Logs"
    page with the platform recipes, and the schema test. No new configuration.
@@ -318,5 +350,4 @@ environment variables. Only if someone asks; a collector reading stdout does the
 2. Include `service.name` and `service.version` on every line, as OpenTelemetry resource
    attributes? Recommendation: no. Log agents add them from the deployment, and the startup line
    carries the version.
-3. Blocking or non-blocking writer? Recommendation: blocking, and switch only if the load test
-   shows a measurable cost.
+3. Blocking or non-blocking writer? Decided: non-blocking and best effort, as above.

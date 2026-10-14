@@ -66,14 +66,16 @@ pub fn routes(cache: Arc<Cache>, auth: Arc<Authenticator>, settings: ServerSetti
                 .max_encoding_message_size(MAX_MESSAGE_BYTES),
         );
     let buffered = Arc::new(Semaphore::new(MAX_BUFFERED_CALLS));
-    // The last layer runs first: count every call, then authenticate it, then wait for room.
+    // The last layer runs first: log and count every call, then authenticate it, then wait for
+    // room.
     Routes::from(
         routes
             .into_axum_router()
             .layer(middleware::from_fn(too_large))
             .layer(middleware::from_fn_with_state(buffered, limit))
             .layer(middleware::from_fn_with_state(auth, auth::require))
-            .layer(middleware::from_fn(observe::observe)),
+            .layer(middleware::from_fn(observe::observe))
+            .layer(middleware::from_fn(crate::access::grpc)),
     )
 }
 

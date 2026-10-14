@@ -18,6 +18,7 @@
 - [Deployment](user/deployment.md)
 - [Health checks and status](user/health.md)
 - [Metrics](user/metrics.md)
+- [Logs](user/logs.md)
 - [Custom builds](user/custom-builds.md)
 
 ## Design

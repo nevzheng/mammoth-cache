@@ -14,14 +14,14 @@ use std::{fmt, io};
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode, header},
     response::Response,
 };
 use futures_util::{StreamExt, stream};
 use sha2::{Digest, Sha256};
 
-use super::{AppState, entries, error::ApiError};
+use super::{AppState, entries, error::ApiError, name::Name};
 use crate::{
     cache::{self, Code},
     key::{CacheKey, Namespace},
@@ -30,21 +30,21 @@ use crate::{
 
 pub(super) async fn load_action(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    Name(digest): Name,
 ) -> Result<Response, ApiError> {
     entries::load(&state, &CacheKey::bazel(Namespace::BazelAc, &digest)?).await
 }
 
 pub(super) async fn check_action(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    Name(digest): Name,
 ) -> Result<Response, ApiError> {
     entries::check(&state, &CacheKey::bazel(Namespace::BazelAc, &digest)?).await
 }
 
 pub(super) async fn store_action(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    Name(digest): Name,
     headers: HeaderMap,
     body: Body,
 ) -> Result<StatusCode, ApiError> {
@@ -54,21 +54,21 @@ pub(super) async fn store_action(
 
 pub(super) async fn load_blob(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    Name(digest): Name,
 ) -> Result<Response, ApiError> {
     entries::load(&state, &CacheKey::bazel(Namespace::BazelCas, &digest)?).await
 }
 
 pub(super) async fn check_blob(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    Name(digest): Name,
 ) -> Result<Response, ApiError> {
     entries::check(&state, &CacheKey::bazel(Namespace::BazelCas, &digest)?).await
 }
 
 pub(super) async fn store_blob(
     State(state): State<AppState>,
-    Path(digest): Path<String>,
+    Name(digest): Name,
     headers: HeaderMap,
     body: Body,
 ) -> Result<StatusCode, ApiError> {

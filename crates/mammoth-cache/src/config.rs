@@ -6,12 +6,13 @@
 use std::{
     collections::BTreeMap,
     env, fmt, fs,
-    net::{Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
 };
 
+use ipnet::IpNet;
 use serde::{Deserialize, Deserializer, de};
 
 pub use crate::auth::Scope;
@@ -87,6 +88,34 @@ pub struct Server {
     /// How long a response may make no progress, because the client stopped reading, before the
     /// connection is closed. Per write, not in total.
     pub send_timeout: HumanDuration,
+    /// Proxies trusted to report the client's address in `X-Forwarded-For`, as addresses or
+    /// CIDRs. Empty: the header is ignored and the access log shows the TCP peer.
+    #[serde(deserialize_with = "proxies")]
+    pub trusted_proxies: Vec<IpNet>,
+}
+
+/// Deserializes `server.trusted_proxies`: addresses, or CIDRs without host bits.
+fn proxies<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<IpNet>, D::Error> {
+    Vec::<String>::deserialize(deserializer)?
+        .iter()
+        .map(|s| parse_proxy(s).map_err(de::Error::custom))
+        .collect()
+}
+
+fn parse_proxy(s: &str) -> Result<IpNet, String> {
+    if let Ok(addr) = s.parse::<IpAddr>() {
+        return Ok(IpNet::from(addr));
+    }
+    let net: IpNet = s
+        .parse()
+        .map_err(|_| format!("trusted proxy {s:?} is not an address or a CIDR"))?;
+    if net.trunc() != net {
+        return Err(format!(
+            "trusted proxy {s:?} has host bits set; did you mean {}?",
+            net.trunc()
+        ));
+    }
+    Ok(net)
 }
 
 impl Default for Server {
@@ -97,6 +126,7 @@ impl Default for Server {
             idle_timeout: HumanDuration(Duration::from_secs(75)),
             body_read_timeout: HumanDuration(Duration::from_secs(60)),
             send_timeout: HumanDuration(Duration::from_secs(60)),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -389,6 +419,9 @@ pub struct Log {
     pub format: LogFormat,
     /// Whether every request is logged.
     pub access_log: bool,
+    /// Lines held for the background writer. When stdout can't keep up and the buffer is full,
+    /// lines are dropped and counted.
+    pub buffer_lines: usize,
 }
 
 impl Default for Log {
@@ -397,6 +430,7 @@ impl Default for Log {
             level: LogLevel::Info,
             format: LogFormat::Json,
             access_log: true,
+            buffer_lines: 128_000,
         }
     }
 }
@@ -573,6 +607,9 @@ impl Config {
             && bucket.upload_queue == 0
         {
             return Err("bucket.upload_queue must be at least 1".to_owned());
+        }
+        if self.log.buffer_lines == 0 {
+            return Err("log.buffer_lines must be at least 1".to_owned());
         }
         if let Some(bucket) = &self.bucket {
             if bucket.timeout.0.is_zero() {
@@ -1026,6 +1063,37 @@ mod tests {
         ];
         for (text, expected) in cases {
             let error = parse(text).unwrap_err();
+            assert!(error.contains(expected), "{error:?} lacks {expected:?}");
+        }
+    }
+
+    #[test]
+    fn trusted_proxies_are_addresses_or_cidrs() {
+        assert!(parse(MINIMAL).unwrap().server.trusted_proxies.is_empty());
+        let config = parse(
+            "version = 1\n[server]\ntrusted_proxies = [\"10.0.0.0/8\", \"192.168.1.7\", \"fd00::/8\"]\n",
+        )
+        .unwrap();
+        let proxies: Vec<String> = config
+            .server
+            .trusted_proxies
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(proxies, ["10.0.0.0/8", "192.168.1.7/32", "fd00::/8"]);
+        let cases = [
+            (
+                "10.0.0.1/8",
+                "trusted proxy \"10.0.0.1/8\" has host bits set; did you mean 10.0.0.0/8?",
+            ),
+            (
+                "lb.internal",
+                "trusted proxy \"lb.internal\" is not an address or a CIDR",
+            ),
+        ];
+        for (proxy, expected) in cases {
+            let text = format!("version = 1\n[server]\ntrusted_proxies = [{proxy:?}]\n");
+            let error = parse(&text).unwrap_err();
             assert!(error.contains(expected), "{error:?} lacks {expected:?}");
         }
     }

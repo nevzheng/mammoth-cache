@@ -8,31 +8,31 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     response::Response,
 };
 
-use super::{AppState, entries, error::ApiError};
+use super::{AppState, entries, error::ApiError, name::Name};
 use crate::key::CacheKey;
 
 pub(super) async fn load_entry(
     State(state): State<AppState>,
-    Path(key): Path<String>,
+    Name(key): Name,
 ) -> Result<Response, ApiError> {
     entries::load(&state, &CacheKey::gradle(&key)?).await
 }
 
 pub(super) async fn check_entry(
     State(state): State<AppState>,
-    Path(key): Path<String>,
+    Name(key): Name,
 ) -> Result<Response, ApiError> {
     entries::check(&state, &CacheKey::gradle(&key)?).await
 }
 
 pub(super) async fn store_entry(
     State(state): State<AppState>,
-    Path(key): Path<String>,
+    Name(key): Name,
     headers: HeaderMap,
     body: Body,
 ) -> Result<StatusCode, ApiError> {

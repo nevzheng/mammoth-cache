@@ -10,10 +10,11 @@
 > `mammoth_bucket_upload_queue_entries`, `mammoth_bucket_uploads_total`,
 > `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`, `mammoth_disk_free_bytes`,
 > `mammoth_tier_entries`, `mammoth_tier_size_bytes`, `mammoth_tier_capacity_bytes`,
-> `mammoth_build_info`, the `mammoth_tls_*` metrics, `mammoth_tier_up`, the per-tier reads, writes,
-> durations and bytes, and the standard `process_*` metrics. The rest of the catalog below is the
-> contract from design doc [0004](../design/0004-metrics.md) and arrives with the features it
-> measures. Names and labels won't change without a breaking release.
+> `mammoth_build_info`, `mammoth_log_lines_dropped_total`, the `mammoth_tls_*` metrics,
+> `mammoth_tier_up`, the per-tier reads, writes, durations and bytes, and the standard `process_*`
+> metrics. The rest of the catalog below is the contract from design doc
+> [0004](../design/0004-metrics.md) and arrives with the features it measures. Names and labels
+> won't change without a breaking release.
 
 mammoth-cache exports Prometheus metrics at `/metrics` on the main port. The node exports raw
 counters, gauges and histograms only. Hit rates, request rates and dashboards are computed by
@@ -90,17 +91,18 @@ because counting it means listing the bucket. Use the cloud provider's metrics.
 
 ### Serving
 
-| Metric                                  | Type      | Labels                              | Meaning                                |
-| --------------------------------------- | --------- | ----------------------------------- | -------------------------------------- |
-| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route, status and client   |
-| `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by major.minor version |
-| `mammoth_grpc_requests_total`           | counter   | `method`, `code`                    | REAPI gRPC calls by method and status  |
-| `mammoth_grpc_request_duration_seconds` | histogram | `method`                            | Time from a call's start to its status |
-| `mammoth_grpc_requests_in_flight`       | gauge     | `method`                            | gRPC calls being served                |
-| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response  |
-| `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                  |
-| `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by `reason`      |
-| `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build         |
+| Metric                                  | Type      | Labels                              | Meaning                                     |
+| --------------------------------------- | --------- | ----------------------------------- | ------------------------------------------- |
+| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route, status and client        |
+| `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by major.minor version      |
+| `mammoth_grpc_requests_total`           | counter   | `method`, `code`                    | REAPI gRPC calls by method and status       |
+| `mammoth_grpc_request_duration_seconds` | histogram | `method`                            | Time from a call's start to its status      |
+| `mammoth_grpc_requests_in_flight`       | gauge     | `method`                            | gRPC calls being served                     |
+| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response       |
+| `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                       |
+| `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by `reason`           |
+| `mammoth_log_lines_dropped_total`       | counter   |                                     | Log lines dropped; stdout could not keep up |
+| `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build              |
 
 `route` is the route template, such as `/cache/{key}`. On the REAPI gRPC port, `method` is the gRPC
 method, such as `FindMissingBlobs`, or `other` for one the node does not serve, and `code` the gRPC

@@ -141,6 +141,9 @@ fn refuse(auth: &Authenticator, scope: Scope, request: &mut Request) -> Option<(
     let Ok(principal) = auth.authenticate(creds) else {
         return Some((invalid(), false));
     };
+    if let Some(user) = &principal.user {
+        crate::access::user(user);
+    }
     if principal.scopes.contains(scope) {
         request.extensions_mut().insert(principal);
         return None;
