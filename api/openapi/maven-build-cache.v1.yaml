@@ -1,0 +1,252 @@
+openapi: 3.1.0
+info:
+  title: mammoth-cache Maven build cache
+  version: 1.0.0
+  summary: The Apache Maven Build Cache Extension's remote cache protocol, as served by mammoth-cache.
+  description: |
+    The Apache Maven Build Cache Extension
+    (https://maven.apache.org/extensions/maven-build-cache-extension/) owns this contract; this
+    document describes it. Sources: `RemoteCacheRepositoryImpl` in
+    apache/maven-build-cache-extension 1.0.0 to 1.3.0, and maven-resolver's HTTP transporter,
+    which the extension uses to talk to the server.
+
+    The extension stores several named files per build under a path it builds itself:
+
+    ```text
+    /maven/{version}/{groupId}/{artifactId}/{checksum}/buildinfo.xml
+    /maven/{version}/{groupId}/{artifactId}/{checksum}/{artifactId}[-{classifier}].{ext}
+    /maven/{version}/{rootGroupId}/{rootArtifactId}/{uuid}/build-cache-report.xml
+    ```
+
+    `{version}` is `v1`, `v1.1` or `v1.2`, depending on the extension's version. The server treats
+    the whole path as an opaque key in a namespace of its own, separate from Gradle's `/cache/`
+    keys. Unlike Gradle entries, these objects are not content-addressed: a store replaces any
+    object already at the path.
+
+    Rules that come from the client and override API style guides:
+
+    - `404` (and `410` from 1.3.0) is a miss. Any other error on load is logged and treated as a
+      miss, or fails the build when the user sets `failFast`. A failed store is logged and never
+      fails the build.
+    - The client sends credentials on `GET` only after a `401` challenge, so every `401` carries
+      `WWW-Authenticate`. It sends them preemptively on `PUT`.
+    - The client sends `Expect: 100-continue` on every `PUT` by default.
+    - With WebDAV enabled, the client sends `OPTIONS` first. The response has no `DAV` header, so
+      the client skips `MKCOL`. A stray `MKCOL` is answered `201` and does nothing, because
+      directories are implicit; OpenAPI cannot describe that method.
+
+    Configure the extension with `maven.build.cache.remote.url=https://<host>/maven`.
+  contact:
+    name: mammoth-cache
+    url: https://github.com/nevzheng/mammoth-cache
+  license:
+    name: MIT OR Apache-2.0
+    identifier: MIT OR Apache-2.0
+servers:
+  - url: https://localhost:5071
+    description: Local, with TLS enabled. Without TLS the scheme is `http`.
+    x-internal: false
+security:
+  - basicAuth: []
+  - bearerAuth: []
+  - {}
+tags:
+  - name: maven
+    description: Apache Maven Build Cache Extension protocol
+paths:
+  /maven/{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        description: |
+          The object's path below `/maven/`, which may span several segments. Each segment is
+          letters, digits, `.`, `_` or `-`; `.` and `..` segments are rejected.
+        schema:
+          type: string
+          pattern: "^(?!\\.\\.?(/|$))(?!.*/\\.\\.?(/|$))[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+){0,15}$"
+          maxLength: 512
+          examples: [v1.2/com.example/app/0123456789abcdef/buildinfo.xml]
+    get:
+      operationId: loadObject
+      summary: Load a stored object
+      description: A hit returns the object exactly as it was stored.
+      tags: [maven]
+      parameters:
+        - $ref: "#/components/parameters/UserAgent"
+      responses:
+        "200":
+          description: Hit.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                contentMediaType: application/octet-stream
+        "400":
+          $ref: "#/components/responses/InvalidPath"
+        "404":
+          $ref: "#/components/responses/Miss"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+    head:
+      operationId: checkObject
+      summary: Check whether an object exists
+      description: |
+        The extension never sends `HEAD`, but its documentation asks for it. Same statuses as
+        `GET`, no body.
+      tags: [maven]
+      responses:
+        "200":
+          description: The object exists.
+          headers:
+            Content-Length:
+              description: Size of the object in bytes.
+              schema:
+                type: integer
+                format: int64
+                minimum: 0
+                maximum: 9223372036854775807
+        "400":
+          description: The path is not valid.
+        "404":
+          description: The object does not exist.
+        "401":
+          description: Credentials are missing or wrong.
+        "403":
+          description: The user may not read the cache.
+        "500":
+          description: An unexpected server error.
+        "503":
+          description: The server cannot serve the request right now.
+    put:
+      operationId: storeObject
+      summary: Store an object
+      description: |
+        The server accepts any content type and stores the body as opaque bytes, replacing any
+        object already at the path. It honours `Expect: 100-continue`: it checks credentials,
+        scope and `Content-Length` before answering `100 Continue`, so a refused upload is never
+        sent.
+      tags: [maven]
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/Expect"
+        - $ref: "#/components/parameters/UserAgent"
+      requestBody:
+        required: true
+        content:
+          "*/*":
+            schema:
+              type: string
+              format: binary
+              contentMediaType: application/octet-stream
+      responses:
+        "201":
+          description: Stored.
+        "400":
+          $ref: "#/components/responses/InvalidPath"
+        "413":
+          $ref: "#/components/responses/EntryTooLarge"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthenticated"
+        "403":
+          $ref: "./common.yaml#/components/responses/PermissionDenied"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
+        "503":
+          $ref: "./common.yaml#/components/responses/Unavailable"
+    options:
+      operationId: describeObject
+      summary: List the methods the path supports
+      description: |
+        Sent by the client when WebDAV is enabled. The response has no `DAV` header, which tells
+        the client not to create directories with `MKCOL`. Needs no credentials.
+      tags: [maven]
+      security:
+        - {}
+      responses:
+        "204":
+          description: The supported methods.
+          headers:
+            Allow:
+              description: The supported methods.
+              schema:
+                type: string
+                const: GET, HEAD, PUT, OPTIONS
+        "400":
+          description: The path is not valid.
+components:
+  securitySchemes:
+    basicAuth:
+      $ref: "./common.yaml#/components/securitySchemes/basicAuth"
+    bearerAuth:
+      $ref: "./common.yaml#/components/securitySchemes/bearerAuth"
+  parameters:
+    UserAgent:
+      name: User-Agent
+      in: header
+      required: false
+      description: |
+        Maven sends `Apache-Maven/<version> (Java <version>; <os> <version>)`. Used for metrics and
+        logs only; never for authentication or behaviour, since clients choose it.
+      schema:
+        type: string
+        maxLength: 512
+        examples: ["Apache-Maven/3.9.9 (Java 21.0.4; Linux 6.8.0)"]
+  responses:
+    InvalidPath:
+      description: The path has an invalid segment, is too deep or too long.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 400
+              message: Path segments may contain only letters, digits, ".", "_" and "-".
+              status: INVALID_ARGUMENT
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: INVALID_CACHE_PATH
+                  domain: mammoth-cache.dev
+    Miss:
+      description: Miss. Not an error for Maven; it builds the module.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 404
+              message: Cache entry not found.
+              status: NOT_FOUND
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: ENTRY_NOT_FOUND
+                  domain: mammoth-cache.dev
+                  metadata:
+                    path: v1.2/com.example/app/0123456789abcdef/buildinfo.xml
+    EntryTooLarge:
+      description: |
+        The object is larger than the configured limit. Maven logs the failed store and carries on.
+      content:
+        application/json:
+          schema:
+            $ref: "./common.yaml#/components/schemas/ErrorResponse"
+          example:
+            error:
+              code: 413
+              message: Cache entry is 157286400 bytes; the limit is 104857600.
+              status: OUT_OF_RANGE
+              details:
+                - "@type": type.googleapis.com/google.rpc.ErrorInfo
+                  reason: ENTRY_TOO_LARGE
+                  domain: mammoth-cache.dev
+                  metadata:
+                    entryBytes: "157286400"
+                    maxEntryBytes: "104857600"

@@ -28,9 +28,9 @@ overrides:
       openapi-tags: off
       # Gradle's HTTP build cache client only supports HTTP Basic.
       owasp:api2:2023-no-http-basic: off
-  - files: ["openapi/gradle-build-cache.v1.yaml"]
+  - files: ["openapi/gradle-build-cache.v1.yaml", "openapi/maven-build-cache.v1.yaml"]
     rules:
-      # Gradle's HTTP build cache client only supports HTTP Basic.
+      # Gradle's HTTP build cache client only supports HTTP Basic, and Maven's resolver uses it.
       owasp:api2:2023-no-http-basic: off
   # Cache entries are opaque bytes whose size limit is set in configuration.
   - files:
@@ -38,8 +38,20 @@ overrides:
       - "openapi/gradle-build-cache.v1.yaml#/paths/~1cache~1%7Bkey%7D/put/requestBody"
     rules:
       owasp:api4:2023-string-limit: off
+  - files:
+      - "openapi/maven-build-cache.v1.yaml#/paths/~1maven~1%7Bpath%7D/get/responses/200"
+      - "openapi/maven-build-cache.v1.yaml#/paths/~1maven~1%7Bpath%7D/put/requestBody"
+    rules:
+      owasp:api4:2023-string-limit: off
   # HEAD responses have no body, so their errors cannot carry content.
-  - files: ["openapi/gradle-build-cache.v1.yaml#/paths/~1cache~1%7Bkey%7D/head"]
+  - files:
+      - "openapi/gradle-build-cache.v1.yaml#/paths/~1cache~1%7Bkey%7D/head"
+      - "openapi/maven-build-cache.v1.yaml#/paths/~1maven~1%7Bpath%7D/head"
+    rules:
+      owasp:api8:2023-define-error-responses-401: off
+      owasp:api8:2023-define-error-responses-500: off
+  # OPTIONS only lists methods, so it is open and cannot fail beyond a bad path.
+  - files: ["openapi/maven-build-cache.v1.yaml#/paths/~1maven~1%7Bpath%7D/options"]
     rules:
       owasp:api8:2023-define-error-responses-401: off
       owasp:api8:2023-define-error-responses-500: off
