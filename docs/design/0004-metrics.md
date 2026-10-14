@@ -125,8 +125,9 @@ histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bu
 ### Admin snapshot
 
 `GET /v1/serverStatus` returns the current population per tier and lifetime hit and miss counts, for
-a UI or `mammoth status`. Like the metrics, these are raw values with no rates or ratios. It reads
-the same values as the gauges and counters above, so the two never disagree.
+scripts and `mammoth status`; there is no web UI ([0003](0003-architecture.md)). Like the metrics,
+these are raw values with no rates or ratios. It reads the same values as the gauges and counters
+above, so the two never disagree.
 
 ### Verification
 

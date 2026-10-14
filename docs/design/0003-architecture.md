@@ -39,6 +39,7 @@ auth and metrics are in their own docs.
   a possible future direction for higher availability, but not recommended now.
 - Consistency guarantees beyond those immutable entries already give.
 - Deleting from the bucket. Expiry there is left to the bucket's lifecycle rules.
+- A web UI. Operators use the config file, `/metrics` with their own dashboards, and the admin API.
 
 ## Design objectives and constraints
 

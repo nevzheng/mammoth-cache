@@ -30,7 +30,8 @@ where Gradle allows it, and stay simple enough to configure in one file.
 
 - Managing users or tokens through an API or UI. Configuration is static (see
   [0001](0001-api-contracts.md)).
-- Single sign-on (OIDC). Worth adding with a web UI, not before.
+- Single sign-on (OIDC). It is for people signing in to a web UI, and mammoth has none
+  ([0003](0003-architecture.md)); build tools and CI use tokens.
 - Built-in mutual TLS. A reverse proxy can do it.
 - Per-key or per-project permissions.
 
@@ -142,8 +143,8 @@ None. A token has 256 bits of entropy, so guessing one is infeasible, and the ca
 - **htpasswd files with bcrypt** (bazel-remote's approach): familiar, but bcrypt costs tens of
   milliseconds per request, which a cache serving thousands of small entries cannot afford.
 - **Human-chosen passwords**: need a slow hash for the same reason, and are weaker.
-- **OIDC now**: the right model for people in a web UI, but heavy for CI machines and not needed
-  until there is a UI.
+- **OIDC**: the right model for people signing in to a web UI, which mammoth does not have, and
+  heavy for CI machines.
 - **Mutual TLS**: strong, but awkward to configure in Gradle and easily done by a proxy.
 
 ## Open questions
