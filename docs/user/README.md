@@ -63,7 +63,7 @@ is out of scope: mammoth-cache is a cache, not a remote build system.
 | Request, tier and bucket metrics at `/metrics`                                       | Available | [Metrics](metrics.md)                     |
 | `edge` container image from `main`                                                   | Available | [Quickstart](quickstart.md)               |
 | Metrics catalog (0004), all but `mammoth_tier_oldest_entry_age_seconds`              | Available | [Metrics](metrics.md)                     |
-| Access log with client addresses                                                     | Planned   | [Deployment](deployment.md)               |
+| JSON logs to stdout, with an access log and `trusted_proxies`                        | Available | [Logs](logs.md)                           |
 | Release binaries and versioned images, with checksums and attestations               | Available | [Quickstart](quickstart.md)               |
 
 ## Where to go next
@@ -73,6 +73,7 @@ is out of scope: mammoth-cache is a cache, not a remote build system.
 - [Migrating from the Build Cache Node](migrating.md): what maps to what.
 - [Configuration reference](configuration.md): every setting.
 - [Deployment](deployment.md): load balancers, Kubernetes, sizing.
+- [Logs](logs.md): the JSON line format and the access log.
 - [Custom builds](custom-builds.md): build your own distribution with your own storage backend.
 
 The [design docs](../design/README.md) explain why mammoth-cache works the way it does.

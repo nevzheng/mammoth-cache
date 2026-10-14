@@ -47,8 +47,8 @@ for a few stateless nodes behind a load balancer rather than one JVM with a web 
   no web UI. TLS at the ingress by default, or on the node with two lines of config.
 - **Honest about failure.** A full disk or a dead bucket costs misses, never errors: Gradle keeps
   its cache on. `SIGTERM` drains the node out of rotation before it exits.
-- **Observable.** Prometheus metrics with a documented catalog, `/livez` and `/readyz`, and a
-  `serverStatus` admin API.
+- **Observable.** Prometheus metrics with a documented catalog, JSON logs with a per-request
+  access log, `/livez` and `/readyz`, and a `serverStatus` admin API.
 - **Open.** MIT or Apache-2.0, every design decision written down in
   [docs/design](docs/design/README.md).
 
@@ -95,6 +95,7 @@ and [deployment guide](docs/user/deployment.md) take it from there.
 | Graceful shutdown, readiness checks, timeouts          | Done                               |
 | Optional built-in TLS with certificate reload          | Done                               |
 | Prometheus metrics                                     | Catalog done, one gauge pending    |
+| JSON logs and access log                               | Done                               |
 | Release binaries and versioned images                  | Done; checksums and attestations   |
 
 Details per feature are in the [user guide](docs/user/README.md#feature-status).
