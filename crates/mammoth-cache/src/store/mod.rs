@@ -4,7 +4,9 @@
 //! [`BlobStore`]. The local tiers also implement [`BoundedStore`]. The core depends only on these
 //! traits, never on a file system or cloud SDK (design doc 0003).
 
+pub mod disk;
 pub mod memory;
+pub mod meta;
 
 use std::{fmt, future::Future, io, pin::Pin};
 
