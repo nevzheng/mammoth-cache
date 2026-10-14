@@ -199,7 +199,7 @@ paths:
                       reason: DIGEST_MISMATCH
                       domain: mammoth-cache.dev
                       metadata:
-                        key: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+                        digest: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
         "413":
           $ref: "#/components/responses/EntryTooLarge"
         "401":
