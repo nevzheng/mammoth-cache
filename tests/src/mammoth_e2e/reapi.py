@@ -73,6 +73,11 @@ def stubs() -> Stubs:
         _generate(out)
     if str(out) not in sys.path:
         sys.path.insert(0, str(out))
+    # `google` is already imported (google.rpc, google.protobuf). Under Bazel its `__path__` was
+    # fixed then, so the generated `google.bytestream` would not be found: add it by hand.
+    google = sys.modules.get("google")
+    if google is not None and str(out / "google") not in list(google.__path__):
+        google.__path__.append(str(out / "google"))
     v2 = "build.bazel.remote.execution.v2"
     return Stubs(
         re=importlib.import_module(f"{v2}.remote_execution_pb2"),
