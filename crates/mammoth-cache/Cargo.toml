@@ -60,6 +60,7 @@ tonic-prost = "0.14.6"
 tonic-types = "0.14.6"
 tower-http = { version = "0.6.11", default-features = false, features = ["catch-panic"] }
 tracing = "0.1.44"
+tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
 

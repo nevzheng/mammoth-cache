@@ -324,14 +324,15 @@ pub(super) async fn render(request: Request, next: Next) -> Response {
     let code = reason.code();
     let reason = reason.as_str();
     match (code, source) {
+        // A failing disk or bucket fails every request: once every 10 s per message is enough.
         (Code::Internal | Code::Unknown | Code::DataLoss, Some(e)) => {
-            tracing::error!(reason, status, error = %e, "request failed");
+            crate::error_throttled!(reason, status, error = %e, "request failed");
         }
         (Code::Internal | Code::Unknown | Code::DataLoss, None) => {
             tracing::error!(reason, status, "request failed");
         }
         (Code::Unavailable, Some(e)) => {
-            tracing::warn!(reason, status, error = %e, "storage unavailable");
+            crate::warn_throttled!(reason, status, error = %e, "storage unavailable");
         }
         (_, Some(e)) => tracing::debug!(reason, status, error = %e, "request refused"),
         (_, None) => tracing::debug!(reason, status, "request refused"),

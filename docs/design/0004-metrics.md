@@ -105,17 +105,18 @@ Only with `[tls]` set; defined in [0014](0014-tls.md).
 
 #### Serving
 
-| Metric                                  | Type      | Labels                              | Meaning                                       |
-| --------------------------------------- | --------- | ----------------------------------- | --------------------------------------------- |
-| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route template, status and client |
-| `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by Gradle version             |
-| `mammoth_grpc_requests_total`           | counter   | `method`, `code`                    | REAPI gRPC calls by method and status code    |
-| `mammoth_grpc_request_duration_seconds` | histogram | `method`                            | Time from a gRPC call's start to its status   |
-| `mammoth_grpc_requests_in_flight`       | gauge     | `method`                            | gRPC calls being served                       |
-| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response         |
-| `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                         |
-| `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by AIP-193 `reason`     |
-| `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build                |
+| Metric                                  | Type      | Labels                              | Meaning                                            |
+| --------------------------------------- | --------- | ----------------------------------- | -------------------------------------------------- |
+| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route template, status and client      |
+| `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by Gradle version                  |
+| `mammoth_grpc_requests_total`           | counter   | `method`, `code`                    | REAPI gRPC calls by method and status code         |
+| `mammoth_grpc_request_duration_seconds` | histogram | `method`                            | Time from a gRPC call's start to its status        |
+| `mammoth_grpc_requests_in_flight`       | gauge     | `method`                            | gRPC calls being served                            |
+| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response              |
+| `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                              |
+| `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by AIP-193 `reason`          |
+| `mammoth_log_lines_dropped_total`       | counter   |                                     | Log lines dropped because stdout could not keep up |
+| `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build                     |
 
 `route` is the route template (`/cache/{key}`), never the requested path. `client` is `gradle`,
 `maven` or `other`, from the `User-Agent` prefix (`Gradle/`, `Apache-Maven/`). `gradle_version` is

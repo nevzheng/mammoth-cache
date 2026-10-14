@@ -326,6 +326,12 @@ const CATALOG: &[Metric] = &[
         live: true,
     },
     Metric {
+        name: "mammoth_log_lines_dropped_total",
+        kind: Kind::Counter,
+        labels: &[],
+        live: true,
+    },
+    Metric {
         name: "mammoth_build_info",
         kind: Kind::Gauge,
         labels: &[Label("version", None), Label("revision", None)],
