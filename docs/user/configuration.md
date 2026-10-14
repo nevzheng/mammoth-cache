@@ -157,18 +157,27 @@ space drops below `free_space_buffer`, it evicts entries until the buffer is fre
 Optional. With a bucket, every entry is uploaded to it, and several nodes can share it. The bucket
 tier is built on the `object_store` crate.
 
-| Key            | Type    | Default              | Meaning                                                                |
-| -------------- | ------- | -------------------- | ---------------------------------------------------------------------- |
-| `url`          | string  | required             | `s3://`, `gs://`, `az://` or `file://` URL, with an optional prefix    |
-| `region`       | string  | from the environment | Region, for S3                                                         |
-| `endpoint`     | string  | none                 | Endpoint for S3-compatible stores such as MinIO or R2                  |
-| `allow_http`   | boolean | `false`              | Allow an `http://` endpoint, such as a local MinIO, SeaweedFS, Azurite |
-| `write`        | string  | `async`              | `async` answers a store once it's on disk; `sync` waits for the upload |
-| `upload_queue` | integer | `1000`               | Uploads waiting at once, for `async`; more are dropped and counted     |
+| Key            | Type     | Default              | Meaning                                                                |
+| -------------- | -------- | -------------------- | ---------------------------------------------------------------------- |
+| `url`          | string   | required             | `s3://`, `gs://`, `az://` or `file://` URL, with an optional prefix    |
+| `region`       | string   | from the environment | Region, for S3                                                         |
+| `endpoint`     | string   | none                 | Endpoint for S3-compatible stores such as MinIO or R2                  |
+| `allow_http`   | boolean  | `false`              | Allow an `http://` endpoint, such as a local MinIO, SeaweedFS, Azurite |
+| `write`        | string   | `async`              | `async` answers a store once it's on disk; `sync` waits for the upload |
+| `upload_queue` | integer  | `1000`               | Uploads waiting at once, for `async`; more are dropped and counted     |
+| `timeout`      | duration | `2s`                 | The longest a bucket read may take, retries included; then it's a miss |
+| `retries`      | integer  | `1`                  | Retries of a failed bucket request, within `timeout`; at most 10       |
+| `cooldown`     | duration | `30s`                | After a bucket failure, how long to skip the bucket; `0s` turns it off |
 
 With `sync`, a failed upload still answers the store with success, since the entry is stored on
 the node and Gradle would turn its cache off over an error; the failure is logged and counted in
 `mammoth_bucket_uploads_total{result="error"}`.
+
+A bucket outage costs hits, not errors or stalls. A bucket read that fails or takes longer than
+`timeout` is a miss, well inside Gradle's 30 s request timeout. After any bucket failure the node
+skips the bucket for `cooldown`: reads miss at once, and uploads are dropped and counted in
+`mammoth_bucket_uploads_dropped_total{reason="bucket-down"}`. The first read after the cooldown
+tries the bucket again. See [Health checks](health.md#bucket-outages) for what to alert on.
 
 Credentials come from the environment, never from the file: workload identity (EKS IRSA or Pod
 Identity, GKE, AKS), instance roles and VM service accounts, or keys in the cloud's usual variables

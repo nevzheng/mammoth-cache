@@ -93,6 +93,9 @@ region = "us-east-1"
 # endpoint = "https://<account>.r2.cloudflarestorage.com" # S3-compatible stores only
 write = "async" # or "sync": answer a PUT only after the upload
 upload_queue = 1000 # async only
+timeout = "2s" # longest bucket read, retries included; a slower one is a miss
+retries = 1 # retries of a failed bucket request, within timeout
+cooldown = "30s" # after a bucket failure, skip the bucket this long; "0s" turns it off
 
 [auth]
 anonymous = [] # BCN anonymousLevel; scopes for requests without credentials

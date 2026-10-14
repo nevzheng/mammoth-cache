@@ -61,6 +61,16 @@ before exiting, all within `server.shutdown_timeout` (25 s). No `preStop` hook i
 distroless image couldn't run one. Keep `terminationGracePeriodSeconds` at its default 30 s or
 above `shutdown_timeout`. See [Deployment](deployment.md#shutdown-and-timeouts).
 
+## Bucket outages
+
+A bucket outage degrades every node to its local tiers instead of failing requests: a bucket read
+that fails or passes `bucket.timeout` (2 s) is a miss, and after a failure the node skips the
+bucket for `bucket.cooldown` (30 s) before trying it again (see
+[Configuration](configuration.md#bucket-l3)). `/readyz` stays ready throughout. The node logs a
+warning when the bucket starts failing and an info line when it answers again, nothing per
+request. Alert on `mammoth_tier_up{tier="bucket"} == 0` for a few minutes, and watch
+`mammoth_tier_reads_total{tier="bucket",result="error"}` for errors short of an outage.
+
 ## Server status
 
 `GET /v1/serverStatus` returns a snapshot of the node: its version, uptime, lifetime hit and miss

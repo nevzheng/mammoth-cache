@@ -11,15 +11,28 @@
 //! The node needs `get`, `put` and `head` on its prefix, and nothing else. Uploads up to
 //! [`BucketConfig::multipart_threshold`] are a single `put`; larger ones are multipart, so an entry
 //! is never buffered whole.
+//!
+//! A bucket outage must leave the node serving from its local tiers (design doc 0013), so the
+//! clients fail fast instead of using `object_store`'s defaults (10 retries over up to 3 minutes,
+//! longer than Gradle's 30 s request timeout): connects time out after [`CONNECT_TIMEOUT`], a
+//! connection that sends nothing for [`READ_TIMEOUT`] is dropped, and a request is retried at most
+//! [`BucketConfig::retries`] times within [`BucketConfig::timeout`]. Environment variables such as
+//! `AWS_CONNECT_TIMEOUT` or `GOOGLE_TIMEOUT` still override the client timeouts. The core adds the
+//! hard deadline on reads and the cooldown after a failure (see [`crate::cache::BucketLimits`]).
 
-use std::{io, sync::Arc};
+use std::{io, str::FromStr, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
 use object_store::{
-    ObjectStore, ObjectStoreExt, ObjectStoreScheme, PutPayload, WriteMultipart,
-    aws::AmazonS3Builder, azure::MicrosoftAzureBuilder, gcp::GoogleCloudStorageBuilder,
-    local::LocalFileSystem, memory::InMemory, path::Path,
+    BackoffConfig, ClientConfigKey, ObjectStore, ObjectStoreExt, ObjectStoreScheme, PutPayload,
+    RetryConfig, WriteMultipart,
+    aws::{AmazonS3Builder, AmazonS3ConfigKey},
+    azure::{AzureConfigKey, MicrosoftAzureBuilder},
+    gcp::{GoogleCloudStorageBuilder, GoogleConfigKey},
+    local::LocalFileSystem,
+    memory::InMemory,
+    path::Path,
 };
 use url::Url;
 
@@ -30,6 +43,20 @@ use crate::key::CacheKey;
 const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
 /// Parts of one multipart upload in flight at once.
 const UPLOAD_CONCURRENCY: usize = 4;
+
+/// The default for [`BucketConfig::timeout`].
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
+/// The default for [`BucketConfig::retries`].
+pub const DEFAULT_RETRIES: usize = 1;
+/// The time allowed to open a connection to the bucket.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// The longest a bucket connection may send nothing before the request fails. Per read, not
+/// total, so a large entry on a slow link still streams.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest one bucket request may take, body included. Generous, because a single request
+/// carries a whole entry on a read and up to [`BucketConfig::multipart_threshold`] on a write;
+/// [`READ_TIMEOUT`] catches stalls long before this.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Settings for a [`BucketStore`].
 #[derive(Debug, Clone)]
@@ -45,6 +72,10 @@ pub struct BucketConfig {
     pub allow_http: bool,
     /// Uploads larger than this are multipart; also the part size. At least 5 MiB.
     pub multipart_threshold: usize,
+    /// How long the client keeps retrying a failed request. The core also cuts reads off here.
+    pub timeout: Duration,
+    /// Retries of a failed request, within [`timeout`](Self::timeout).
+    pub retries: usize,
 }
 
 impl BucketConfig {
@@ -57,6 +88,8 @@ impl BucketConfig {
             endpoint: None,
             allow_http: false,
             multipart_threshold: MIN_PART_SIZE,
+            timeout: DEFAULT_TIMEOUT,
+            retries: DEFAULT_RETRIES,
         }
     }
 }
@@ -84,27 +117,30 @@ impl BucketStore {
         let prefix = Path::parse(prefix).map_err(|e| invalid(&e))?;
         let store: Arc<dyn ObjectStore> = match scheme {
             ObjectStoreScheme::AmazonS3 => {
-                let mut builder = AmazonS3Builder::from_env().with_url(url.as_str());
-                if let Some(region) = &config.region {
-                    builder = builder.with_region(region);
+                Arc::new(s3_builder(config, &url).build().map_err(|e| invalid(&e))?)
+            }
+            ObjectStoreScheme::GoogleCloudStorage => {
+                let mut builder =
+                    GoogleCloudStorageBuilder::from_env().with_retry(retry_config(config));
+                for (key, value) in client_defaults() {
+                    let key = GoogleConfigKey::Client(key);
+                    if !env_sets("GOOGLE_", &key) {
+                        builder = builder.with_config(key, value);
+                    }
                 }
-                if let Some(endpoint) = &config.endpoint {
-                    builder = builder.with_endpoint(endpoint);
-                }
-                // Only when set, so `AWS_ALLOW_HTTP` in the environment still works.
-                if config.allow_http {
-                    builder = builder.with_allow_http(true);
-                }
+                let builder = builder.with_url(url.as_str());
                 Arc::new(builder.build().map_err(|e| invalid(&e))?)
             }
-            ObjectStoreScheme::GoogleCloudStorage => Arc::new(
-                GoogleCloudStorageBuilder::from_env()
-                    .with_url(url.as_str())
-                    .build()
-                    .map_err(|e| invalid(&e))?,
-            ),
             ObjectStoreScheme::MicrosoftAzure => {
-                let mut builder = MicrosoftAzureBuilder::from_env().with_url(url.as_str());
+                let mut builder =
+                    MicrosoftAzureBuilder::from_env().with_retry(retry_config(config));
+                for (key, value) in client_defaults() {
+                    let key = AzureConfigKey::Client(key);
+                    if !env_sets("AZURE_", &key) {
+                        builder = builder.with_config(key, value);
+                    }
+                }
+                builder = builder.with_url(url.as_str());
                 if let Some(endpoint) = &config.endpoint {
                     builder = builder.with_endpoint(endpoint.clone());
                 }
@@ -209,6 +245,67 @@ impl BucketStore {
             }
         }
     }
+}
+
+/// The S3 client for `url`: the environment, then the fail-fast client settings, then the config.
+fn s3_builder(config: &BucketConfig, url: &Url) -> AmazonS3Builder {
+    let mut builder = AmazonS3Builder::from_env().with_retry(retry_config(config));
+    for (key, value) in client_defaults() {
+        let key = AmazonS3ConfigKey::Client(key);
+        if !env_sets("AWS_", &key) {
+            builder = builder.with_config(key, value);
+        }
+    }
+    builder = builder.with_url(url.as_str());
+    if let Some(region) = &config.region {
+        builder = builder.with_region(region);
+    }
+    if let Some(endpoint) = &config.endpoint {
+        builder = builder.with_endpoint(endpoint);
+    }
+    // Only when set, so `AWS_ALLOW_HTTP` in the environment still works.
+    if config.allow_http {
+        builder = builder.with_allow_http(true);
+    }
+    builder
+}
+
+/// Client settings applied over each cloud's defaults, as config values: see the module docs.
+fn client_defaults() -> [(ClientConfigKey, String); 3] {
+    let secs = |d: Duration| format!("{}s", d.as_secs());
+    [
+        (ClientConfigKey::ConnectTimeout, secs(CONNECT_TIMEOUT)),
+        (ClientConfigKey::ReadTimeout, secs(READ_TIMEOUT)),
+        (ClientConfigKey::Timeout, secs(REQUEST_TIMEOUT)),
+    ]
+}
+
+/// Retries for the cloud clients: [`BucketConfig::retries`] quick ones, within
+/// [`BucketConfig::timeout`].
+fn retry_config(config: &BucketConfig) -> RetryConfig {
+    RetryConfig {
+        backoff: BackoffConfig {
+            init_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_secs(1),
+            base: 2.0,
+        },
+        max_retries: config.retries,
+        retry_timeout: config.timeout,
+    }
+}
+
+/// Whether an environment variable starting with `prefix` sets `key`, the way each builder's
+/// `from_env` reads them. Such a setting wins over [`client_defaults`].
+fn env_sets<K: FromStr + PartialEq>(prefix: &str, key: &K) -> bool {
+    std::env::vars_os().any(|(name, _)| {
+        name.to_str().is_some_and(|name| {
+            name.starts_with(prefix)
+                && name
+                    .to_ascii_lowercase()
+                    .parse::<K>()
+                    .is_ok_and(|parsed| parsed == *key)
+        })
+    })
 }
 
 /// Feeds the buffered chunks, then the rest of the body, to a multipart upload.
@@ -358,6 +455,64 @@ mod tests {
             .await
             .unwrap();
         assert!(dir.path().join("cache/maven/v1/a.xml").exists());
+    }
+
+    /// A bucket at `endpoint`, with test credentials.
+    fn s3_at(endpoint: String) -> BucketStore {
+        let mut config = BucketConfig::new("s3://outage/mammoth");
+        config.region = Some("us-east-1".into());
+        config.endpoint = Some(endpoint);
+        config.allow_http = true;
+        let url = Url::parse(&config.url).unwrap();
+        let s3 = s3_builder(&config, &url)
+            .with_access_key_id("test")
+            .with_secret_access_key("test")
+            .build()
+            .unwrap();
+        BucketStore::with_store(Arc::new(s3), Path::from("mammoth"), 0)
+    }
+
+    #[tokio::test]
+    async fn a_refused_bucket_fails_fast() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let store = s3_at(format!("http://{addr}"));
+        let key = CacheKey::gradle("a3f5").unwrap();
+        let started = std::time::Instant::now();
+        assert!(store.head(&key).await.is_err());
+        assert!(store.get(&key).await.is_err());
+        // Two requests, each tried twice: well inside the default budget.
+        let limit = 2 * DEFAULT_TIMEOUT + Duration::from_secs(1);
+        assert!(started.elapsed() < limit, "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn an_unresponsive_bucket_is_a_fast_miss() {
+        // Accepts connections and never answers, as when a load balancer is up but nothing
+        // behind it is.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let cache = crate::cache::Cache::builder()
+            .bucket_tier(
+                Arc::new(s3_at(format!("http://{addr}"))),
+                crate::cache::BucketWrite::Sync,
+            )
+            .build();
+        let key = CacheKey::gradle("a3f5").unwrap();
+        let started = std::time::Instant::now();
+        assert!(cache.get(&key).await.unwrap().is_none());
+        assert_eq!(cache.bucket_up(), Some(false));
+        // Inside the cooldown: no request at all.
+        assert_eq!(cache.head(&key).await.unwrap(), None);
+        let limit = DEFAULT_TIMEOUT + Duration::from_secs(1);
+        assert!(started.elapsed() < limit, "took {:?}", started.elapsed());
     }
 
     #[test]
