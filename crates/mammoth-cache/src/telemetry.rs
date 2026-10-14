@@ -133,6 +133,7 @@ pub fn render_with(handle: &PrometheusHandle, status: Option<&CacheStatus>) -> S
         record_population(status);
     }
     process().collect();
+    crate::logging::record_dropped();
     handle.render()
 }
 
@@ -321,6 +322,11 @@ const HELP: &[(Kind, &str, &str)] = {
             Counter,
             "mammoth_auth_failures_total",
             "Rejected credentials, by AIP-193 reason.",
+        ),
+        (
+            Counter,
+            "mammoth_log_lines_dropped_total",
+            "Log lines dropped because stdout could not keep up.",
         ),
         (
             Gauge,

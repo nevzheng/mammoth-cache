@@ -756,7 +756,9 @@ impl Cache {
             match result {
                 Ok(Some(blob)) => return Ok(Some(self.hit(key, tier, metered(tier, blob), depth))),
                 Ok(None) => {}
-                Err(error) => tracing::warn!(%key, %tier, %error, "tier read failed; skipping"),
+                Err(error) => {
+                    crate::warn_throttled!(%key, %tier, %error, "tier read failed; skipping");
+                }
             }
         }
         if let Some(bucket) = &self.bucket
@@ -811,7 +813,7 @@ impl Cache {
                 Ok(Some(size)) => return Ok(Some(size)),
                 Ok(None) => {}
                 Err(error) => {
-                    tracing::warn!(%key, tier = %handle.store.tier(), %error, "tier head failed");
+                    crate::warn_throttled!(%key, tier = %handle.store.tier(), %error, "tier head failed");
                 }
             }
         }
@@ -1015,7 +1017,7 @@ impl Cache {
                     }
                     (_, Ok(_)) => {}
                     (tier, Err(error)) => {
-                        tracing::warn!(%key, %tier, %error, "write to a secondary tier failed");
+                        crate::warn_throttled!(%key, %tier, %error, "write to a secondary tier failed");
                     }
                 }
             }
@@ -1059,7 +1061,7 @@ impl Cache {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 metrics::counter!("mammoth_bucket_uploads_dropped_total", "reason" => "queue-full")
                     .increment(1);
-                tracing::warn!(%key, "bucket upload queue full; upload dropped");
+                crate::warn_throttled!(%key, "bucket upload queue full; upload dropped");
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 metrics::counter!("mammoth_bucket_uploads_dropped_total", "reason" => "shutdown")
@@ -1340,7 +1342,7 @@ async fn upload(
             "skipped"
         }
         Err(error) => {
-            tracing::warn!(%key, %error, "reading an entry back for upload failed");
+            crate::warn_throttled!(%key, %error, "reading an entry back for upload failed");
             "error"
         }
     };

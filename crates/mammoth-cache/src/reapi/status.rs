@@ -107,8 +107,8 @@ pub(crate) fn digest_mismatch(key: &CacheKey) -> Status {
 pub(crate) fn storage(e: &cache::Error) -> Status {
     let status = error::Status::from(e);
     match status.code() {
-        Code::Unavailable => tracing::warn!(error = %e, "storage unavailable"),
-        Code::Internal => tracing::error!(error = %e, "storage error"),
+        Code::Unavailable => crate::warn_throttled!(error = %e, "storage unavailable"),
+        Code::Internal => crate::error_throttled!(error = %e, "storage error"),
         // The client's fault, and usually the client is gone.
         _ => tracing::debug!(error = %e, "upload failed"),
     }
