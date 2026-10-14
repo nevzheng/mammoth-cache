@@ -87,19 +87,23 @@ The gRPC listener for the REAPI cache, used only when `protocols.reapi` is on. I
 How connections time out and how the node shuts down. Design doc
 [0013](../design/0013-deployment.md) explains the choices.
 
-| Key                 | Type     | Default | Example  | Status    | Meaning                                                                                |
-| ------------------- | -------- | ------- | -------- | --------- | -------------------------------------------------------------------------------------- |
-| `shutdown_delay`    | duration | `5s`    | `"10s"`  | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail                  |
-| `shutdown_timeout`  | duration | `25s`   | `"55s"`  | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads             |
-| `idle_timeout`      | duration | `75s`   | `"620s"` | Available | How long a connection may wait for, and take to send, its next request's headers       |
-| `body_read_timeout` | duration | `60s`   | `"2m"`   | Available | How long an upload may send nothing before it fails; per read, not in total            |
-| `send_timeout`      | duration | `60s`   | `"2m"`   | Available | How long a response may make no progress because the client stopped reading; per write |
+Every key applies to both ports, the HTTP `listen` and the gRPC `[reapi] listen`, except where the
+table says otherwise.
+
+| Key                 | Type     | Default | Example  | Status    | Meaning                                                                                       |
+| ------------------- | -------- | ------- | -------- | --------- | --------------------------------------------------------------------------------------------- |
+| `shutdown_delay`    | duration | `5s`    | `"10s"`  | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail                         |
+| `shutdown_timeout`  | duration | `25s`   | `"55s"`  | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads                    |
+| `idle_timeout`      | duration | `75s`   | `"620s"` | Available | How long an HTTP connection may wait for its next request's headers; a new gRPC one, any byte |
+| `body_read_timeout` | duration | `60s`   | `"2m"`   | Available | How long an upload may send nothing before it fails; per read, not in total                   |
+| `send_timeout`      | duration | `60s`   | `"2m"`   | Available | How long a response may make no progress because the client stopped reading; per write        |
 
 On `SIGTERM` or Ctrl-C the node fails `/readyz`, keeps serving for `shutdown_delay`, stops
-accepting connections, finishes requests in flight, then finishes queued bucket uploads, all
-within `shutdown_timeout`. A second signal exits at once. Keep `shutdown_timeout` below the
-platform's grace period (30 s on Kubernetes), and `shutdown_delay` below `shutdown_timeout`; the
-second is checked at startup, and the last three must be above zero.
+accepting connections, finishes requests in flight on both ports, then finishes queued bucket
+uploads, all within `shutdown_timeout`. Connections that have not sent a request close as the drain
+starts. A second signal exits at once. Keep `shutdown_timeout` below the platform's grace period
+(30 s on Kubernetes), and `shutdown_delay` below `shutdown_timeout`; the second is checked at
+startup, and the last three must be above zero.
 
 Keep `idle_timeout` above the load balancer's idle timeout (60 s on AWS ALB and nginx), or the
 load balancer reuses a connection the node has just closed and returns `502`. Google Cloud load
