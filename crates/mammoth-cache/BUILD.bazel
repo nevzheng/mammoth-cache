@@ -49,6 +49,13 @@ rust_test(
     size = "small",
     aliases = aliases(normal_dev = True),
     crate = ":mammoth_cache",
+    # proptest replays the seeds in proptest-regressions/ before new cases. It finds them next to
+    # the source file that holds the test (file!(), searched for from the runfiles), so both have
+    # to be runfiles; without them the seeds are skipped.
+    data = glob([
+        "proptest-regressions/**",
+        "src/**/*.rs",
+    ]),
     lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro_dev = True),
     rustc_env_files = [":cargo_env"],
@@ -93,5 +100,6 @@ rust_test(
 
 rust_doc_test(
     name = "doc_test",
+    size = "small",
     crate = ":mammoth_cache",
 )
