@@ -49,6 +49,9 @@ const FIXED_HEADER_LEN: usize = 8 + 2 + 2 + 8 + 8 + 4;
 const SIZE_OFFSET: u64 = 8 + 2 + 2 + 8;
 const TRAILER_LEN: u64 = 4;
 const READ_CHUNK: usize = 64 * 1024;
+/// Entries up to this size are read whole and checked before they are served; larger ones are
+/// checked in a first pass, then streamed.
+const READ_WHOLE: u64 = 1024 * 1024;
 
 /// Settings for a [`DiskStore`].
 #[derive(Debug, Clone)]
@@ -227,6 +230,13 @@ impl Inner {
         Some(meta)
     }
 
+    /// Treats a damaged entry as a miss: counts it and deletes it.
+    async fn damaged(&self, key: &CacheKey, what: &str) {
+        tracing::warn!(%key, what, "damaged disk entry; treating it as a miss");
+        metrics::counter!("mammoth_cache_integrity_errors_total", "tier" => "disk").increment(1);
+        self.forget(key).await;
+    }
+
     /// Drops an entry from the index and deletes its file.
     async fn forget(&self, key: &CacheKey) {
         self.lock().remove(key);
@@ -258,13 +268,53 @@ impl Inner {
         let header = match read_header(&mut file).await {
             Ok(header) if header.key == key.as_str() && header.meta.size == meta.size => header,
             Ok(_) | Err(_) => {
-                tracing::warn!(%key, "damaged disk entry header; treating as a miss");
-                self.forget(key).await;
+                self.damaged(key, "header").await;
                 return Ok(None);
             }
         };
         let size = header.meta.size;
         let expected = meta.checksum;
+
+        // The checksum is checked before the first byte is served: once a response has started,
+        // a failure can only truncate it, and a truncated download turns Gradle's cache off.
+        if size <= READ_WHOLE {
+            let mut buf = BytesMut::zeroed(usize::try_from(size).map_err(io::Error::other)? + 4);
+            if let Err(e) = file.read_exact(&mut buf).await {
+                if e.kind() != io::ErrorKind::UnexpectedEof {
+                    return Err(e);
+                }
+                self.damaged(key, "length").await;
+                return Ok(None);
+            }
+            let trailer = buf.split_off(buf.len() - 4);
+            let stored = Checksum(u32::from_le_bytes([
+                trailer[0], trailer[1], trailer[2], trailer[3],
+            ]));
+            if stored != expected || Checksum::of(&buf) != expected {
+                self.damaged(key, "checksum").await;
+                return Ok(None);
+            }
+            let body = stream::once(async move { Ok(buf.freeze()) });
+            return Ok(Some(Blob {
+                size,
+                body: Box::pin(body),
+            }));
+        }
+        let body_start = file.stream_position().await?;
+        match verify_body(&mut file, size, expected).await {
+            Ok(true) => {}
+            Ok(false) => {
+                self.damaged(key, "checksum").await;
+                return Ok(None);
+            }
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                self.damaged(key, "length").await;
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
+        }
+        file.seek(io::SeekFrom::Start(body_start)).await?;
+
         let state = ReadState {
             file,
             remaining: size,
@@ -323,6 +373,21 @@ impl Inner {
         self.delete_files(&evicted).await;
         Ok(PutOutcome::Stored)
     }
+}
+
+/// Reads `size` body bytes and the trailer, and reports whether both match `expected`.
+async fn verify_body(file: &mut fs::File, size: u64, expected: Checksum) -> io::Result<bool> {
+    let mut buf = vec![0_u8; READ_CHUNK];
+    let mut remaining = size;
+    let mut checksum = Checksum::EMPTY;
+    while remaining > 0 {
+        let want = usize::try_from(remaining).map_or(READ_CHUNK, |r| r.min(READ_CHUNK));
+        file.read_exact(&mut buf[..want]).await?;
+        checksum = checksum.update(&buf[..want]);
+        remaining -= want as u64;
+    }
+    let stored = Checksum(file.read_u32_le().await?);
+    Ok(stored == expected && checksum == expected)
 }
 
 struct ReadState {
@@ -638,25 +703,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corruption_fails_the_read_and_forgets_the_entry() {
+    async fn corruption_is_a_clean_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DiskStore::open(config(dir.path(), 1 << 30)).await.unwrap();
+        // One entry read whole, one checked in a first pass and then streamed.
+        let small: &'static [u8] = b"precious bytes";
+        let large: &'static [u8] = Box::leak(vec![3_u8; 3 * 1024 * 1024].into_boxed_slice());
+        for (name, bytes) in [("c0ffee", small), ("b16b16", large)] {
+            let key = gradle(name);
+            store.put(&key, None, body(&[bytes])).await.unwrap();
+            assert_eq!(
+                read_all(&store, &key).await.unwrap().as_deref(),
+                Some(bytes)
+            );
+
+            let path = store.inner.entry_path(&key);
+            let mut raw = std_fs::read(&path).unwrap();
+            let in_body = raw.len() - 4 - 3;
+            raw[in_body] ^= 0xff;
+            std_fs::write(&path, raw).unwrap();
+
+            // A miss before any byte is served, not a failed stream.
+            assert!(store.get(&key).await.unwrap().is_none(), "{name}");
+            assert_eq!(store.head(&key).await.unwrap(), None);
+            assert!(!path.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_truncated_file_is_a_clean_miss() {
         let dir = tempfile::tempdir().unwrap();
         let store = DiskStore::open(config(dir.path(), 1 << 20)).await.unwrap();
-        let key = gradle("c0ffee");
-        store
-            .put(&key, None, body(&[b"precious bytes"]))
-            .await
-            .unwrap();
-
+        let key = gradle("5407");
+        store.put(&key, None, body(&[b"cut short"])).await.unwrap();
         let path = store.inner.entry_path(&key);
-        let mut raw = std_fs::read(&path).unwrap();
-        let body_at = raw.len() - 4 - 3;
-        raw[body_at] ^= 0xff;
-        std_fs::write(&path, raw).unwrap();
-
-        let err = read_all(&store, &key).await.unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(store.head(&key).await.unwrap(), None);
-        assert!(!path.exists());
+        let raw = std_fs::read(&path).unwrap();
+        std_fs::write(&path, &raw[..raw.len() - 6]).unwrap();
+        assert!(store.get(&key).await.unwrap().is_none());
     }
 
     #[tokio::test]
