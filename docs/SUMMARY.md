@@ -15,3 +15,4 @@
   - [0003: Architecture](design/0003-architecture.md)
   - [0004: Metrics](design/0004-metrics.md)
   - [0005: Configuration](design/0005-configuration.md)
+  - [0006: Server framework and code structure](design/0006-server-framework.md)
