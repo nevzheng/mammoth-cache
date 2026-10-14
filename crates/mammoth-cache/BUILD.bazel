@@ -52,18 +52,23 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
 )
 
-rust_test(
-    name = "http_test",
-    size = "small",
-    srcs = ["tests/http.rs"],
-    aliases = aliases(normal_dev = True),
-    lint_config = ":lints",
-    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
-    deps = [":mammoth_cache"] + all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ),
-)
+# One target per integration test file, like Cargo's tests/ directory, so a new file is never
+# silently skipped.
+[
+    rust_test(
+        name = src.removeprefix("tests/").removesuffix(".rs") + "_test",
+        size = "small",
+        srcs = [src],
+        aliases = aliases(normal_dev = True),
+        lint_config = ":lints",
+        proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+        deps = [":mammoth_cache"] + all_crate_deps(
+            normal = True,
+            normal_dev = True,
+        ),
+    )
+    for src in glob(["tests/*.rs"])
+]
 
 rust_doc_test(
     name = "doc_test",

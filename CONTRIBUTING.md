@@ -94,7 +94,7 @@ bazel build --config=lint //...            # clippy and rustfmt over every Rust 
 ```
 
 With Cargo, the toolchain is pinned in `rust-toolchain.toml`, and the minimum supported Rust version
-is 1.85.
+is the `rust-version` in `Cargo.toml`.
 
 ```sh
 cargo build
@@ -110,8 +110,8 @@ cargo run --bin mammoth
   and `clippy.toml` and `rustfmt.toml` are shared.
 - **Rust version:** `MODULE.bazel` repeats the version in `rust-toolchain.toml`. Bump both together;
   `scripts/check-toolchain-sync.sh` fails CI when they differ.
-- **New source files** are picked up by the `glob` in each crate's `BUILD.bazel`. A new
-  integration test under `tests/` needs its own `rust_test` target.
+- **New source files** and integration tests under `tests/` are picked up by the globs in each
+  crate's `BUILD.bazel`.
 
 Put machine-specific Bazel settings, such as a disk cache or registry mirror, in a git-ignored
 `user.bazelrc` at the repository root:
