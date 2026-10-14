@@ -15,6 +15,7 @@ memory_max_entry_size = 8_388_608 # [memory] max_entry_size = "8MiB"
 control = true # the harness may stop, restart and wipe services
 destructive = true # tests may delete what they find in the bucket
 default_user = "ci"
+anonymous_scopes = [] # [auth] anonymous in deploy/compose/config/mammoth.toml
 
 [compose]
 file = "../../deploy/compose/compose.yaml"
@@ -31,15 +32,19 @@ secret_access_key = "mammoth-e2e-secret"
 [users.ci] # cache:read, cache:write
 username = "ci"
 token = "mmc_e2eCiTokenNotSecretUsedOnlyInTests000001"
+scopes = ["cache:read", "cache:write"]
 
 [users.developer] # cache:read
 username = "developer"
 token = "mmc_e2eDeveloperTokenNotSecretOnlyInTests02"
+scopes = ["cache:read"]
 
 [users.prometheus] # metrics:read
 username = "prometheus"
 token = "mmc_e2ePrometheusTokenNotSecretOnlyInTest03"
+scopes = ["metrics:read"]
 
 [users.admin] # admin:read
 username = "admin"
 token = "mmc_e2eAdminTokenNotSecretUsedOnlyInTests04"
+scopes = ["admin:read"]

@@ -4,12 +4,13 @@ Non-hermetic suites that run the real `mammoth` image against real infrastructur
 [0011](../docs/design/0011-end-to-end-and-load-testing.md); the client matrix and scenarios for the
 acceptance suite are [0008](../docs/design/0008-supported-clients.md).
 
-| Directory     | What it tests                                                                 |
-| ------------- | ----------------------------------------------------------------------------- |
-| `e2e/`        | The image's HTTP surface, metrics and storage tiers, on the Compose stack     |
-| `acceptance/` | Real Gradle, Maven (Build Cache Extension) and Bazel builds against the image |
-| `src/`        | `mammoth_e2e`, the typed harness both suites import                           |
-| `targets/`    | Target profiles: where the system under test is and what tests may do to it   |
+| Directory         | What it tests                                                                 |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `e2e/`            | The image's HTTP surface, metrics and storage tiers, on the Compose stack     |
+| `acceptance/`     | Real Gradle, Maven (Build Cache Extension) and Bazel builds against the image |
+| `e2e/properties/` | Property tests: the node against a model and the OpenAPI contracts            |
+| `src/`            | `mammoth_e2e`, the typed harness both suites import                           |
+| `targets/`        | Target profiles: where the system under test is and what tests may do to it   |
 
 ## Running locally
 
@@ -59,3 +60,17 @@ If your network blocks bcr.bazel.build or needs a proxy CA inside Bazel's JVM, s
 `MAMMOTH_E2E_BAZEL_REGISTRIES` (comma-separated registry URLs) and
 `MAMMOTH_E2E_BAZEL_STARTUP_ARGS` (for example
 `--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts`).
+
+## Property tests
+
+`e2e/properties/` holds the node to two oracles. `test_model.py` runs Hypothesis state machines that
+send random `PUT`, `GET` and `HEAD` sequences across Gradle, Maven and (with `bazel`) Bazel's AC and
+CAS, compare every answer with a dictionary of what was stored, and check every response against
+`api/openapi/`. With `auth`, a second machine sends requests as anonymous, each user over Basic and
+Bearer, and a wrong token, and checks each gets exactly what its scopes allow and that a refused
+store changes nothing; give users their `scopes` and set `anonymous_scopes` in the profile.
+`test_edges.py` pins contract edge cases; known bugs there are strict xfails.
+
+`MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40).
+`MAMMOTH_E2E_CONTRACTS` points at another `api/openapi/` when testing a different build. A failure
+prints the shortest sequence of requests that reproduces it.
