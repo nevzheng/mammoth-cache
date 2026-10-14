@@ -98,7 +98,7 @@ is the `rust-version` in `Cargo.toml`.
 
 ```sh
 cargo build
-cargo run --bin mammoth
+cargo run --bin mammoth   # listens on 0.0.0.0:5071, memory only; see docs/user/configuration.md
 ```
 
 ### How the two builds stay in step
