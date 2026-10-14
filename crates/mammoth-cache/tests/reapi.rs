@@ -62,6 +62,13 @@ struct Node {
 
 impl Node {
     async fn start(auth: Authenticator) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        Self::serve(auth, listener, addr).await
+    }
+
+    /// Serves on `listener`, with clients connecting to `addr`.
+    async fn serve(auth: Authenticator, listener: TcpListener, addr: SocketAddr) -> Self {
         let cache = Arc::new(
             Cache::builder()
                 .bounded_tier(Arc::new(
@@ -74,8 +81,6 @@ impl Node {
                 .max_entry_size(LIMIT)
                 .build(),
         );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr: SocketAddr = listener.local_addr().unwrap();
         let routes = reapi::routes(cache.clone(), Arc::new(auth), Duration::from_secs(5));
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let settings = GrpcSettings {
@@ -755,6 +760,66 @@ async fn calls_need_the_cache_scopes() {
     let missing = node
         .cas()
         .find_missing_blobs(with_auth(find(), "Bearer ci-token"))
+        .await
+        .unwrap()
+        .into_inner()
+        .missing_blob_digests;
+    assert!(missing.is_empty());
+}
+
+#[tokio::test]
+async fn auth_works_over_ipv6() {
+    if std::net::TcpListener::bind("[::1]:0").is_err() {
+        eprintln!("skipped: this host has no IPv6");
+        return;
+    }
+    let auth = Authenticator::new(
+        Scopes::default(),
+        [(
+            "ci".to_owned(),
+            vec![hash_token("ci-token")],
+            [Scope::CacheRead, Scope::CacheWrite].into_iter().collect(),
+        )],
+        false,
+    );
+    // The default listen address, reached over IPv6 loopback.
+    let listener = mammoth_cache::server::bind("[::]:0".parse().unwrap()).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let node = Node::serve(
+        auth,
+        listener,
+        SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
+    )
+    .await;
+    let update = BatchUpdateBlobsRequest {
+        requests: vec![batch_update_blobs_request::Request {
+            digest: Some(digest_of(b"v6")),
+            data: Bytes::from_static(b"v6"),
+            compressor: 0,
+        }],
+        ..Default::default()
+    };
+    let err = node
+        .cas()
+        .batch_update_blobs(update.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(reason(&err), "CREDENTIALS_MISSING");
+    let basic = format!(
+        "Basic {}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "ci:ci-token")
+    );
+    node.cas()
+        .batch_update_blobs(with_auth(update, &basic))
+        .await
+        .unwrap();
+    let find = FindMissingBlobsRequest {
+        blob_digests: vec![digest_of(b"v6")],
+        ..Default::default()
+    };
+    let missing = node
+        .cas()
+        .find_missing_blobs(with_auth(find, "Bearer ci-token"))
         .await
         .unwrap()
         .into_inner()
