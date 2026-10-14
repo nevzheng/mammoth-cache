@@ -104,16 +104,9 @@ def test_invalid_keys_are_rejected_cleanly(client: CacheClient, key: str) -> Non
 
 @pytest.mark.control
 def test_concurrent_stores_of_one_key(
-    client: CacheClient, target: Target, controlled: Stack, request: pytest.FixtureRequest
+    client: CacheClient, target: Target, controlled: Stack
 ) -> None:
     """Racing builds store one key: one write wins everywhere, and still wins after a restart."""
-    if target.has(Feature.DISK):
-        request.applymarker(
-            pytest.mark.xfail(
-                strict=True,
-                reason="racing stores each answer 201; memory and disk keep different bodies",
-            )
-        )
     keys = [blobs.gradle_key() for _ in range(5)]  # several rounds, so the race shows reliably
     winners: dict[str, bytes] = {}
 
@@ -173,7 +166,6 @@ def test_entry_at_the_limit_is_kept(client: CacheClient, target: Target) -> None
     assert client.gradle_get(key).content == body
 
 
-@pytest.mark.xfail(strict=True, reason="a duplicate store is answered before its body is read")
 def test_duplicate_store_reads_the_body_first(client: CacheClient, target: Target) -> None:
     """Re-storing a present key answers 200, but only after reading the body.
 

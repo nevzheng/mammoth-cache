@@ -108,12 +108,7 @@ def test_namespaces_do_not_collide(client: CacheClient) -> None:
 @pytest.mark.parametrize(
     "store",
     [
-        pytest.param(
-            "cas",
-            marks=pytest.mark.xfail(
-                strict=True, reason="a duplicate store is answered before its body is read"
-            ),
-        ),
+        "cas",
         "ac",  # AC stores replace, so the body is always read
     ],
 )

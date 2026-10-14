@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from mammoth_e2e.target import Target
 
 
-@pytest.mark.xfail(strict=True, reason="axum's default 405 has an empty body, not AIP-193")
 @pytest.mark.parametrize("method", ["POST", "DELETE", "PATCH"])
 def test_wrong_method_on_gradle_is_an_aip_193_error(writer: CacheClient, method: str) -> None:
     response = writer.request(method, f"/cache/{blobs.gradle_key()}")
@@ -34,7 +33,6 @@ def test_wrong_method_on_gradle_is_an_aip_193_error(writer: CacheClient, method:
 
 
 @pytest.mark.requires("auth")
-@pytest.mark.xfail(strict=True, reason="the contract says OPTIONS needs no credentials (0001)")
 def test_maven_options_needs_no_credentials(target: Target, live: Stack | None) -> None:
     del live
     if "cache:read" in target.anonymous_scopes:
