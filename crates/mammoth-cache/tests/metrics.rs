@@ -93,9 +93,10 @@ const CATALOG: &[Metric] = &[
         kind: Kind::Counter,
         labels: &[
             Label("result", Some(&["hit", "miss"])),
-            Label("tier", Some(TIERS)),
+            // Empty on a miss.
+            Label("tier", Some(&["memory", "disk", "bucket", ""])),
         ],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_cache_stores_total",
@@ -104,13 +105,13 @@ const CATALOG: &[Metric] = &[
             "result",
             Some(&["stored", "exists", "too_large", "error"]),
         )],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_cache_entry_size_bytes",
         kind: Kind::Histogram,
         labels: &[],
-        live: false,
+        live: true,
     },
     Metric {
         name: "mammoth_cache_integrity_errors_total",
@@ -795,6 +796,30 @@ async fn workload_moves_the_live_counters() {
         0
     );
     assert_eq!(after.count("mammoth_bucket_upload_queue_entries", &[]), 0);
+    // Store outcomes: four written, one oversized, and a size for each one written.
+    let stores = |result| delta("mammoth_cache_stores_total", &[("result", result)]);
+    assert_eq!(stores("stored"), STORED);
+    assert_eq!(stores("too_large"), PUTS - STORED);
+    assert_eq!(stores("error"), 0);
+    assert_eq!(delta("mammoth_cache_entry_size_bytes_count", &[]), STORED);
+    // Hits by the tier that served them, misses with no tier.
+    assert_eq!(
+        delta("mammoth_cache_lookups_total", &[("result", "hit")]),
+        HITS
+    );
+    assert!(
+        delta(
+            "mammoth_cache_lookups_total",
+            &[("result", "hit"), ("tier", "disk")]
+        ) >= 1
+    );
+    assert_eq!(
+        delta(
+            "mammoth_cache_lookups_total",
+            &[("result", "miss"), ("tier", "")]
+        ),
+        MISSES
+    );
 }
 
 #[tokio::test]
