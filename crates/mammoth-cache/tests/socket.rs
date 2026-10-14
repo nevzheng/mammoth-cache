@@ -240,9 +240,17 @@ async fn a_body_shorter_than_its_content_length_stores_nothing() {
         .unwrap();
     stream.write_all(b"short").await.unwrap();
     stream.shutdown().await.unwrap();
-    // The server sees end of input before Content-Length bytes: no response, nothing stored.
-    let mut rest = Vec::new();
-    let _ = timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+    // The server sees end of input before Content-Length bytes: the client's fault, not a
+    // storage error, and nothing is stored.
+    let (status, body) = timeout(Duration::from_secs(5), read_response(&mut stream))
+        .await
+        .expect("no response");
+    assert_eq!(status, 400);
+    assert!(
+        String::from_utf8_lossy(&body).contains("UPLOAD_INCOMPLETE"),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
     assert_eq!(get(addr, "e1").await.0, 404);
 }
 

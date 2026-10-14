@@ -194,6 +194,16 @@ impl From<CacheError> for ApiError {
                     None => error,
                 }
             }
+            // The client's fault, and usually the client is gone: not worth an error log.
+            CacheError::Upload(ref source) => {
+                tracing::warn!(error = %source, "upload failed");
+                Self::new(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_ARGUMENT",
+                    "UPLOAD_INCOMPLETE",
+                    "The request body ended before it was complete.",
+                )
+            }
             CacheError::Unavailable(ref source) => {
                 tracing::warn!(error = %source, "storage unavailable");
                 Self::new(

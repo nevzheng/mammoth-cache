@@ -57,7 +57,7 @@ pub struct Config {
     /// L3, optional.
     pub bucket: Option<Bucket>,
     /// Users, tokens and scopes (design doc 0002).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "explicit_auth")]
     pub auth: Auth,
     /// The `/metrics` endpoint.
     #[serde(default)]
@@ -81,6 +81,9 @@ pub struct Server {
     pub idle_timeout: HumanDuration,
     /// How long an upload may send nothing before it is abandoned. Per read, not in total.
     pub body_read_timeout: HumanDuration,
+    /// How long a response may make no progress, because the client stopped reading, before the
+    /// connection is closed. Per write, not in total.
+    pub send_timeout: HumanDuration,
 }
 
 impl Default for Server {
@@ -90,6 +93,7 @@ impl Default for Server {
             shutdown_timeout: HumanDuration(Duration::from_secs(25)),
             idle_timeout: HumanDuration(Duration::from_secs(75)),
             body_read_timeout: HumanDuration(Duration::from_secs(60)),
+            send_timeout: HumanDuration(Duration::from_secs(60)),
         }
     }
 }
@@ -194,9 +198,11 @@ pub struct Bucket {
     pub region: Option<String>,
     /// An S3-compatible endpoint such as `MinIO` or Cloudflare R2.
     pub endpoint: Option<String>,
-    /// Allows an `http://` endpoint, such as a local `MinIO`, `SeaweedFS` or Azurite.
+    /// Allows or refuses an `http://` endpoint, such as a local `MinIO`, `SeaweedFS` or Azurite.
+    /// Unset, the environment decides (`AWS_ALLOW_HTTP`, `AZURE_ALLOW_HTTP`); `false` refuses
+    /// plain HTTP even when the environment allows it.
     #[serde(default)]
-    pub allow_http: bool,
+    pub allow_http: Option<bool>,
     /// When a `PUT` is answered relative to the upload.
     #[serde(default)]
     pub write: BucketWrite,
@@ -234,14 +240,32 @@ pub struct Auth {
     pub anonymous: Vec<Scope>,
     /// Users by name.
     pub users: BTreeMap<String, User>,
+    /// Whether the file has an `[auth]` table, even an empty one.
+    #[serde(skip)]
+    pub present: bool,
+}
+
+/// Deserializes `[auth]`, remembering that the file has one.
+fn explicit_auth<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Auth, D::Error> {
+    let mut auth = Auth::deserialize(deserializer)?;
+    auth.present = true;
+    Ok(auth)
 }
 
 impl Auth {
-    /// Whether the file configures any access control. Without users, an anonymous scope list
-    /// or `metrics.require_auth`, the node is open to everyone, as a fresh install should be.
+    /// Whether the file configures any access control. Without an `[auth]` table or
+    /// `metrics.require_auth`, the node is open to everyone, as a fresh install should be. An
+    /// `[auth]` table counts even when it is empty, so templating that drops the last user
+    /// refuses every request rather than opening the node.
     #[must_use]
     pub fn is_configured(&self, metrics: &Metrics) -> bool {
-        !self.users.is_empty() || !self.anonymous.is_empty() || metrics.require_auth
+        self.present || !self.users.is_empty() || !self.anonymous.is_empty() || metrics.require_auth
+    }
+
+    /// Whether `[auth]` is there but lets no request through: no users and no anonymous scopes.
+    #[must_use]
+    pub fn grants_nothing(&self) -> bool {
+        self.present && self.users.is_empty() && self.anonymous.is_empty()
     }
 
     /// The authenticator these settings describe.
@@ -531,6 +555,7 @@ impl Config {
             ("shutdown_timeout", server.shutdown_timeout),
             ("idle_timeout", server.idle_timeout),
             ("body_read_timeout", server.body_read_timeout),
+            ("send_timeout", server.send_timeout),
         ] {
             if value.0.is_zero() {
                 return Err(format!("server.{name} must be above zero"));
@@ -773,7 +798,7 @@ mod tests {
         assert_eq!(age, Duration::from_hours(30 * 24));
         let bucket = config.bucket.unwrap();
         assert_eq!(bucket.region.as_deref(), Some("us-east-1"));
-        assert!(bucket.allow_http);
+        assert_eq!(bucket.allow_http, Some(true));
         let ci = &config.auth.users["ci"];
         assert_eq!(ci.scopes, [Scope::CacheRead, Scope::CacheWrite]);
         assert_eq!(ci.token_hashes[0].0[0], 0x9f);
@@ -904,6 +929,22 @@ mod tests {
             let err = parse(text).unwrap_err();
             assert!(err.contains(expected), "{text:?}: {err}");
         }
+    }
+
+    #[test]
+    fn an_empty_auth_table_refuses_rather_than_opens() {
+        for table in ["[auth]\n", "[auth]\nanonymous = []\n[auth.users]\n"] {
+            let config = parse(&format!("{MINIMAL}{table}")).unwrap();
+            assert!(config.auth.grants_nothing(), "{table:?}");
+            let auth = config.auth.authenticator(&config.metrics);
+            assert!(!auth.is_open(), "{table:?}");
+            assert_eq!(
+                auth.authenticate(None).unwrap().scopes,
+                Scopes::default(),
+                "{table:?}"
+            );
+        }
+        assert!(!parse(MINIMAL).unwrap().auth.grants_nothing());
     }
 
     #[test]

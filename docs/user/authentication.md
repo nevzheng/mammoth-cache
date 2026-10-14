@@ -19,9 +19,10 @@ The Build Cache Node's `read` level is `cache:read`, and `readwrite` is `cache:r
 `cache:write`. `auth.anonymous` sets the scopes for requests without credentials, and defaults to
 none. Health checks are always open.
 
-A node with no users, no `anonymous` scopes and `metrics.require_auth = false` is open to everyone,
-so it works without a config file, and it logs a warning saying so. Once any of them is set, every
-request needs the scope for its route.
+A node with no `[auth]` table and `metrics.require_auth = false` is open to everyone, so it works
+without a config file, and it logs a warning saying so. Once the file has an `[auth]` table, every
+request needs the scope for its route. That holds for an empty table too: if templating drops the
+last user, the node refuses requests, and logs a warning, rather than opening up.
 
 ## Tokens
 
