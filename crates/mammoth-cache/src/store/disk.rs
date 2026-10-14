@@ -245,7 +245,13 @@ impl DiskStore {
             Ok::<_, io::Error>((lock, scanned, entries_dir, tmp_dir))
         })
         .await
-        .map_err(io::Error::other)??;
+        .map_err(io::Error::other)?
+        .map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("disk tier at {}: {e}", config.path.display()),
+            )
+        })?;
         let nonce = getrandom::u32().unwrap_or_else(|_| {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

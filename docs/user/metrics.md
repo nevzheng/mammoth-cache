@@ -64,7 +64,7 @@ cache key, a token or a user name.
 | `mammoth_bucket_uploads_total`         | counter   | `result` (`ok`, `skipped`, `error`)                | Uploads to the bucket, sync or background        |
 | `mammoth_bucket_uploads_dropped_total` | counter   | `reason` (`queue-full`, `shutdown`, `bucket-down`) | Uploads skipped; the entry stays local           |
 | `mammoth_tier_up`                      | gauge     | `tier` (`bucket`)                                  | `0` from a bucket failure until it answers again |
-| `mammoth_shutting_down`                | gauge     |                                                    | `1` while the node drains                        |
+| `mammoth_shutting_down`                | gauge     |                                                    | `0`, then `1` while the node drains              |
 
 ### Current population
 

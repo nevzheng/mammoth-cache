@@ -17,7 +17,9 @@ exception is `RUST_LOG`, which replaces `log.level` when set, for debugging one 
 
 Every key except `version` and `disk.path` is optional. Unknown keys, wrong types, bad units and
 contradictions are errors at startup. `mammoth config check` runs the same validation without
-starting the server.
+starting the server, and also checks what the file points at without contacting or writing
+anything: the TLS certificate loads, `bucket.url` is a URL the bucket client accepts, and
+`disk.path` (or its nearest parent that exists) is a writable directory.
 
 ### Units
 
@@ -170,12 +172,19 @@ tier is built on the `object_store` crate.
 | `url`          | string   | required             | `"s3://acme-build-cache/mammoth/"` | Available | `s3://`, `gs://`, `az://` or `file://` URL, with an optional prefix    |
 | `region`       | string   | from the environment | `"us-east-1"`                      | Available | Region, for S3                                                         |
 | `endpoint`     | string   | none                 | `"http://minio:9000"`              | Available | Endpoint for S3-compatible stores such as MinIO or R2                  |
-| `allow_http`   | boolean  | `false`              | `true`                             | Available | Allow an `http://` endpoint, such as a local MinIO, SeaweedFS, Azurite |
+| `allow_http`   | boolean  | from the environment | `true`                             | Available | Allow an `http://` endpoint, such as a local MinIO, SeaweedFS, Azurite |
 | `write`        | string   | `async`              | `"sync"`                           | Available | `async` answers a store once it's on disk; `sync` waits for the upload |
 | `upload_queue` | integer  | `1000`               | `5000`                             | Available | Uploads waiting at once, for `async`; more are dropped and counted     |
 | `timeout`      | duration | `2s`                 | `"5s"`                             | Available | The longest a bucket read may take, retries included; then it's a miss |
 | `retries`      | integer  | `1`                  | `3`                                | Available | Retries of a failed bucket request, within `timeout`; at most 10       |
 | `cooldown`     | duration | `30s`                | `"0s"`                             | Available | After a bucket failure, how long to skip the bucket; `0s` turns it off |
+
+Leave `allow_http` out and `AWS_ALLOW_HTTP` or `AZURE_ALLOW_HTTP` in the environment decides, as
+it does for any `object_store` client. Set it, and the file wins: `false` refuses a plain-HTTP
+endpoint even when the environment allows one.
+
+With `async` and no `[disk]`, there is no local copy to upload from later, so stores go to the
+bucket inline, as with `sync`, and the node logs a warning at startup.
 
 `upload_queue` must be at least 1 with `write = "async"`. With `sync`, a failed upload still
 answers the store with success, since the entry is stored on the node and Gradle would turn its

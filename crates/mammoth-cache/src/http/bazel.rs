@@ -170,7 +170,7 @@ impl From<CacheError> for Failure {
             CacheError::Unavailable(source) | CacheError::Internal(source) => source
                 .get_ref()
                 .is_some_and(<dyn std::error::Error + Send + Sync>::is::<DigestMismatch>),
-            CacheError::TooLarge { .. } => false,
+            CacheError::TooLarge { .. } | CacheError::Upload(_) => false,
         };
         if mismatch {
             Self::Mismatch

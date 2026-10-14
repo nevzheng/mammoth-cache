@@ -2,7 +2,6 @@
 //! keeps its own status rules; the core decides immutability and oversize handling by namespace.
 
 use std::{
-    io,
     pin::Pin,
     sync::{
         Arc, Mutex, PoisonError,
@@ -22,7 +21,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 
 use super::{AppState, error::ApiError};
 use crate::{
-    cache::{Admission, CacheError, StoreOutcome},
+    cache::{Admission, CacheError, StoreOutcome, upload_error},
     key::CacheKey,
     store::ByteStream,
 };
@@ -102,7 +101,7 @@ pub(super) async fn store_through<E: From<CacheError>>(
     let in_flight = !expects_continue(headers);
     let result = match state.cache.admit(key, declared_size) {
         Admission::Accept => {
-            let stream = wrap(body.clone().map_err(io::Error::other).boxed());
+            let stream = wrap(body.clone().map_err(upload_error).boxed());
             state
                 .cache
                 .put(key, declared_size, stream)

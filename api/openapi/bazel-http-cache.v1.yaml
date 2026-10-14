@@ -105,7 +105,12 @@ paths:
         "201":
           description: Stored.
         "400":
-          $ref: "#/components/responses/InvalidDigest"
+          description: The digest is not valid (`INVALID_DIGEST`), or the body ended before it was complete
+            (`UPLOAD_INCOMPLETE`).
+          content:
+            application/json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ErrorResponse"
         "413":
           $ref: "#/components/responses/EntryTooLarge"
         "401":
@@ -177,7 +182,9 @@ paths:
         "201":
           description: Stored.
         "400":
-          description: The digest is not valid, or the body does not hash to it.
+          description: |
+            The digest is not valid, the body does not hash to it (`DIGEST_MISMATCH`), or the body
+            ended before it was complete (`UPLOAD_INCOMPLETE`).
           content:
             application/json:
               schema:

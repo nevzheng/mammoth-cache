@@ -55,6 +55,17 @@ rust_test(
     deps = all_crate_deps(normal_dev = True),
 )
 
+rust_test(
+    name = "bin_test",
+    size = "small",
+    aliases = aliases(normal_dev = True),
+    crate = ":mammoth",
+    lint_config = ":lints",
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+    rustc_env_files = [":cargo_env"],
+    deps = all_crate_deps(normal_dev = True),
+)
+
 # One target per integration test file, like Cargo's tests/ directory, so a new file is never
 # silently skipped.
 [
