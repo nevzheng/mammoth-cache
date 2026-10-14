@@ -570,13 +570,31 @@ impl Cache {
         {
             return Ok(Some(self.hit(key, Tier::Bucket, blob, self.tiers.len())));
         }
-        self.misses.fetch_add(1, Ordering::Relaxed);
+        self.count_lookup(None);
         Ok(None)
+    }
+
+    /// Counts a load in the `serverStatus` totals and in `mammoth_cache_lookups_total` at once,
+    /// so the two cannot disagree. `tier` served the hit; `None` is a miss.
+    fn count_lookup(&self, tier: Option<Tier>) {
+        let (total, result, tier) = match tier {
+            Some(tier) => (&self.hits, "hit", tier.as_str()),
+            None => (&self.misses, "miss", ""),
+        };
+        total.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("mammoth_cache_lookups_total", "result" => result, "tier" => tier)
+            .increment(1);
+    }
+
+    /// Counts an oversized store in the `serverStatus` total and as `too_large`.
+    fn count_oversized(&self) {
+        self.oversized.fetch_add(1, Ordering::Relaxed);
+        metrics::counter!("mammoth_cache_stores_total", "result" => "too_large").increment(1);
     }
 
     /// Counts a hit at `depth` in the lookup order and promotes it into the local tiers above.
     fn hit(&self, key: &CacheKey, tier: Tier, blob: Blob, depth: usize) -> Hit {
-        self.hits.fetch_add(1, Ordering::Relaxed);
+        self.count_lookup(Some(tier));
         let above = &self.tiers[..depth];
         let blob = if above.is_empty() {
             blob
@@ -622,7 +640,7 @@ impl Cache {
         let Some(size) = declared_size.filter(|&size| size > limit) else {
             return Admission::Accept;
         };
-        self.oversized.fetch_add(1, Ordering::Relaxed);
+        self.count_oversized();
         match self.oversize_policy(key.namespace()) {
             OversizePolicy::Drop => {
                 tracing::info!(%key, size, limit, "dropping oversized entry");
@@ -660,6 +678,34 @@ impl Cache {
         key: &CacheKey,
         declared_size: Option<u64>,
         body: ByteStream,
+    ) -> Result<StoreOutcome, CacheError> {
+        let received = Arc::new(AtomicU64::new(0));
+        let result = self.store(key, declared_size, body, &received).await;
+        // Oversized stores were counted where they were found.
+        let counted = match &result {
+            Ok(StoreOutcome::Stored) => {
+                let size = declared_size.unwrap_or_else(|| received.load(Ordering::Relaxed));
+                #[allow(clippy::cast_precision_loss)] // A histogram; exact below 2^53 bytes.
+                metrics::histogram!("mammoth_cache_entry_size_bytes").record(size as f64);
+                Some("stored")
+            }
+            Ok(StoreOutcome::Exists) => Some("exists"),
+            Ok(StoreOutcome::Dropped) | Err(CacheError::TooLarge { .. }) => None,
+            Err(_) => Some("error"),
+        };
+        if let Some(result) = counted {
+            metrics::counter!("mammoth_cache_stores_total", "result" => result).increment(1);
+        }
+        result
+    }
+
+    /// [`put`](Self::put), with `received` counting the body's bytes as they pass.
+    async fn store(
+        &self,
+        key: &CacheKey,
+        declared_size: Option<u64>,
+        body: ByteStream,
+        received: &Arc<AtomicU64>,
     ) -> Result<StoreOutcome, CacheError> {
         match self.admit(key, declared_size) {
             Admission::Accept => {}
@@ -701,7 +747,7 @@ impl Cache {
         let limit = self.max_entry_size;
         let drain = self.oversize_policy(key.namespace()) == OversizePolicy::Drop;
         let (body, copies) = tee(
-            limit_stream(body, limit, drain),
+            limit_stream(body, limit, drain, received.clone()),
             others.len(),
             tee::Mode::Lockstep,
             None,
@@ -724,7 +770,7 @@ impl Cache {
                 Ok(outcome.into())
             }
             Err(e) if is_too_large(&e) => {
-                self.oversized.fetch_add(1, Ordering::Relaxed);
+                self.count_oversized();
                 if drain {
                     tracing::info!(%key, limit, "dropping oversized entry");
                     Ok(StoreOutcome::Dropped)
@@ -1078,17 +1124,19 @@ async fn upload(
 }
 
 /// Fails the stream once more than `limit` bytes have passed, so the store discards the entry.
-/// With `drain`, reads the rest of the body first, so the client finishes sending it.
-fn limit_stream(body: ByteStream, limit: u64, drain: bool) -> ByteStream {
-    Box::pin(stream::unfold(
-        Some((body, 0_u64)),
-        move |state| async move {
+/// With `drain`, reads the rest of the body first, so the client finishes sending it. `received`
+/// holds the bytes passed so far.
+fn limit_stream(body: ByteStream, limit: u64, drain: bool, received: Arc<AtomicU64>) -> ByteStream {
+    Box::pin(stream::unfold(Some((body, 0_u64)), move |state| {
+        let received = received.clone();
+        async move {
             let (mut body, seen) = state?;
             let chunk = match body.next().await? {
                 Ok(chunk) => chunk,
                 Err(e) => return Some((Err(e), None)),
             };
             let seen = seen + chunk.len() as u64;
+            received.store(seen, Ordering::Relaxed);
             if seen <= limit {
                 return Some((Ok(chunk), Some((body, seen))));
             }
@@ -1096,8 +1144,8 @@ fn limit_stream(body: ByteStream, limit: u64, drain: bool) -> ByteStream {
                 while let Some(Ok(_)) = body.next().await {}
             }
             Some((Err(io::Error::other(EntryTooLarge)), None))
-        },
-    ))
+        }
+    }))
 }
 
 fn is_too_large(e: &io::Error) -> bool {
