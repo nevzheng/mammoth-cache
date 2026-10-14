@@ -13,7 +13,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Path filters live here, not under `on:`, because the main ruleset requires `markdown`: a job
+  # skipped by its `if` reports success, while a workflow skipped by `paths` reports nothing and
+  # leaves the pull request waiting. Pushes to main run everything.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      markdown: ${{ steps.filter.outputs.markdown }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            markdown:
+              - "**/*.md"
+              - .rumdl.toml
+              - .github/workflows/lint.yml
+            workflows:
+              - .github/workflows/**
+              - .github/actions/**
+
+  # `rumdl check` also flags what `rumdl fmt` would change (aligned tables, long lines).
   markdown:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.markdown == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,3 +51,18 @@ jobs:
           config: .rumdl.toml
           report-type: annotations
           fail-on-error: true
+
+  # Workflow syntax, expressions, action inputs and the shell in `run:` steps (via shellcheck).
+  actionlint:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.workflows == 'true') }}
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install actionlint
+        run: |
+          curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
+            | bash -s -- "${ACTIONLINT_VERSION}" "${RUNNER_TEMP}"
+      - run: '"${RUNNER_TEMP}/actionlint" -color'
