@@ -188,14 +188,9 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         eviction: config.memory.eviction,
     })
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let mut max_entry_size = config.limits.max_entry_size.bytes();
-    if config.disk.is_none() && config.bucket.is_none() {
-        // Memory is the only copy, so an entry it cannot hold is over the limit: counted as
-        // oversized rather than answered as stored and lost.
-        max_entry_size = max_entry_size.min(config.memory.max_entry_size.bytes());
-    }
+    // With memory as the deepest tier, the cache caps entries at memory.max_entry_size.
     let mut builder = Cache::builder()
-        .max_entry_size(max_entry_size)
+        .max_entry_size(config.limits.max_entry_size.bytes())
         .bounded_tier(Arc::new(memory));
     if let Some(disk) = &config.disk {
         let store = DiskStore::open(DiskConfig {

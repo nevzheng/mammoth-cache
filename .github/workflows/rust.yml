@@ -46,6 +46,22 @@ jobs:
       - run: cargo nextest run --workspace --locked
       - run: cargo test --doc --workspace --locked
 
+  # The default build uses mimalloc; check the other allocator choices still build and pass.
+  allocators:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["--no-default-features", "--no-default-features --features jemalloc"]
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest run --workspace --locked ${{ matrix.features }}
+
   msrv:
     runs-on: ubuntu-latest
     steps:

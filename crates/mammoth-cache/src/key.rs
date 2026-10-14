@@ -208,4 +208,30 @@ mod tests {
             CacheKey::maven("abc").unwrap()
         );
     }
+
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            #[test]
+            fn gradle_accepts_exactly_lowercase_hex(key in "[0-9a-zA-Z./%-]{0,140}") {
+                let expected = !key.is_empty()
+                    && key.len() <= MAX_KEY_LEN
+                    && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+                prop_assert_eq!(CacheKey::gradle(&key).is_ok(), expected);
+            }
+
+            #[test]
+            fn maven_never_accepts_a_path_that_escapes(path in "[a-z./%-]{0,40}(/[a-z./%-]{0,8}){0,4}") {
+                if let Ok(key) = CacheKey::maven(&path) {
+                    prop_assert_eq!(key.name(), path.as_str());
+                    prop_assert!(!path.starts_with('/'));
+                    prop_assert!(path.split('/').all(|s| !s.is_empty() && s != "." && s != ".."));
+                    prop_assert!(!path.contains('%'));
+                }
+            }
+        }
+    }
 }
