@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft
+Accepted
 
 ## Summary
 
@@ -29,8 +29,8 @@ of `main` at 5281a94:
 - A request whose headers arrived over 5 s was still served: no header-read timeout is set.
 
 This doc covers the server's side (shutdown, readiness, timeouts, client addresses) and what the
-operator sets up around it (proxies, routing, DNS, resources). It does not cover in-process TLS,
-which stays a proxy's job for now, as [0005](0005-configuration.md) and the config loader say.
+operator sets up around it (proxies, routing, DNS, resources). In-process TLS was out of scope when
+this was written and is now its own doc, [0014](0014-tls.md); TLS at the proxy stays the default.
 
 ## Goals and non-goals
 
@@ -47,7 +47,7 @@ which stays a proxy's job for now, as [0005](0005-configuration.md) and the conf
 - A Helm chart, an operator or example manifests. The project ships none; the user guide's
   deployment page gives the settings and snippets an operator needs.
 - Service discovery or node-to-node traffic. Nodes stay independent.
-- In-process TLS, HTTP/2 or h2c to the backend.
+- HTTP/2 or h2c to the backend. (In-process TLS, a non-goal here, came later in 0014.)
 - A configurable path prefix (`base_path`). Serve the cache on its own host instead.
 
 ## Design objectives and constraints
@@ -93,10 +93,9 @@ sequenceDiagram
 3. **Stop accepting and finish in-flight requests.** axum's graceful shutdown does this, but it
    waits for connections without limit, so the server wraps it in the shutdown deadline.
 4. **Flush the bucket upload queue.** With `bucket.write = "async"`, entries waiting in the queue
-   are uploaded before exit. Today they are dropped, so an `emptyDir` disk loses them for good.
-   Uploads still queued when the deadline hits are dropped, logged and counted
-   (`mammoth_bucket_uploads_dropped_total{reason="shutdown"}`). Those entries then live only on
-   that node's disk; operators who cannot lose any use `bucket.write = "sync"`.
+   are uploaded before exit. Uploads still queued when the deadline hits are dropped, logged and
+   counted (`mammoth_bucket_uploads_dropped_total{reason="shutdown"}`). Those entries then live only
+   on that node's disk; operators who cannot lose any use `bucket.write = "sync"`.
 
 Steps 2 to 4 share one deadline, `shutdown_timeout` (default 25 s), kept below Kubernetes' 30 s so
 the node exits on its own. A second signal exits at once.
@@ -115,8 +114,8 @@ the node exits on its own. A second signal exits at once.
 The bucket is **not** a readiness check. A bucket outage should degrade every node to its local
 tiers, not take every node out of rotation at once. Bucket health shows in metrics instead.
 
-`disk.free_space_buffer` is parsed today but not enforced. The free-space check and refusing disk
-writes below the buffer land together, so the node never reports ready while it cannot store.
+`disk.free_space_buffer` is enforced: the free-space check fails readiness below the buffer, and the
+disk tier evicts down to the buffer, so the node never reports ready while it cannot store.
 
 Checks run in the background on an interval (for example 5 s) and the handler reads the cached
 result, so probes cost nothing and a slow disk cannot time a probe out.
@@ -157,8 +156,9 @@ forwarded headers: the server builds no absolute URLs and sends no redirects.
 
 ### Configuration
 
-A new `[server]` table for connection settings, added to [0005](0005-configuration.md) when it is
-built. `listen` stays a top-level key, as today, for compatibility:
+A `[server]` table for connection settings, documented in [0005](0005-configuration.md) and the
+configuration reference. `listen` stays a top-level key, as today, for compatibility.
+`trusted_proxies` is not accepted yet; it arrives with the access log:
 
 ```toml
 [server]

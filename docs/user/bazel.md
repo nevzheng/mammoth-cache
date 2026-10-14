@@ -5,10 +5,11 @@
 > are still to come.
 
 mammoth-cache serves Bazel's plain
-[HTTP remote cache](https://bazel.build/remote/caching#http-caching), with SHA-256 digests,
-Bazel's default. It does not serve remote execution or the gRPC cache (REAPI): mammoth-cache is a
-build cache, not a remote build system. For those, use
-[bazel-remote](https://github.com/buchgr/bazel-remote).
+[HTTP remote cache](https://bazel.build/remote/caching#http-caching), with SHA-256 digests, Bazel's
+default. The gRPC cache (REAPI Capabilities, ActionCache, CAS and ByteStream,
+[design doc 0016](../design/0016-reapi-cache.md)) is in progress and not on `main` yet; until it
+lands, `--remote_cache=grpc://` needs [bazel-remote](https://github.com/buchgr/bazel-remote). Remote
+execution is out of scope: mammoth-cache is a build cache, not a remote build system.
 
 ## Turn it on
 
@@ -50,8 +51,8 @@ checked-in `.bazelrc`; put them in a user `.bazelrc` or pass them on the command
   and a new result replaces the old one. The content-addressed store (`/cas/`) holds outputs keyed
   by their own SHA-256, and never changes.
 - **Uploads are verified.** A CAS upload that doesn't hash to its digest gets `400` and is not
-  stored. An upload to a digest that is already stored answers `200` without reading the body,
-  so the stored blob never changes.
+  stored. An upload to a digest that is already stored answers `200` and reads and discards the
+  body, so the stored blob never changes and the connection stays usable.
 - **Oversized stores get `413`.** Bazel warns about a failed upload and keeps using the cache.
 - **Size for the CAS.** The node doesn't check that an action result's outputs are still cached.
   On a hit with a missing output, Bazel runs the action again. With `--remote_download_minimal`,

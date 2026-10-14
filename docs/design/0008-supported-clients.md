@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft
+Accepted
 
 ## Summary
 
@@ -121,8 +121,8 @@ flowchart TB
     class auth,fill,l3 planned
 ```
 
-Dashed boxes are not built yet. The disk store is built but the `mammoth` binary does not wire it
-in yet, so today every request is served from L1 alone. Design doc 0003 tracks
+Dashed boxes marked the parts not yet built when this doc was written; all of them (authentication,
+the fill-on-hit promotion and the bucket tier) are on `main` now. Design doc 0003 tracks
 [implementation status](0003-architecture.md#implementation-status). `/metrics` and the probes stay
 outside auth unless `[metrics] require_auth` is set (0004).
 

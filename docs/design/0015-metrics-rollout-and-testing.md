@@ -2,7 +2,8 @@
 
 ## Status
 
-Draft
+Accepted. The hermetic catalog gate landed in #48; the instrumentation pull requests are in
+progress.
 
 ## Summary
 
