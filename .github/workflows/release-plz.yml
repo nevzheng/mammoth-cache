@@ -20,23 +20,30 @@ jobs:
     if: github.repository == 'nevzheng/mammoth-cache'
     runs-on: ubuntu-latest
     steps:
+      # Until the secret exists, skip the remaining steps with a warning instead of failing main.
       - &check-token
+        id: token
         name: Check RELEASE_PLZ_TOKEN
         env:
           TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "::error::Secret RELEASE_PLZ_TOKEN is not set; see docs/design/0009-releases.md"
-            exit 1
+            echo "::warning::RELEASE_PLZ_TOKEN is not set, skipping; run scripts/setup-release-token.sh"
+            echo "set=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "set=true" >> "$GITHUB_OUTPUT"
           fi
       - &checkout
+        if: steps.token.outputs.set == 'true'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
       - &toolchain
+        if: steps.token.outputs.set == 'true'
         run: rustup toolchain install
-      - uses: release-plz/action@v0.5
+      - if: steps.token.outputs.set == 'true'
+        uses: release-plz/action@v0.5
         with:
           command: release
         env:
@@ -52,7 +59,8 @@ jobs:
       - *check-token
       - *checkout
       - *toolchain
-      - uses: release-plz/action@v0.5
+      - if: steps.token.outputs.set == 'true'
+        uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:

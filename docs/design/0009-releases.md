@@ -178,7 +178,7 @@ The maintainer does this once:
    <https://github.com/users/nevzheng/packages/container/mammoth-cache/settings>. New packages start
    private, and there's no API to change that.
 
-Until step 1 is done, `release-plz.yml` fails on main with a message naming the secret.
+Until step 1 is done, `release-plz.yml` skips its work on main with a warning naming the secret.
 
 ### Feature sets and custom builds
 
