@@ -92,6 +92,8 @@ adds anything the node needs.
   `freeSpaceBufferSize`): the disk tier evicts whenever free space on the volume drops below it,
   and with `disk.size = "max-available"` the tier takes the volume minus the buffer. The Logs page
   says to raise the buffer above the logs' rotation limit when they share the volume.
+- No log file by default (Nevin, 2026-10-14). If a `log.file` option is ever added, it is off
+  unless set, and the node writes nothing to disk for logging otherwise.
 - Writes are synchronous through a line-buffered stdout. If the load test shows the access log
   costs more than 5% of p99 latency or throughput, switch to `tracing-appender`'s non-blocking
   writer and count dropped lines in a metric (open question 3).
