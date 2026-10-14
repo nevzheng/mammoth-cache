@@ -30,7 +30,7 @@ This doc covers:
 - the metadata kept for each entry, in memory and in the shared entry format.
 
 Size limits and admission thresholds (when an entry is too big for L1, or for the node at all) are
-in [0007: Entry size limits and admission](https://github.com/nevzheng/mammoth-cache/pull/17) and
+in [0007: Entry size limits and admission](0007-size-limits-and-admission.md) and
 are not repeated here. The disk tier's file layout is out of scope; [L2](#l2-index) only notes how
 it can reuse the same policies.
 
@@ -50,7 +50,7 @@ it can reuse the same policies.
   simple as possible to operate.
 - Time-based expiry in L1. Gradle entries are immutable and L1 is small, so capacity alone decides.
 - Persisting L1 across restarts. Nodes are stateless (0003).
-- Size-based admission rules, owned by the size limits doc.
+- Size-based admission rules, owned by [0007](0007-size-limits-and-admission.md).
 
 ## Design objectives and constraints
 
@@ -98,7 +98,7 @@ L3 entries stay byte-identical.
 ```toml
 [memory] # L1
 size = "1GiB"
-max_entry_size = "1MiB" # see the size limits doc
+max_entry_size = "1MiB" # see 0007
 eviction = "s3-fifo"    # s3-fifo | lru | w-tinylfu | sieve | fifo
 ```
 

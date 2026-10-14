@@ -13,7 +13,10 @@ use axum::{
 use futures_util::{StreamExt, TryStreamExt};
 
 use super::{AppState, error::ApiError};
-use crate::{key::CacheKey, store::PutOutcome};
+use crate::{
+    cache::{Admission, StoreOutcome},
+    key::CacheKey,
+};
 
 const OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
 
@@ -53,6 +56,10 @@ pub(super) async fn check_entry(
 }
 
 /// Stores an entry. Any `Content-Type` is accepted: answering `415` would fail the build.
+///
+/// An oversized entry is dropped with `200` by default, because any non-2xx store response turns
+/// Gradle's remote cache off for the rest of the build. `413` is used only under
+/// [`OversizePolicy::Reject`](crate::cache::OversizePolicy::Reject).
 pub(super) async fn store_entry(
     State(state): State<AppState>,
     Path(key): Path<String>,
@@ -64,11 +71,30 @@ pub(super) async fn store_entry(
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
-    // Returning before the body is polled means hyper never sends `100 Continue`, so a rejected
-    // upload is never transmitted.
+    // Answering before the body is polled means hyper never sends `100 Continue`, so a client
+    // that asked for it never uploads a refused or dropped entry.
+    match state.cache.admit(declared_size) {
+        Admission::Accept => {}
+        Admission::Reject(e) => return Err(e.into()),
+        Admission::Drop => {
+            // Without `Expect: 100-continue` the body is already on its way. Read and discard it,
+            // so the client finishes its upload and gets a clean response, not a reset.
+            if !expects_continue(&headers) {
+                let mut stream = body.into_data_stream();
+                while let Some(Ok(_)) = stream.next().await {}
+            }
+            return Ok(StatusCode::OK);
+        }
+    }
     let stream = body.into_data_stream().map_err(io::Error::other).boxed();
     match state.cache.put(&key, declared_size, stream).await? {
-        PutOutcome::Stored => Ok(StatusCode::CREATED),
-        PutOutcome::Exists => Ok(StatusCode::OK),
+        StoreOutcome::Stored => Ok(StatusCode::CREATED),
+        StoreOutcome::Exists | StoreOutcome::Dropped => Ok(StatusCode::OK),
     }
+}
+
+fn expects_continue(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::EXPECT)
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"100-continue"))
 }

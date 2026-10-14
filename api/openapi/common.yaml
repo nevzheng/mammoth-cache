@@ -129,9 +129,20 @@ components:
         message:
           type: string
           maxLength: 4096
+  parameters:
+    Expect:
+      name: Expect
+      in: header
+      required: false
+      description: Lets the server refuse an upload before the body is sent.
+      schema:
+        type: string
+        const: 100-continue
   responses:
     Unauthenticated:
-      description: Credentials are missing or wrong. Gradle fails the build on this status.
+      description: |
+        Credentials are missing or wrong. Gradle fails the build on this status. Every `401`
+        carries `WWW-Authenticate`: Maven sends credentials on `GET` only after this challenge.
       headers:
         WWW-Authenticate:
           schema:
@@ -204,3 +215,8 @@ components:
     basicAuth:
       type: http
       scheme: basic
+      description: The user name, and an access token as the password.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "An access token, as `Authorization: Bearer <token>`."

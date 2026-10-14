@@ -67,6 +67,7 @@ it out, remove the old one.
 | Route         | Credential                                                                                  |
 | ------------- | ------------------------------------------------------------------------------------------- |
 | `/cache/`     | HTTP Basic: the user name and the token as password. Gradle sends it preemptively.          |
+| `/maven/`     | HTTP Basic as on `/cache/`, sent on `GET` only after a `401` challenge. Bearer if set up.   |
 | `/v1/...`     | `Authorization: Bearer <token>`                                                             |
 | `/metrics`    | Open by default; `Authorization: Bearer <token>` when configured. Prometheus supports both. |
 | Health checks | Always open                                                                                 |
@@ -119,8 +120,8 @@ Failures use AIP-193 errors with domain `mammoth-cache.dev`:
 | Valid credentials, missing scope              | `403`  | `SCOPE_MISSING` (`requiredScope` in metadata) |
 
 `401` responses carry `WWW-Authenticate: Basic realm="mammoth-cache"` on `/cache/` and
-`WWW-Authenticate: Bearer` elsewhere. Both statuses fail a Gradle build, which is what a
-misconfigured credential should do.
+`/maven/`, and `WWW-Authenticate: Bearer` elsewhere. Maven depends on the challenge. Both statuses
+fail a Gradle build, which is what a misconfigured credential should do.
 
 ### Transport
 

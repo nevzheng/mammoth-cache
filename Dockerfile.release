@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+
+# Release image, built by release.yml from the static musl binaries it attaches to the GitHub
+# release, so the image and the download are the same bytes. Nothing is compiled here, so both
+# architectures build without emulation. `Dockerfile` remains the from-source build for local use.
+#
+# Build context: a directory holding linux-amd64/mammoth and linux-arm64/mammoth.
+
+FROM gcr.io/distroless/static-debian13:nonroot
+ARG TARGETARCH
+COPY --chmod=0755 linux-${TARGETARCH}/mammoth /mammoth
+# Keep in step with Dockerfile.
+ENV MAMMOTH_ADDR=0.0.0.0:5071
+EXPOSE 5071
+USER nonroot
+ENTRYPOINT ["/mammoth"]

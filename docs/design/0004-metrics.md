@@ -58,7 +58,7 @@ whether it is healthy (size, evictions, errors). The tiers are described in
 | Metric                                 | Type      | Labels                                              | Meaning                                                                 |
 | -------------------------------------- | --------- | --------------------------------------------------- | ----------------------------------------------------------------------- |
 | `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                    | Loads by outcome; `tier` is the tier that served a hit, empty on a miss |
-| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `error`) | Stores by outcome                                                       |
+| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `error`) | Stores by outcome; `too_large` entries were accepted and dropped        |
 | `mammoth_cache_entry_size_bytes`       | histogram |                                                     | Size of each stored entry                                               |
 | `mammoth_cache_integrity_errors_total` | counter   | `tier`                                              | Entries whose checksum did not match; served as misses                  |
 
@@ -91,15 +91,20 @@ costs money. The provider's own metrics cover it.
 
 #### Serving
 
-| Metric                                  | Type      | Labels                     | Meaning                                    |
-| --------------------------------------- | --------- | -------------------------- | ------------------------------------------ |
-| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`  | Requests by route template and status      |
-| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`          | Time to the last byte of the response      |
-| `mammoth_http_requests_in_flight`       | gauge     | `route`                    | Requests being served                      |
-| `mammoth_auth_failures_total`           | counter   | `reason`                   | Rejected credentials, by AIP-193 `reason`  |
-| `mammoth_build_info`                    | gauge     | `version`, `revision`      | Always 1; identifies the build             |
+| Metric                                  | Type      | Labels                              | Meaning                                       |
+| --------------------------------------- | --------- | ----------------------------------- | --------------------------------------------- |
+| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route template, status and client |
+| `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by Gradle version             |
+| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response         |
+| `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                         |
+| `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by AIP-193 `reason`     |
+| `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build                |
 
-`route` is the route template (`/cache/{key}`), never the requested path. Standard `process_*`
+`route` is the route template (`/cache/{key}`), never the requested path. `client` is `gradle`,
+`maven` or `other`, from the `User-Agent` prefix (`Gradle/`, `Apache-Maven/`). `gradle_version` is
+the major and minor version from `X-Gradle-Version` (`8.10`), or `other` if it does not parse.
+Neither is trusted: clients choose them, so they label metrics and logs and nothing else, and there
+is no list of supported clients. Standard `process_*`
 metrics (memory, CPU, file descriptors) are exported too.
 
 ### Example queries
@@ -128,17 +133,43 @@ the same values as the gauges and counters above, so the two never disagree.
 A test scrapes `/metrics` from a running server and checks it with `promtool check metrics`, and
 checks that every metric in this catalog is present.
 
+### Implementation
+
+No database or separate in-memory store is needed. Every metric is a number held in process
+memory: a counter or gauge is one atomic integer, and a histogram is a fixed array of atomic bucket
+counters plus a sum and a count. Memory is set by the catalog and label cardinality, not by
+traffic. A scrape of `/metrics` reads the current values and renders them as Prometheus text; the
+node keeps no history, and a restart resets counters to zero, which Prometheus's `rate()` handles.
+
+The leaning choice is the [`prometheus-client`](https://crates.io/crates/prometheus-client) crate,
+the official Rust client from the Prometheus project. It has typed metric families, label sets as
+Rust types, and atomic updates without locks. The alternative is the
+[`metrics`](https://crates.io/crates/metrics) facade with `metrics-exporter-prometheus`, which
+allows a different backend later at the cost of a global registry and string-keyed metrics. The
+choice is confirmed when `/metrics` is wired up ([0006](0006-server-framework.md)).
+
+### Namespace and access
+
+- **Namespace:** every metric name starts with `mammoth_`, so the node's metrics never collide with
+  others in the same Prometheus. The standard `process_*` metrics keep their usual names.
+- **Route:** `/metrics`, on the main listener, outside the `/cache/`, `/maven/` and `/v1/` routes.
+- **Access:** open by default, like the Build Cache Node's metrics and most Prometheus exporters.
+  With `[metrics] require_auth = true` ([0005](0005-configuration.md)), `/metrics` needs a Bearer
+  token whose user has the `metrics:read` scope ([0002](0002-authentication.md)). Prometheus sends
+  it with `authorization` and `credentials_file` in its scrape config. A scraper gets its own user
+  with only `metrics:read`, so its token cannot read or write the cache.
+
 ## Cross-cutting concerns
 
 ### Performance
 
 Counters and histograms are updated without locks on the request path. Gauges for population are
-maintained incrementally, never computed by scanning a tier.
+maintained incrementally, never computed by scanning a tier. Rendering a scrape is proportional to
+the number of series, which the bounded labels keep small.
 
 ### Security
 
-`/metrics` is open by default and can require a token ([0002](0002-authentication.md)). No metric
-exposes keys, tokens or user names.
+See [Namespace and access](#namespace-and-access). No metric exposes keys, tokens or user names.
 
 ## Alternatives considered
 
@@ -149,5 +180,6 @@ exposes keys, tokens or user names.
 
 ## Open questions
 
+- `prometheus-client` or the `metrics` facade, confirmed when `/metrics` is implemented.
 - Histogram bucket boundaries for each duration and size metric.
 - Whether to export per-user request counts behind a setting.

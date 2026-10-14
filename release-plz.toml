@@ -1,0 +1,17 @@
+# release-plz: versions, changelog, tags and GitHub releases from Conventional Commits.
+# Design: docs/design/0009-releases.md. Reference: https://release-plz.dev/docs/config
+
+[workspace]
+# Versions come from `v*` git tags, not a registry. Nothing is published to crates.io.
+git_only = true
+publish = false
+# Release only when a release PR merges, not on every push to main.
+release_always = false
+# The crate ships a binary; its Rust API is not a compatibility surface.
+semver_check = false
+git_tag_name = "v{{ version }}"
+pr_name = "chore: release v{{ version }}"
+
+[[package]]
+name = "mammoth-cache"
+changelog_path = "CHANGELOG.md"

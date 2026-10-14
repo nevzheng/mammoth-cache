@@ -7,6 +7,7 @@ reasoning.
 | Path                                 | Contract                             | Authored how            |
 | ------------------------------------ | ------------------------------------ | ----------------------- |
 | `openapi/gradle-build-cache.v1.yaml` | Gradle HTTP build cache (`/cache/`)  | By hand; Gradle owns it |
+| `openapi/maven-build-cache.v1.yaml`  | Maven build cache (`/maven/`)        | By hand; Maven owns it  |
 | `openapi/ops.v1.yaml`                | Health checks and Prometheus metrics | By hand                 |
 | `openapi/common.yaml`                | Shared AIP-193 error schema          | By hand                 |
 | `proto/mammoth/admin/v1/`            | Admin API (`/v1/...`)                | Proto first, AIP style  |
