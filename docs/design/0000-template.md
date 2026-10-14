@@ -8,9 +8,9 @@ Draft
 
 One paragraph describing the change.
 
-## Motivation
+## Context and scope
 
-Why this is needed, and what problem it solves.
+The background a reader needs, why this is needed, and what the doc covers.
 
 ## Goals and non-goals
 
@@ -25,6 +25,10 @@ Why this is needed, and what problem it solves.
 ## Design
 
 How it works, in enough detail to implement and review.
+
+## Cross-cutting concerns
+
+Performance, security, observability and operations, where they apply.
 
 ## Alternatives considered
 
