@@ -152,6 +152,14 @@ QEMU, and the image holds exactly the bytes in the release tarball. The existing
 as the from-source build for local use and is still checked on PRs by `docker.yml`, which no longer
 publishes.
 
+### Release candidates
+
+A release can be rehearsed with a pre-release version. In the release PR, edit the version to
+`X.Y.Z-rc.N` before merging. The tag `vX.Y.Z-rc.N` runs the same pipeline and smoke tests, but the
+GitHub release is marked as a pre-release (`git_release_type = "auto"`) and the image is tagged only
+`X.Y.Z-rc.N`: `X.Y` and `latest` keep pointing at the last full release. The final release is the
+next release PR with the version set back to `X.Y.Z`.
+
 ### Verification
 
 - Before anything is published, `scripts/smoke-test.sh` runs each binary on its own runner and the
