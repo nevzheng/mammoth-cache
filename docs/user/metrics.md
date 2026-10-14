@@ -5,10 +5,11 @@
 > `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total` (memory tier),
 > `mammoth_cache_integrity_errors_total` (disk tier), `mammoth_bucket_upload_queue_entries`,
 > `mammoth_bucket_uploads_total`, `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`,
-> `mammoth_disk_free_bytes`, the `mammoth_tls_*` metrics, `mammoth_tier_up`, and
-> `mammoth_tier_reads_total` and `mammoth_tier_writes_total` for the bucket tier only. The rest of
-> the catalog below is the contract from design doc [0004](../design/0004-metrics.md) and arrives
-> with the features it measures. Names and labels won't change without a breaking release.
+> `mammoth_disk_free_bytes`, `mammoth_build_info`, the `mammoth_tls_*` metrics, `mammoth_tier_up`,
+> `mammoth_tier_reads_total` and `mammoth_tier_writes_total` for the bucket tier only, and the
+> standard `process_*` metrics. The rest of the catalog below is the contract from design doc
+> [0004](../design/0004-metrics.md) and arrives with the features it measures. Names and labels
+> won't change without a breaking release.
 
 mammoth-cache exports Prometheus metrics at `/metrics` on the main port. The node exports raw
 counters, gauges and histograms only. Hit rates, request rates and dashboards are computed by
@@ -90,7 +91,8 @@ cloud provider's metrics.
 | `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build         |
 
 `route` is the route template, such as `/cache/{key}`. `client` is `gradle`, `maven` or `other`,
-from the `User-Agent`. The standard `process_*` metrics (memory, CPU, file descriptors) are planned
+from the `User-Agent`. `revision` is the commit an official build came from, and `unknown` for a
+build from source. The standard `process_*` metrics (memory, CPU, file descriptors) are exported
 too.
 
 ### TLS

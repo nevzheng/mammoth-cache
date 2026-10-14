@@ -1,0 +1,72 @@
+name: e2e
+
+# End-to-end suite: the image on the Compose stack (mammoth, SeaweedFS, Prometheus), driven by the
+# Python harness in tests/. See docs/design/0011-end-to-end-and-load-testing.md.
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - Dockerfile
+      - .dockerignore
+      - deploy/compose/**
+      - tests/**
+      - .github/workflows/e2e.yml
+      - .github/workflows/image.yml
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          working-directory: tests
+      - run: uv lock --check
+      - run: uv sync --locked
+      - run: uv run ruff format --check
+      - run: uv run ruff check --output-format=github
+      - run: uv run pyrefly check
+
+  image:
+    uses: ./.github/workflows/image.yml
+
+  e2e:
+    needs: image
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: mammoth-image
+          path: ${{ runner.temp }}
+      - run: docker load --input "$RUNNER_TEMP/mammoth-image.tar"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          working-directory: tests
+      - run: uv sync --locked
+      - run: uv run pytest e2e --junitxml="$RUNNER_TEMP/e2e.xml"
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-report
+          path: ${{ runner.temp }}/e2e.xml

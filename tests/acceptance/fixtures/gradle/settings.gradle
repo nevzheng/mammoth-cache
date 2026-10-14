@@ -1,0 +1,23 @@
+// Fixture for the acceptance suite. The harness sets the environment variables below; Groovy DSL
+// keeps one settings file valid from Gradle 7.6 to 9.x.
+rootProject.name = 'mammoth-fixture'
+include 'lib', 'app'
+
+buildCache {
+    local {
+        enabled = false // every hit must come from mammoth
+    }
+    remote(HttpBuildCache) {
+        url = System.getenv('MAMMOTH_CACHE_URL')
+        push = System.getenv('MAMMOTH_CACHE_PUSH') == 'true'
+        allowInsecureProtocol = true
+        useExpectContinue = System.getenv('MAMMOTH_EXPECT_CONTINUE') == 'true'
+        def user = System.getenv('MAMMOTH_CACHE_USER')
+        if (user) {
+            credentials {
+                username = user
+                password = System.getenv('MAMMOTH_CACHE_PASSWORD')
+            }
+        }
+    }
+}

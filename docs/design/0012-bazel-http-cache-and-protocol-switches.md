@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted. The REAPI non-goal was later narrowed by [0016](0016-reapi-cache.md): the gRPC cache
+is in scope, remote execution stays out.
 
 ## Summary
 

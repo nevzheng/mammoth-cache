@@ -39,6 +39,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The commit, as `revision` on `mammoth_build_info`.
+  MAMMOTH_REVISION: ${{ github.sha }}
   IMAGE: ghcr.io/${{ github.repository }}
   # Publish only from pushes to this repository: main (edge) or a tag (release).
   PUBLISH: ${{ github.event_name == 'push' && github.repository == 'nevzheng/mammoth-cache' }}

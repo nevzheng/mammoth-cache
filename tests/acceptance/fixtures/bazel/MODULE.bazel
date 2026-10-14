@@ -1,0 +1,3 @@
+# Fixture for the acceptance suite: genrules only, so builds need no toolchains or downloads
+# beyond Bazel's own modules.
+module(name = "mammoth_fixture")

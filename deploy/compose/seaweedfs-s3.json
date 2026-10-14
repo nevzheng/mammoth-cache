@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "mammoth-e2e",
+      "credentials": [
+        {
+          "accessKey": "mammoth-e2e",
+          "secretKey": "mammoth-e2e-secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}
