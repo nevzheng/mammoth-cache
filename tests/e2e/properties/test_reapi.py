@@ -13,6 +13,7 @@ import pytest
 from hypothesis import HealthCheck, settings
 from hypothesis.stateful import run_state_machine_as_test
 
+from mammoth_e2e import metrics
 from mammoth_e2e.client import basic
 from mammoth_e2e.model import full_access, writer_credentials
 from mammoth_e2e.parity import ParityModel
@@ -50,6 +51,16 @@ def test_grpc_and_http_share_one_cache(
             suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
         ),
     )
+
+
+def _bucket_up(target: Target, client: Reapi) -> None:
+    """Waits out a bucket cooldown left by earlier tests: while the node skips the bucket, its
+    background uploads are dropped and nothing written now would ever land there."""
+    deadline = time.monotonic() + 60  # the 30 s cooldown, then a probe on the next lookup
+    while metrics.scrape(target).value("mammoth_tier_up", tier="bucket") != 1:
+        assert time.monotonic() < deadline, "the bucket tier never came back up"
+        client.find_missing([client.digest(uuid.uuid4().bytes)])  # a lookup probes the bucket
+        time.sleep(1)
 
 
 def _landed(bucket: BucketInspector, suffix: str) -> list[str]:
@@ -96,6 +107,7 @@ def test_evicted_output_is_a_miss(
     file = salt + b"/file"
     tree = re.Tree(root=re.Directory(files=[re.FileNode(name="f", digest=client.digest(file))]))
     tree_bytes = tree.SerializeToString(deterministic=True)
+    _bucket_up(target, client)
     assert client.batch_update(
         [(client.digest(file), file), (client.digest(tree_bytes), tree_bytes)]
     ) == [0, 0]

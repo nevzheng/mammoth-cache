@@ -113,10 +113,24 @@ class ParityModel(RuleBasedStateMachine):
     def start(self) -> None:
         assert self.target.reapi_address, "the target has no reapi_address"
 
+    # Seeding both bundles means every rule can run from the first step; with them empty,
+    # Hypothesis discards so many rule choices that it fails its filter_too_much health check.
+
+    @initialize(target=blobs, size=SIZES, seed=st.text("0123456789abcdef", min_size=4, max_size=4))
+    def first_blob(self, size: int, seed: str) -> Blob:
+        return self.blob(size, seed)
+
+    @initialize(target=actions, seed=st.text("0123456789abcdef", max_size=8))
+    def first_action(self, seed: str) -> Action:
+        return self.action(seed)
+
     # Blobs
 
     @rule(target=blobs, size=SIZES, seed=st.text("0123456789abcdef", min_size=4, max_size=4))
     def new_blob(self, size: int, seed: str) -> Blob:
+        return self.blob(size, seed)
+
+    def blob(self, size: int, seed: str) -> Blob:
         """A blob nobody has stored: salted, except the empty one."""
         if size == 0:
             return Blob(b"")
@@ -215,11 +229,14 @@ class ParityModel(RuleBasedStateMachine):
         assert missing == expected, f"FindMissingBlobs missed {len(expected ^ missing)} digests"
 
     @rule(
-        found=st.lists(blobs, min_size=1, max_size=8, unique_by=lambda b: b.hash),
+        drawn=st.lists(blobs, min_size=1, max_size=8),
         corrupt=st.sets(st.integers(0, 7)),
     )
-    def batch_upload(self, found: list[Blob], corrupt: set[int]) -> None:
+    def batch_upload(self, drawn: list[Blob], corrupt: set[int]) -> None:
         """Each blob in a batch gets its own status; a corrupt one fails alone."""
+        # Deduplicated here rather than with `unique_by`, which a small bundle makes Hypothesis
+        # filter until it fails its health check.
+        found = list({b.hash: b for b in drawn}.values())
         if sum(b.size for b in found) > MAX_BATCH:
             return
         items: list[tuple[Message, bytes]] = []
@@ -275,15 +292,18 @@ class ParityModel(RuleBasedStateMachine):
 
     @rule(target=actions, seed=st.text("0123456789abcdef", max_size=8))
     def new_action(self, seed: str) -> Action:
+        return self.action(seed)
+
+    def action(self, seed: str) -> Action:
         command = self.salt + b"/action/" + seed.encode()
         return Action(sha256(command), len(command))
 
-    @rule(target=blobs, files=st.lists(blobs, max_size=4, unique_by=lambda b: b.hash))
+    @rule(target=blobs, files=st.lists(blobs, max_size=4))
     def new_tree(self, files: list[Blob]) -> Blob:
         """A `Tree` of one directory, as a blob. Only files the CAS holds, so that walking the
         tree or not (doc 0016, open question) gives the same answer: nothing is ever evicted."""
         re = self.grpc.s.re
-        held = [b for b in files if b.hash in self.cas]
+        held = [b for b in {b.hash: b for b in files}.values() if b.hash in self.cas]
         # An empty file named after the salt (the empty blob is always present) keeps this run's
         # trees apart from every other run's.
         nodes = [re.FileNode(name=self.salt.decode(), digest=self.digest(Blob(b"")))]

@@ -164,7 +164,8 @@ def test_read_only_user_uploading(project: BazelProject, target: Target) -> None
     before = scrape(target)
     result = project.build()
     assert result.ok, result.describe()
-    assert "Error while uploading artifact" in result.output, result.describe()
+    # Bazel 8 says "errors during bulk transfer", Bazel 9 quotes the PERMISSION_DENIED.
+    assert "WARNING: Remote Cache:" in result.output, result.describe()
     assert delta(before, scrape(target), "mammoth_cache_stores_total") == 0
     project.credentials = target.user("ci")
     result = project.build()
