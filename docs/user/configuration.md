@@ -1,20 +1,9 @@
 # Configuration reference
 
-> [!NOTE]
-> The config file is planned and not read yet. Today the only settings are two environment
-> variables, listed under [Settings available today](#settings-available-today). The rest of this
-> page is the reference for `mammoth.toml` as designed in design doc
-> [0005](../design/0005-configuration.md), so you can plan a deployment.
-
-## Settings available today
-
-| Variable       | Default        | Meaning                                                                                                                      |
-| -------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `MAMMOTH_ADDR` | `0.0.0.0:5071` | Address and port to listen on                                                                                                |
-| `RUST_LOG`     | `info`         | Log filter, in [`tracing` syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) |
-
-The memory tier is fixed at 1 GiB with S3-FIFO eviction, and the entry size limit at 100 MiB. Both
-variables go away when the config file lands.
+mammoth-cache reads one TOML file at startup. If no path is given and `./mammoth.toml` doesn't
+exist, the node runs on the defaults with memory only, so `docker run` works without a file, but
+entries are lost on restart. [Not enforced yet](#not-enforced-yet) lists the keys that are
+validated but don't take effect yet.
 
 ## The config file
 
@@ -81,8 +70,8 @@ format = "json"
 
 ### `[tls]`
 
-Optional. Omit it to serve plain HTTP, for example behind a proxy that terminates TLS. With
-authentication on and no TLS, the node logs a warning at startup.
+Not built yet: a `[tls]` section is rejected at startup. Serve plain HTTP behind a proxy that
+terminates TLS. With authentication on, the node logs a warning at startup.
 
 | Key    | Type   | Default  | Meaning                    |
 | ------ | ------ | -------- | -------------------------- |
@@ -111,12 +100,9 @@ authentication on and no TLS, the node logs a warning at startup.
 | Key                 | Type     | Default  | Meaning                                                      |
 | ------------------- | -------- | -------- | ------------------------------------------------------------ |
 | `path`              | path     | required | Directory for entries; each node needs its own               |
-| `size`              | size     | `10GiB`  | Space for entries, or `"max-available"` for the whole volume |
+| `size`              | size     | `10GiB`  | Space for entries                                            |
 | `free_space_buffer` | size     | `1GiB`   | Free space to leave on the volume                            |
 | `max_entry_age`     | duration | none     | Evict entries older than this                                |
-
-The disk tier is built (`mammoth_cache::store::disk::DiskStore`), but the `mammoth` binary turns it
-on only once the config file lands; a [custom build](custom-builds.md) can use it today.
 
 Entries are written to a temporary file and renamed into place, so a crash never leaves a partial
 entry. Each file carries a CRC32C checksum, checked on every read; a damaged entry is treated as a
@@ -126,8 +112,7 @@ starts warm.
 ### `[bucket]` (L3)
 
 Optional. With a bucket, every entry is uploaded to it, and several nodes can share it. The bucket
-tier is built (`mammoth_cache::store::bucket::BucketStore`, on the `object_store` crate), but like
-the disk tier it reaches the `mammoth` binary with the config file.
+tier is built on the `object_store` crate.
 
 | Key            | Type    | Default              | Meaning                                                                |
 | -------------- | ------- | -------------------- | ---------------------------------------------------------------------- |
@@ -170,3 +155,11 @@ See [Authentication](authentication.md).
 
 Nothing in the file is secret. It holds token hashes, not tokens, and bucket credentials come from
 the environment. It can live in version control and be readable by anyone who runs the node.
+
+## Not enforced yet
+
+mammoth-cache is pre-alpha. These keys are read and validated but don't take effect yet:
+
+- `[auth]` and `metrics.require_auth`: every request is allowed, and the node logs a warning.
+- `disk.free_space_buffer`, `bucket.write`, `bucket.upload_queue` and `log.access_log`.
+- `[tls]` is rejected; terminate TLS in a proxy.

@@ -323,20 +323,19 @@ flowchart LR
 | Gradle and Maven routes      | Done: `GET`, `HEAD`, `PUT`; Maven `OPTIONS` and `MKCOL`; namespaced keys                     |
 | Entry size limit             | Done: accept and drop for Gradle, `413` for Maven, by `Content-Length` and while streaming   |
 | L1 memory                    | Done: foyer, five eviction policies, eviction counter                                        |
-| L2 disk                      | Adapter done (atomic writes, CRC32C, warm index, LRU and age); not wired into the binary     |
-| L3 bucket                    | Adapter in review (PR #21); not wired                                                        |
+| L2 disk                      | Done: atomic writes, CRC32C, warm index, LRU and age; set by `[disk]`                        |
+| L3 bucket                    | Done: S3, GCS, Azure, local files; set by `[bucket]`                                         |
 | Core read path               | Lookup in order, failed tier skipped; no promotion, no single-flight                         |
 | Core write path              | Writes the first tier only; no L2-then-bucket path, no upload queue                          |
-| Configuration (0005)         | Not started: fixed 1 GiB memory tier, `MAMMOTH_ADDR` for the listener                        |
+| Configuration (0005)         | Done: `mammoth.toml`, `config check`; some keys validated but not enforced yet               |
 | Authentication (0002)        | Not started: every route is open                                                             |
 | Metrics (0004)               | Request counters and memory evictions only; the rest of the catalog is missing               |
 | Health                       | `/ping`, `/livez` done; `/readyz` always ready                                               |
 | Flow control                 | Not started: no per-tier concurrency limits, timeouts or connection limit                    |
 | TLS                          | Not started                                                                                  |
 
-Two consequences matter until configuration and the disk tier land. A node keeps nothing across a
-restart. And because the memory tier is the only tier, a store between its entry limit (a 64th of
-its capacity, 16 MiB by default) and the 100 MiB entry limit answers `201` but is not kept.
+Without `[disk]`, a node keeps nothing across a restart, and entries are capped at
+`memory.max_entry_size`.
 
 ## Cross-cutting concerns
 

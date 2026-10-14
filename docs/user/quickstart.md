@@ -43,15 +43,12 @@ cargo build --release --bin mammoth
 ./target/release/mammoth
 ```
 
-The binary listens on `0.0.0.0:5071`. Set `MAMMOTH_ADDR` to change it, and `RUST_LOG` to change the
-log level:
+With no config file, the binary listens on `0.0.0.0:5071` and keeps entries in memory only. To
+change that, write a [config file](configuration.md) and pass it with `--config`:
 
 ```sh
-MAMMOTH_ADDR=127.0.0.1:8080 RUST_LOG=debug ./target/release/mammoth
+./target/release/mammoth --config mammoth.toml
 ```
-
-These two variables are temporary. Once the [config file](configuration.md) lands, the address
-moves to `listen` and the log level to `[log]`.
 
 > [!NOTE]
 > From the first release, each GitHub release carries static Linux binaries for x86_64 and
