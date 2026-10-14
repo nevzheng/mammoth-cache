@@ -1,0 +1,172 @@
+name: release
+
+# Release binaries and the container image.
+#
+# - Tag `v*` (pushed by release-plz): attach binaries and SHA256SUMS to the GitHub release, and push
+#   the image as `X.Y.Z`, `X.Y` and `latest`.
+# - Push to main: push the image as `edge` and `sha-<commit>`. Binaries stay as run artifacts.
+# - Pull request touching release files, or a manual run: build everything, publish nothing.
+#
+# Binaries are built natively on amd64, arm64 and macOS runners (no QEMU). See
+# docs/design/0009-releases.md.
+on:
+  pull_request:
+    paths:
+      - Dockerfile.release
+      - release-plz.toml
+      - rust-toolchain.toml
+      - .github/workflows/release.yml
+      - .github/workflows/release-plz.yml
+  push:
+    branches: [main]
+    tags: ["v*"]
+    # Not applied to tag pushes.
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - rust-toolchain.toml
+      - Dockerfile.release
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Publish only from pushes to this repository: main (edge) or a tag (release).
+  PUBLISH: ${{ github.event_name == 'push' && github.repository == 'nevzheng/mammoth-cache' }}
+
+jobs:
+  binaries:
+    name: binary (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      # Installs the toolchain pinned in rust-toolchain.toml, then the target for it.
+      - run: rustup toolchain install && rustup target add ${{ matrix.target }}
+      # musl-gcc, for crates that compile C.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --profile dist --locked --bin mammoth --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          name="mammoth-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/dist/mammoth" LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum *.tar.gz > SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.tar.gz
+      # release-plz creates the release when it tags. Create one only if the tag was pushed by hand.
+      - name: Upload to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes
+          gh release upload "$TAG" dist/* --clobber
+
+  image:
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*-linux-musl"
+          path: dist
+          merge-multiple: true
+      # Lay out the build context as Dockerfile.release expects: linux-<arch>/mammoth.
+      - name: Stage binaries
+        run: |
+          for pair in amd64:x86_64 arm64:aarch64; do
+            arch="${pair%%:*}" target="${pair#*:}-unknown-linux-musl"
+            mkdir -p "context/linux-$arch"
+            tar -xzf "dist/mammoth-$target.tar.gz" -C "context/linux-$arch" --strip-components=1 \
+              "mammoth-$target/mammoth"
+          done
+      - uses: actions/checkout@v7
+        with:
+          path: src
+          sparse-checkout: Dockerfile.release
+          sparse-checkout-cone-mode: false
+      - uses: docker/setup-buildx-action@v4
+      - if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # `latest` follows the newest non-prerelease tag.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=edge,branch=main
+            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: context
+          file: src/Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+      - if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

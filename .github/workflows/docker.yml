@@ -1,7 +1,7 @@
 name: docker
 
-# PRs build the image (amd64 only, never pushed). Tags v* and manual runs build amd64 + arm64 and
-# push to ghcr.io/nevzheng/mammoth-cache.
+# Checks that the from-source Dockerfile still builds (amd64 only, never pushed). Published images
+# are built by release.yml from the release binaries, with Dockerfile.release.
 on:
   pull_request:
     paths:
@@ -11,8 +11,6 @@ on:
       - Cargo.lock
       - crates/**
       - .github/workflows/docker.yml
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -20,14 +18,10 @@ permissions:
 
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  cancel-in-progress: true
 
 jobs:
   image-build:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -40,36 +34,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  image-release:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=ref,event=branch
-            type=sha
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
