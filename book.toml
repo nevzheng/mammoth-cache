@@ -17,3 +17,5 @@ preferred-dark-theme = "navy"
 # Colors, logo and favicon come from branding/; scripts/docs.sh copies the assets in.
 theme = "book-theme"
 additional-css = ["branding/palette.css", "book-theme/mammoth.css"]
+# Renders Mermaid diagrams; see book-theme/mermaid-init.js.
+additional-js = ["book-theme/mermaid-init.js"]

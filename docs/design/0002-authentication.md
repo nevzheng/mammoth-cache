@@ -86,6 +86,28 @@ buildCache {
 }
 ```
 
+The check on every request:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as Auth
+    participant H as Handler
+    C->>A: request, with Basic or Bearer credentials or none
+    alt no credentials
+        A->>A: use the anonymous scopes
+    else credentials
+        A->>A: find user, SHA-256 the token, compare in constant time
+        A-->>C: 401 CREDENTIALS_INVALID, if no match
+    end
+    alt route's scope granted
+        A->>H: forward, with the user name for the access log
+        H-->>C: response
+    else not granted
+        A-->>C: 401 CREDENTIALS_MISSING without credentials, else 403 SCOPE_MISSING
+    end
+```
+
 ### Failures
 
 Failures use AIP-193 errors with domain `mammoth-cache.dev`:
