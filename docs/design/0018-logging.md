@@ -87,6 +87,11 @@ adds anything the node needs.
 - Rotation belongs to whatever runs the process: the kubelet rotates container logs (by default
   at 10 MiB, keeping 5 files), Docker's `json-file` and `local` drivers take `max-size` and
   `max-file`, and journald rotates by size. The user guide gives the settings.
+- Rotated logs that share a volume with `disk.path` (a bare-metal host, or a future log file) are
+  protected by `disk.free_space_buffer` (default 1 GiB, the Build Cache Node's
+  `freeSpaceBufferSize`): the disk tier evicts whenever free space on the volume drops below it,
+  and with `disk.size = "max-available"` the tier takes the volume minus the buffer. The Logs page
+  says to raise the buffer above the logs' rotation limit when they share the volume.
 - Writes are synchronous through a line-buffered stdout. If the load test shows the access log
   costs more than 5% of p99 latency or throughput, switch to `tracing-appender`'s non-blocking
   writer and count dropped lines in a metric (open question 3).
@@ -289,8 +294,8 @@ environment variables. Only if someone asks; a collector reading stdout does the
 ## Alternatives considered
 
 - **A separate access log stream or file.** Platforms already route by a field, and a second
-  destination means a path, rotation and a second agent input. A `log.access_log_path` can be
-  added later for bare-metal installs if asked.
+  destination means a path, rotation and a second agent input. A `log.access_log_path` (sized
+  against `disk.free_space_buffer`, as above) can be added later for bare-metal installs if asked.
 - **Our own short field names** (`method`, `path`, `client`). Shorter lines, but every platform
   then needs a mapping, and an OTLP export later would rename everything.
 - **Nested JSON objects** (`{"http":{"request":{"method":"GET"}}}`) instead of dotted keys.
