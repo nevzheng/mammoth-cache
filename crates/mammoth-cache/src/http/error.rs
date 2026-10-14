@@ -467,14 +467,30 @@ mod tests {
         text.lines().map(str::to_owned).collect()
     }
 
+    /// Every server fault with a source logs from one throttled call site, whose throttle is a
+    /// static shared by the whole test binary. So this is the only test that sends one through
+    /// `render`, and it checks them in order: the first at `error`, the next within the interval
+    /// at `debug`.
     #[tokio::test]
-    async fn a_server_fault_is_logged_once_with_its_source() {
+    async fn server_faults_log_once_with_their_source_and_repeats_are_throttled() {
         let error = ApiError::from(cache::Error::from(std::io::Error::other("disk on fire")));
         let lines = logged(error).await;
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("ERROR"), "{lines:?}");
         assert!(lines[0].contains("reason=\"INTERNAL\""), "{lines:?}");
         assert!(lines[0].contains("disk on fire"), "{lines:?}");
+
+        // A panic is a server fault too, with its message as the source.
+        let lines = logged_response(panicked(Box::new("boom"))).await;
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("DEBUG"), "throttled: {lines:?}");
+        assert!(lines[0].contains("handler panicked: boom"), "{lines:?}");
+
+        let (status, _, json) = rendered(Method::GET, "/panic").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(json["error"]["status"], "INTERNAL");
+        assert_eq!(json["error"]["message"], "Internal error.");
+        assert_eq!(json["error"]["details"][0]["reason"], "INTERNAL");
     }
 
     #[tokio::test]
@@ -557,20 +573,6 @@ mod tests {
         let (status, _, json) = rendered(Method::GET, "/ok").await;
         assert_eq!(status, StatusCode::OK);
         assert!(json.is_null());
-    }
-
-    #[tokio::test]
-    async fn a_panic_is_500_internal_and_logged_with_its_message() {
-        let (status, _, json) = rendered(Method::GET, "/panic").await;
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(json["error"]["status"], "INTERNAL");
-        assert_eq!(json["error"]["message"], "Internal error.");
-        assert_eq!(json["error"]["details"][0]["reason"], "INTERNAL");
-
-        let response = panicked(Box::new("boom"));
-        let lines = logged_response(response).await;
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].contains("handler panicked: boom"), "{lines:?}");
     }
 
     #[test]
