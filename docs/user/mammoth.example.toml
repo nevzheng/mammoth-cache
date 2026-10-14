@@ -1,0 +1,76 @@
+# mammoth.toml: every key, with its default where it has one.
+#
+# Copy what you need. Only `version` is required, plus `path` if you keep [disk]. Leave out
+# [tls] to serve plain HTTP, [disk] to run from memory only, and [bucket] to run without a
+# shared bucket. The reference is docs/user/configuration.md.
+
+# The file's schema version. Required.
+version = 1
+# Address and port. 5071 is the Build Cache Node's port; use "[::]:5071" for IPv6.
+listen = "0.0.0.0:5071"
+
+# Which client protocols get routes. One that is off answers 404, like an unknown path.
+[protocols]
+gradle = true # /cache/
+maven = true # /maven/
+bazel = false # /bazel/ac/ and /bazel/cas/
+
+# Connection timeouts and shutdown.
+[server]
+shutdown_delay = "5s" # keep serving after SIGTERM while load balancers see /readyz fail
+shutdown_timeout = "25s" # finish requests and queued uploads within this; below the grace period
+idle_timeout = "75s" # above the load balancer's idle timeout (600s on Google Cloud)
+body_read_timeout = "60s" # abandon an upload that sends nothing this long; per read
+
+# Optional: serve HTTPS. Leave the section out to serve plain HTTP behind a proxy.
+[tls]
+cert = "/etc/mammoth/tls/tls.crt" # PEM chain, server certificate first; re-read every minute
+key = "/etc/mammoth/tls/tls.key" # PEM private key, unencrypted
+
+# Limits for every tier.
+[limits]
+max_entry_size = "100MiB" # Gradle stores above it are dropped with 200; Maven and Bazel get 413
+
+# L1: memory.
+[memory]
+size = "1GiB" # bytes of entries kept in memory
+max_entry_size = "1MiB" # larger entries skip memory; at most limits.max_entry_size
+eviction = "s3-fifo" # or lru, w-tinylfu, sieve, fifo
+
+# L2: disk. Optional; without it the node keeps entries in memory only.
+[disk]
+path = "/var/lib/mammoth" # required; one directory per node
+size = "10GiB" # bytes of entries kept on disk; at least limits.max_entry_size
+free_space_buffer = "1GiB" # free space to keep on the volume
+max_entry_age = "30d" # optional; evict entries older than this
+
+# L3: a bucket shared by every node. Optional. Credentials come from the environment.
+[bucket]
+url = "s3://acme-build-cache/mammoth/" # or gs://, az://, file://, with an optional prefix
+region = "us-east-1" # S3 only; defaults to the environment's
+endpoint = "http://minio.build.svc:9000" # S3-compatible stores only
+allow_http = true # needed for an http:// endpoint
+write = "async" # answer once on disk and upload in the background; "sync" waits for the upload
+upload_queue = 1000 # uploads waiting at once, for async; more are dropped and counted
+timeout = "2s" # a bucket read slower than this, retries included, is a miss
+retries = 1 # retries of a failed request, within timeout; at most 10
+cooldown = "30s" # after a bucket failure, skip the bucket this long; "0s" never skips
+
+# Who may do what. With no users, no anonymous scopes and metrics.require_auth off, the node is
+# open to everyone.
+[auth]
+anonymous = [] # scopes for requests without credentials, e.g. ["cache:read"]
+
+# One table per user. Create tokens with `mammoth token new`; only the hash goes here.
+[auth.users.ci]
+note = "Continuous integration" # free text
+scopes = ["cache:read", "cache:write"] # cache:read, cache:write, metrics:read, admin:read
+token_hashes = ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"]
+
+[metrics]
+require_auth = false # require a token with metrics:read on /metrics
+
+[log]
+level = "info" # error, warn, info, debug or trace; RUST_LOG overrides it
+format = "json" # or "text"
+access_log = true # log each request (not enforced yet)
