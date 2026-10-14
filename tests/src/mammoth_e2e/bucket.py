@@ -46,6 +46,9 @@ class BucketInspector:
     def read(self, key: str) -> bytes:
         return self.client.get_object(Bucket=self.bucket.name, Key=key)["Body"].read()
 
+    def delete(self, key: str) -> None:
+        self.client.delete_object(Bucket=self.bucket.name, Key=key)
+
     def writable(self) -> bool:
         """Whether a probe object can be written and read back now."""
         key = self.bucket.prefix + ".e2e-probe"

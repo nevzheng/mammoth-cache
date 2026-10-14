@@ -24,6 +24,7 @@ endpoint = "http://seaweedfs:8333"
 gradle = true
 maven = true
 bazel = true
+reapi = true # gRPC on 0.0.0.0:6011, published as 6013
 
 [auth]
 anonymous = ["cache:read"] # anyone may read; only ci writes

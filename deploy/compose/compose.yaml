@@ -4,7 +4,7 @@
 #
 #   docker compose -f deploy/compose/compose.yaml up --build
 #
-# Nodes: `mammoth` (port 5071, REAPI gRPC on 6011) needs credentials for everything; `mammoth-open` (5073) lets
+# Nodes: `mammoth` (port 5071, REAPI gRPC on 6011) needs credentials for everything; `mammoth-open` (5073, gRPC on 6013) lets
 # anonymous requests read; `mammoth-proxied` sits behind nginx, on 8080 with the documented proxy
 # settings and on 8081 with nginx's defaults. `mammoth-memory` (5074), `mammoth-memory-disk` (5075)
 # and `mammoth-memory-bucket` (5076) run the other tier topologies; `mammoth-max-available` (5077)
@@ -45,6 +45,7 @@ services:
     <<: *mammoth
     ports:
       - "${MAMMOTH_OPEN_PORT:-5073}:5071"
+      - "${MAMMOTH_OPEN_REAPI_PORT:-6013}:6011"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-open.toml:/etc/mammoth/mammoth.toml:ro
       - mammoth-open-disk:/var/lib/mammoth

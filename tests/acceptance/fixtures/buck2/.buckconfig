@@ -1,0 +1,19 @@
+# Fixture for the Buck2 acceptance tests. No prelude: //:rules.bzl has the only rules, so builds
+# need no downloads. The harness writes the cache address and token into .buckconfig.local.
+[cells]
+root = .
+prelude = prelude
+
+[cell_aliases]
+config = prelude
+ovr_config = prelude
+fbcode = prelude
+fbsource = prelude
+buck = prelude
+toolchains = prelude
+
+[buildfile]
+name = BUCK
+
+[build]
+execution_platforms = root//:platform
