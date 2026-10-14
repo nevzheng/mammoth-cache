@@ -328,7 +328,7 @@ flowchart LR
 | Core read path               | Lookup in order, failed tier skipped, hits promoted to faster tiers; no single-flight        |
 | Core write path              | Writes every local tier at once; bucket inline or through a bounded upload queue             |
 | Configuration (0005)         | Done: `mammoth.toml`, `config check`; some keys validated but not enforced yet               |
-| Authentication (0002)        | Not started: every route is open                                                             |
+| Authentication (0002)        | Done: users, token hashes, scopes, Basic and Bearer; open until configured                   |
 | Metrics (0004)               | Request counters and memory evictions only; the rest of the catalog is missing               |
 | Health                       | `/ping`, `/livez` done; `/readyz` always ready                                               |
 | Flow control                 | Not started: no per-tier concurrency limits, timeouts or connection limit                    |

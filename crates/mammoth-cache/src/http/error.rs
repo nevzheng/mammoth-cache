@@ -13,6 +13,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
+    auth::Scope,
     cache::CacheError,
     key::{CacheKey, InvalidKey, Namespace},
 };
@@ -97,6 +98,19 @@ impl ApiError {
         let mut error = Self::new(StatusCode::UNAUTHORIZED, "UNAUTHENTICATED", reason, message);
         error.challenge = true;
         error
+    }
+
+    /// `403 PERMISSION_DENIED`: the user is known but lacks `scope`.
+    #[must_use]
+    pub fn permission_denied(user: &str, scope: Scope) -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "PERMISSION_DENIED",
+            "SCOPE_MISSING",
+            format!("User {user:?} lacks the {scope} scope."),
+        )
+        .with("user", user)
+        .with("requiredScope", scope.as_str())
     }
 
     /// `405` for a method the route does not support.

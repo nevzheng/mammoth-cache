@@ -5,14 +5,15 @@ points users at Develocity Edge. mammoth-cache is an open-source alternative for
 self-hosted node without Develocity.
 
 > [!WARNING]
-> mammoth-cache is pre-alpha. Today it can stand in for a BCN in a trial (Gradle and Maven, memory
-> only, no authentication), but not in production: the disk tier, config file and authentication
-> are still planned. This page describes the full migration as designed, so you can plan it.
+> mammoth-cache is pre-alpha. Today it can stand in for a BCN in a trial (Gradle and Maven, with
+> memory, disk and bucket tiers and authentication), but not in production: there is no release
+> yet, and TLS is still planned. This page describes the full migration as designed, so you can
+> plan it.
 
 ## What stays the same
 
 - **Gradle builds.** The cache lives at `/cache/` on port 5071, as on the BCN. Change the host in
-  `url` and, once authentication lands, the password; nothing else in `settings.gradle.kts`.
+  `url` and the password; nothing else in `settings.gradle.kts`.
 - **Health check.** `GET /ping` answers `SUCCESS`.
 - **Defaults.** 100 MiB entry limit, 1 GiB free-space buffer, no anonymous access.
 - **Access levels.** BCN's `read`, `readwrite` and anonymous access map onto scopes.

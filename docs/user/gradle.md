@@ -54,11 +54,7 @@ a TLS-terminating proxy or load balancer in front of it.
 
 ### Credentials
 
-> [!NOTE]
-> Authentication is planned and not built yet. Today every request is allowed, so only run a node
-> where everyone who can reach it may read and write the cache.
-
-Once it lands, Gradle sends a user name and a token with HTTP Basic auth, the only scheme Gradle's
+Gradle sends a user name and a token with HTTP Basic auth, the only scheme Gradle's
 client supports. Keep the token out of the build script:
 
 ```kotlin

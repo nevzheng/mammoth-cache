@@ -14,7 +14,11 @@ use std::{
 
 use serde::{Deserialize, Deserializer, de};
 
-use crate::store::memory::EvictionPolicy;
+pub use crate::auth::Scope;
+use crate::{
+    auth::{Authenticator, Scopes},
+    store::memory::EvictionPolicy,
+};
 
 /// The only schema version this build reads.
 pub const VERSION: u32 = 1;
@@ -161,6 +165,34 @@ pub struct Auth {
     pub users: BTreeMap<String, User>,
 }
 
+impl Auth {
+    /// Whether the file configures any access control. Without users, an anonymous scope list
+    /// or `metrics.require_auth`, the node is open to everyone, as a fresh install should be.
+    #[must_use]
+    pub fn is_configured(&self, metrics: &Metrics) -> bool {
+        !self.users.is_empty() || !self.anonymous.is_empty() || metrics.require_auth
+    }
+
+    /// The authenticator these settings describe.
+    #[must_use]
+    pub fn authenticator(&self, metrics: &Metrics) -> Authenticator {
+        if !self.is_configured(metrics) {
+            return Authenticator::open();
+        }
+        Authenticator::new(
+            self.anonymous.iter().copied().collect::<Scopes>(),
+            self.users.iter().map(|(name, user)| {
+                (
+                    name.clone(),
+                    user.token_hashes.iter().map(|h| h.0).collect(),
+                    user.scopes.iter().copied().collect(),
+                )
+            }),
+            metrics.require_auth,
+        )
+    }
+}
+
 /// `[auth.users.<name>]`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,23 +203,6 @@ pub struct User {
     pub scopes: Vec<Scope>,
     /// Hashes of the user's tokens; any one of them authenticates.
     pub token_hashes: Vec<TokenHash>,
-}
-
-/// A permission (design doc 0002).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
-pub enum Scope {
-    /// `GET` and `HEAD` on cache entries.
-    #[serde(rename = "cache:read")]
-    CacheRead,
-    /// `PUT` on cache entries.
-    #[serde(rename = "cache:write")]
-    CacheWrite,
-    /// `/metrics`, when metrics require authentication.
-    #[serde(rename = "metrics:read")]
-    MetricsRead,
-    /// The admin API.
-    #[serde(rename = "admin:read")]
-    AdminRead,
 }
 
 /// A token's SHA-256 hash, written `sha256:<64 hex characters>`.
@@ -671,6 +686,31 @@ mod tests {
             let err = parse(text).unwrap_err();
             assert!(err.contains(expected), "{text:?}: {err}");
         }
+    }
+
+    #[test]
+    fn auth_is_open_until_configured() {
+        let open = parse(MINIMAL).unwrap();
+        assert!(open.auth.authenticator(&open.metrics).is_open());
+
+        let text = format!(
+            "{MINIMAL}[auth]\nanonymous = [\"cache:read\"]\n[auth.users.ci]\n\
+             scopes = [\"cache:read\", \"cache:write\"]\ntoken_hashes = [\"sha256:{}\"]\n",
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        );
+        let config = parse(&text).unwrap();
+        let auth = config.auth.authenticator(&config.metrics);
+        assert!(!auth.is_open());
+        let anonymous = auth.authenticate(None).unwrap();
+        assert!(anonymous.scopes.contains(Scope::CacheRead));
+        assert!(!anonymous.scopes.contains(Scope::CacheWrite));
+        let ci = auth
+            .authenticate(Some(crate::auth::Credentials::Basic {
+                user: "ci",
+                token: "test",
+            }))
+            .unwrap();
+        assert!(ci.scopes.contains(Scope::CacheWrite));
     }
 
     #[test]

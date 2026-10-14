@@ -160,6 +160,5 @@ the environment. It can live in version control and be readable by anyone who ru
 
 mammoth-cache is pre-alpha. These keys are read and validated but don't take effect yet:
 
-- `[auth]` and `metrics.require_auth`: every request is allowed, and the node logs a warning.
 - `disk.free_space_buffer` and `log.access_log`.
 - `[tls]` is rejected; terminate TLS in a proxy.
