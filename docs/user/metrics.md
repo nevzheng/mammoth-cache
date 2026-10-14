@@ -44,12 +44,12 @@ cache key, a token or a user name.
 
 ### Cache outcomes
 
-| Metric                                 | Type      | Labels                                              | Meaning                                                    |
-| -------------------------------------- | --------- | --------------------------------------------------- | ---------------------------------------------------------- |
-| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                    | Loads by outcome; `tier` served the hit, empty on a miss   |
-| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `error`) | Stores by outcome; `too_large` were accepted and dropped   |
-| `mammoth_cache_entry_size_bytes`       | histogram |                                                     | Size of each stored entry                                  |
-| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                              | Entries whose checksum didn't match; served as misses      |
+| Metric                                 | Type      | Labels                                                              | Meaning                                                                                                                        |
+| -------------------------------------- | --------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `mammoth_cache_lookups_total`          | counter   | `result` (`hit`, `miss`), `tier`                                    | Loads by outcome; `tier` served the hit, empty on a miss                                                                       |
+| `mammoth_cache_stores_total`           | counter   | `result` (`stored`, `exists`, `too_large`, `client_error`, `error`) | Stores by outcome; `too_large` were accepted and dropped; `client_error` failed on the client's side, such as a dropped upload |
+| `mammoth_cache_entry_size_bytes`       | histogram |                                                                     | Size of each stored entry                                                                                                      |
+| `mammoth_cache_integrity_errors_total` | counter   | `tier`                                                              | Entries whose checksum didn't match; served as misses                                                                          |
 
 ### Per tier
 

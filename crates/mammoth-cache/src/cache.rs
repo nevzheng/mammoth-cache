@@ -28,7 +28,7 @@ use std::{
 
 use futures_util::{StreamExt, future, stream};
 use tokio::{
-    sync::{Notify, mpsc},
+    sync::{Notify, mpsc, watch},
     task::JoinHandle,
 };
 
@@ -662,7 +662,7 @@ impl Cache {
             blob
         } else {
             match self.gate.promotion(key) {
-                Some(guard) => promote(key, tier, blob, above, guard),
+                Some(promotion) => promote(key, tier, blob, above, promotion),
                 // A client is storing the key now; its copy is the one to keep.
                 None => blob,
             }
@@ -756,6 +756,8 @@ impl Cache {
             }
             Ok(StoreOutcome::Exists) => Some("exists"),
             Ok(StoreOutcome::Dropped) | Err(CacheError::TooLarge { .. }) => None,
+            // The client's fault, such as a dropped connection, not the node's.
+            Err(CacheError::Upload(_)) => Some("client_error"),
             Err(_) => Some("error"),
         };
         if let Some(result) = counted {
@@ -778,6 +780,10 @@ impl Cache {
             Admission::Reject(e) => return Err(e),
         }
         let immutable = key.namespace().is_immutable();
+        // A promotion in progress shows the entry exists; an immutable one need not wait for it.
+        if immutable && self.gate.promoting(key) && self.head(key).await?.is_some() {
+            return Ok(StoreOutcome::Exists);
+        }
         // Racing stores of an immutable key may carry different bytes (a task that is not
         // reproducible), so they write one at a time, and the later ones find the first's copy.
         // A later one writes only if the first failed.
@@ -1039,14 +1045,14 @@ async fn bucket_read<'a, T>(
 }
 
 /// Copies a hit from a lower tier into the tiers `above` it while it streams to the client. Each
-/// copy is written in the background and abandoned if it falls behind the client.
-/// `guard` holds off stores of the key until every copy is done.
+/// copy is written in the background and abandoned if it falls behind the client, or when a store
+/// of the key stops the promotion. Its guard holds off stores of the key until every copy is done.
 fn promote(
     key: &CacheKey,
     from: Tier,
     blob: Blob,
     above: &[TierHandle],
-    guard: gate::Guard,
+    promotion: gate::Promotion,
 ) -> Blob {
     if above.is_empty() {
         return blob;
@@ -1061,11 +1067,12 @@ fn promote(
         return blob;
     }
     let (body, copies) = tee(blob.body, above.len(), tee::Mode::Lossy, Some(size));
-    let guard = Arc::new(guard);
+    let guard = Arc::new(promotion.guard);
     for (handle, copy) in above.into_iter().zip(copies) {
         let store = handle.store.clone();
         let key = key.clone();
         let guard = guard.clone();
+        let copy = abortable(copy, promotion.abort.clone());
         tokio::spawn(async move {
             let _guard = guard;
             let to = store.tier();
@@ -1086,6 +1093,25 @@ fn promote(
         });
     }
     Blob { size, body }
+}
+
+/// `body`, failing as abandoned once `abort` turns `true`, so the tier writing it stops and cleans
+/// up as for a copy that fell behind.
+fn abortable(body: ByteStream, abort: watch::Receiver<bool>) -> ByteStream {
+    stream::unfold(Some((body, abort)), |state| async move {
+        let (mut body, mut abort) = state?;
+        let item = tokio::select! {
+            biased;
+            // The sender lives as long as the promotion's guard, which outlives this copy.
+            _ = abort.wait_for(|abort| *abort) => None,
+            item = body.next() => Some(item?),
+        };
+        match item {
+            Some(item) => Some((item, Some((body, abort)))),
+            None => Some((Err(tee::abandoned()), None)),
+        }
+    })
+    .boxed()
 }
 
 /// Uploads stored entries to the bucket, reading each one back from the deepest local tier.
@@ -1836,6 +1862,63 @@ mod tests {
             assert_eq!(read_all(hit.blob).await, b"from elsewhere");
             eventually_has(t.disk.as_ref(), &k).await;
             eventually_has(t.memory.as_ref(), &k).await;
+        }
+
+        /// A read that stalls part way holds a promotion open. A store of the key must not wait
+        /// for the client: a mutable store stops the promotion, and an immutable one, which the
+        /// promotion shows exists, answers at once.
+        #[tokio::test]
+        async fn a_stalled_download_does_not_hold_up_stores() {
+            let t = tiers().await;
+            // A memory tier that takes the entry, so its hit is promoted.
+            let memory: MemoryStore =
+                MemoryStore::with_config(crate::store::memory::MemoryConfig {
+                    max_entry_bytes: 1 << 20,
+                    ..crate::store::memory::MemoryConfig::new(4 << 20)
+                })
+                .unwrap();
+            let cache = Arc::new(
+                Cache::builder()
+                    .bounded_tier(Arc::new(memory))
+                    .bounded_tier(t.disk.clone())
+                    .build(),
+            );
+            let big = vec![9_u8; 512 * 1024];
+            for k in [
+                CacheKey::maven("v1/g/a/buildinfo.xml").unwrap(),
+                key("5a11ed"),
+            ] {
+                t.disk
+                    .put(
+                        &k,
+                        None,
+                        stream::iter([Ok(Bytes::from(big.clone()))]).boxed(),
+                    )
+                    .await
+                    .unwrap();
+                // The client takes the first chunk, then stops reading.
+                let hit = cache.get(&k).await.unwrap().unwrap();
+                assert_eq!(hit.tier, Tier::Disk);
+                let mut stalled = hit.blob.body;
+                stalled.next().await.unwrap().unwrap();
+                assert!(cache.gate.promoting(&k));
+
+                let stored = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cache.put(&k, Some(3), body(&[b"new"])),
+                )
+                .await
+                .expect("the store waited for the stalled download")
+                .unwrap();
+                if k.namespace().is_immutable() {
+                    assert_eq!(stored, StoreOutcome::Exists);
+                } else {
+                    assert_eq!(stored, StoreOutcome::Stored);
+                    let hit = cache.get(&k).await.unwrap().unwrap();
+                    assert_eq!(read_all(hit.blob).await, b"new");
+                }
+                drop(stalled);
+            }
         }
 
         #[tokio::test]

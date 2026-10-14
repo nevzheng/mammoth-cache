@@ -143,6 +143,150 @@ impl ResolvesServerCert for Certificates {
     }
 }
 
+/// How long a generated certificate is valid: 397 days, the most browsers and Apple clients accept.
+pub const GENERATED_VALIDITY: Duration = Duration::from_hours(397 * 24);
+
+/// The common name of a generated certificate.
+const GENERATED_NAME: &str = "mammoth-cache";
+
+/// For `[tls] generate`: writes a self-signed certificate and key to the two paths when neither
+/// exists, and leaves both alone when both do. Returns whether it wrote them.
+///
+/// The certificate is ECDSA P-256, valid for [`GENERATED_VALIDITY`], for `hostnames` (or, when
+/// empty, the machine's hostname, `localhost`, `127.0.0.1` and `::1`). Each file is written to a
+/// temporary file and renamed, the key first and readable by the owner only, so a crash never
+/// leaves half a key.
+pub fn generate_if_missing(
+    cert_path: &Path,
+    key_path: &Path,
+    hostnames: &[String],
+) -> io::Result<bool> {
+    if !both_missing(cert_path, key_path)? {
+        return Ok(false);
+    }
+    let hostnames = if hostnames.is_empty() {
+        default_hostnames()
+    } else {
+        hostnames.to_vec()
+    };
+    let (cert_pem, key_pem) = self_signed(hostnames)
+        .map_err(|error| io::Error::other(format!("cannot generate a TLS certificate: {error}")))?;
+    write_new(key_path, key_pem.as_bytes(), 0o600)?;
+    write_new(cert_path, cert_pem.as_bytes(), 0o644)?;
+    Ok(true)
+}
+
+/// Whether `[tls] generate` would write a new pair: true when neither file exists, false when both
+/// do, and an error when only one does, as that pair can't be served.
+pub fn both_missing(cert_path: &Path, key_path: &Path) -> io::Result<bool> {
+    let exists = |path: &Path| {
+        path.try_exists().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("cannot check {}: {error}", path.display()),
+            )
+        })
+    };
+    match (exists(cert_path)?, exists(key_path)?) {
+        (false, false) => Ok(true),
+        (true, true) => Ok(false),
+        (cert_exists, _) => {
+            let (present, missing) = if cert_exists {
+                (cert_path, key_path)
+            } else {
+                (key_path, cert_path)
+            };
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{} exists but {} does not; restore it, or delete both to generate a new \
+                     self-signed pair",
+                    present.display(),
+                    missing.display()
+                ),
+            ))
+        }
+    }
+}
+
+/// The SHA-256 fingerprint of a certificate, as colon-separated hex (`AB:CD:...`), the form
+/// `openssl x509 -fingerprint -sha256` and `keytool -printcert` print.
+#[must_use]
+pub fn fingerprint(cert: &CertificateDer<'_>) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(cert)
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// The machine's hostname, if it has one, then `localhost` and the loopback addresses.
+fn default_hostnames() -> Vec<String> {
+    let mut names = Vec::new();
+    #[cfg(unix)]
+    {
+        let uname = rustix::system::uname();
+        let host = uname.nodename().to_string_lossy();
+        if !host.is_empty() && host != "localhost" {
+            names.push(host.into_owned());
+        }
+    }
+    names.extend(["localhost", "127.0.0.1", "::1"].map(String::from));
+    names
+}
+
+/// A new self-signed certificate and its key, both PEM.
+fn self_signed(hostnames: Vec<String>) -> Result<(String, String), rcgen::Error> {
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+    // rcgen makes an IP address SAN of each name that parses as one.
+    let mut params = rcgen::CertificateParams::new(hostnames)?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, GENERATED_NAME);
+    // An hour back, so a client whose clock is a little behind still accepts it.
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now - time::Duration::HOUR;
+    params.not_after = now + GENERATED_VALIDITY;
+    let cert = params.self_signed(&key)?;
+    Ok((cert.pem(), key.serialize_pem()))
+}
+
+/// Writes a file that doesn't exist yet: to a temporary file beside it with `mode`, then renamed
+/// into place, creating the directory if needed.
+fn write_new(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
+    use std::io::Write as _;
+    let context = |error: io::Error| {
+        io::Error::new(
+            error.kind(),
+            format!("cannot write {}: {error}", path.display()),
+        )
+    };
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(context)?;
+    }
+    let mut temp_name = path.file_name().unwrap_or_default().to_owned();
+    temp_name.push(".tmp");
+    let temp = path.with_file_name(temp_name);
+    // A leftover from a crash may have other permissions; start over.
+    match std::fs::remove_file(&temp) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(context(error)),
+        _ => {}
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+    #[cfg(not(unix))]
+    let _ = mode;
+    let mut file = options.open(&temp).map_err(context)?;
+    file.write_all(contents).map_err(context)?;
+    file.sync_all().map_err(context)?;
+    drop(file);
+    std::fs::rename(&temp, path).map_err(context)
+}
+
 fn provider() -> Arc<CryptoProvider> {
     Arc::new(aws_lc_rs::default_provider())
 }
@@ -269,6 +413,25 @@ fn not_after(cert: &[u8]) -> Option<u64> {
     let not_before_rest = tlv(validity)?.2;
     let (tag, time, _) = tlv(not_before_rest)?;
     parse_time(tag, time)
+}
+
+/// Whether the certificate names itself as its issuer, as a self-signed certificate does.
+#[must_use]
+pub fn is_self_signed(cert: &[u8]) -> bool {
+    let fields = || {
+        let (_, certificate, _) = tlv(cert).filter(|(tag, _, _)| *tag == SEQUENCE)?;
+        let (_, tbs, _) = tlv(certificate).filter(|(tag, _, _)| *tag == SEQUENCE)?;
+        let (tag, _, mut rest) = tlv(tbs)?;
+        if tag == VERSION {
+            rest = tlv(rest)?.2; // Skip the serial number too.
+        }
+        rest = tlv(rest)?.2; // signature
+        let (_, issuer, rest) = tlv(rest)?;
+        let rest = tlv(rest)?.2; // validity
+        let (_, subject, _) = tlv(rest)?;
+        Some(issuer == subject)
+    };
+    fields().unwrap_or(false)
 }
 
 const SEQUENCE: u8 = 0x30;
@@ -532,6 +695,115 @@ mod tests {
         assert!(certs.reload().is_err());
         let expected = CertificateDer::from_pem_slice(second.cert.as_bytes()).unwrap();
         assert_eq!(certs.current().cert[0], expected);
+    }
+
+    #[test]
+    fn generates_a_self_signed_pair_once() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory that doesn't exist yet, as on a fresh volume.
+        let cert_path = dir.path().join("tls").join("tls.crt");
+        let key_path = dir.path().join("tls").join("tls.key");
+        assert!(both_missing(&cert_path, &key_path).unwrap());
+        assert!(generate_if_missing(&cert_path, &key_path, &[]).unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        assert!(!dir.path().join("tls").join("tls.key.tmp").exists());
+
+        let certs = Certificates::load(&cert_path, &key_path).unwrap();
+        let leaf = certs.current().cert[0].clone();
+        assert!(is_self_signed(&leaf));
+        assert!(contains(&leaf, b"mammoth-cache"));
+        assert!(contains(&leaf, b"localhost"));
+        assert!(contains(&leaf, &[127, 0, 0, 1]));
+        assert!(contains(&leaf, &std::net::Ipv6Addr::LOCALHOST.octets()));
+        let expiry = not_after(&leaf).unwrap();
+        let expected = unix_now() + GENERATED_VALIDITY.as_secs();
+        assert!(expiry.abs_diff(expected) < 60, "{}", format_utc(expiry));
+        assert_eq!(fingerprint(&leaf).len(), 32 * 3 - 1);
+
+        // A restart keeps the files byte for byte.
+        let before = (
+            std::fs::read(&cert_path).unwrap(),
+            std::fs::read(&key_path).unwrap(),
+        );
+        assert!(!generate_if_missing(&cert_path, &key_path, &[]).unwrap());
+        let after = (
+            std::fs::read(&cert_path).unwrap(),
+            std::fs::read(&key_path).unwrap(),
+        );
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn generates_for_the_given_hostnames() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert_path = dir.path().join("tls.crt");
+        let key_path = dir.path().join("tls.key");
+        let names = ["cache.example.com".to_owned(), "10.1.2.3".to_owned()];
+        generate_if_missing(&cert_path, &key_path, &names).unwrap();
+        let leaf = Certificates::load(&cert_path, &key_path)
+            .unwrap()
+            .current()
+            .cert[0]
+            .clone();
+        assert!(contains(&leaf, b"cache.example.com"));
+        assert!(contains(&leaf, &[10, 1, 2, 3]));
+        assert!(!contains(&leaf, b"localhost"));
+    }
+
+    #[test]
+    fn refuses_to_generate_beside_half_a_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let pair = pair();
+        let cert_path = dir.path().join("tls.crt");
+        let key_path = write(dir.path(), "tls.key", &pair.key);
+        for _ in 0..2 {
+            let error = generate_if_missing(&cert_path, &key_path, &[]).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            let message = error.to_string();
+            assert!(message.contains("tls.key exists but"), "{message}");
+            assert!(message.contains("delete both"), "{message}");
+            assert_eq!(std::fs::read_to_string(&key_path).unwrap(), pair.key);
+            assert!(!cert_path.exists());
+            // The same with the other file present.
+            std::fs::remove_file(&key_path).unwrap();
+            write(dir.path(), "tls.crt", &pair.cert);
+            let error = both_missing(&cert_path, &key_path).unwrap_err();
+            assert!(error.to_string().contains("tls.crt exists but"), "{error}");
+            std::fs::remove_file(&cert_path).unwrap();
+            write(dir.path(), "tls.key", &pair.key);
+        }
+    }
+
+    #[test]
+    fn tells_self_signed_from_issued() {
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "test CA");
+        let ca = ca_params.self_signed(&ca_key).unwrap();
+        let issuer = rcgen::Issuer::new(ca_params, &ca_key);
+        let leaf_key = KeyPair::generate().unwrap();
+        let mut leaf_params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+        leaf_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "leaf");
+        let leaf = leaf_params.signed_by(&leaf_key, &issuer).unwrap();
+        assert!(is_self_signed(ca.der()));
+        assert!(!is_self_signed(leaf.der()));
+        assert!(!is_self_signed(b""));
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 
     #[test]

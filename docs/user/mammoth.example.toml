@@ -33,6 +33,8 @@ send_timeout = "60s" # drop a client that stops reading a response this long; pe
 [tls]
 cert = "/etc/mammoth/tls/tls.crt" # PEM chain, server certificate first; re-read every minute
 key = "/etc/mammoth/tls/tls.key" # PEM private key, unencrypted
+generate = false # true: write a self-signed pair to cert and key at startup if neither exists
+hostnames = [] # names for a generated certificate; empty for the hostname, localhost and loopback
 
 # Limits for every tier.
 [limits]

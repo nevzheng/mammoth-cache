@@ -46,6 +46,27 @@ jobs:
       - run: cargo nextest run --workspace --locked
       - run: cargo test --doc --workspace --locked
 
+  # The REAPI code in src/reapi/proto/ is generated and checked in. Regenerate it from the vendored
+  # protos and fail on any difference, so the protos, the generator and the code cannot drift.
+  reapi-codegen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The generator runs rustfmt with the pinned toolchain's component.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: scripts/reapi-codegen
+      - run: cargo run --locked --manifest-path scripts/reapi-codegen/Cargo.toml
+      - name: Generated code matches the protos
+        run: |
+          git add --intent-to-add crates/mammoth-cache/src/reapi/proto
+          if ! git diff --exit-code -- crates/mammoth-cache/src/reapi/proto; then
+            echo "::error::src/reapi/proto/ is out of date: run" \
+              "cargo run --manifest-path scripts/reapi-codegen/Cargo.toml and commit the result"
+            exit 1
+          fi
+
   # The default build uses mimalloc; check the other allocator choices still build and pass.
   allocators:
     runs-on: ubuntu-latest

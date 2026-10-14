@@ -183,7 +183,7 @@ impl std::fmt::Display for Abandoned {
 
 impl std::error::Error for Abandoned {}
 
-fn abandoned() -> io::Error {
+pub(crate) fn abandoned() -> io::Error {
     io::Error::other(Abandoned)
 }
 

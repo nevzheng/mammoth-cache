@@ -168,7 +168,7 @@ async fn serve(config: Config) -> io::Result<()> {
     let auth = config.auth.authenticator(&config.metrics);
     // Before anything else, so a bad certificate fails fast.
     let certificates = match &config.tls {
-        Some(tls) => Some(Arc::new(Certificates::load(&tls.cert, &tls.key)?)),
+        Some(tls) => Some(Arc::new(load_certificates(tls)?)),
         None => None,
     };
     if !config.auth.is_configured(&config.metrics) {
@@ -323,6 +323,25 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
     Ok(builder.build())
 }
 
+/// Loads the `[tls]` certificate, first writing a self-signed one if `generate` is on and there is
+/// none.
+fn load_certificates(tls: &config::Tls) -> io::Result<Certificates> {
+    let created = tls.generate && tls::generate_if_missing(&tls.cert, &tls.key, &tls.hostnames)?;
+    let certificates = Certificates::load(&tls.cert, &tls.key)?;
+    let leaf = &certificates.current().cert[0];
+    if tls.generate && tls::is_self_signed(leaf) {
+        tracing::warn!(
+            created,
+            path = %tls.cert.display(),
+            fingerprint = %tls::fingerprint(leaf),
+            "serving a self-signed TLS certificate: clients refuse it until they trust this file \
+             (import it into the JVM trust store) or skip verification; delete the certificate \
+             and key and restart to generate a new one"
+        );
+    }
+    Ok(certificates)
+}
+
 fn bucket_config(bucket: &config::Bucket) -> BucketConfig {
     BucketConfig {
         region: bucket.region.clone(),
@@ -339,7 +358,12 @@ fn bucket_config(bucket: &config::Bucket) -> BucketConfig {
 /// writes nothing.
 fn check(config: &Config) -> Result<(), String> {
     if let Some(tls) = &config.tls {
-        Certificates::load(&tls.cert, &tls.key).map_err(|e| e.to_string())?;
+        // With generate, a missing pair is fine: startup writes it.
+        let generated = tls.generate
+            && tls::both_missing(&tls.cert, &tls.key).map_err(|e| format!("tls: {e}"))?;
+        if !generated {
+            Certificates::load(&tls.cert, &tls.key).map_err(|e| e.to_string())?;
+        }
     }
     if let Some(bucket) = &config.bucket {
         BucketStore::open(&bucket_config(bucket)).map_err(|e| format!("bucket.url: {e}"))?;
@@ -504,6 +528,41 @@ mod tests {
             let err = check(&config(dir.path(), extra)).unwrap_err();
             assert!(err.contains(expected), "{extra:?}: {err}");
         }
+    }
+
+    #[test]
+    fn generate_writes_a_missing_pair_at_startup_and_check_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("tls/tls.crt");
+        let key = dir.path().join("tls/tls.key");
+        let tls = format!(
+            "[tls]\ncert = \"{}\"\nkey = \"{}\"\n",
+            cert.display(),
+            key.display()
+        );
+        let generate = format!("{tls}generate = true\n");
+
+        let err = check(&config(dir.path(), &tls)).unwrap_err();
+        assert!(err.contains("cannot read the TLS certificate"), "{err}");
+        check(&config(dir.path(), &generate)).unwrap();
+        assert!(
+            !cert.exists() && !key.exists(),
+            "config check wrote the pair"
+        );
+
+        let first = config(dir.path(), &generate);
+        let loaded = load_certificates(first.tls.as_ref().unwrap()).unwrap();
+        check(&first).unwrap();
+        // A restart serves the same certificate.
+        let again = load_certificates(first.tls.as_ref().unwrap()).unwrap();
+        assert_eq!(loaded.current().cert, again.current().cert);
+
+        std::fs::remove_file(&key).unwrap();
+        let err = check(&first).unwrap_err();
+        assert!(err.contains("delete both"), "{err}");
+        let err = load_certificates(first.tls.as_ref().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("delete both"), "{err}");
+        assert!(!key.exists());
     }
 
     #[test]
