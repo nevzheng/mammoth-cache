@@ -14,18 +14,21 @@
 use std::{
     fmt, io,
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use futures_util::{StreamExt, future, stream};
-use tokio::sync::mpsc;
+use tokio::{
+    sync::{Notify, mpsc},
+    task::JoinHandle,
+};
 
 use crate::{
     key::{CacheKey, Namespace},
-    store::{Blob, BlobStore, BoundedStore, ByteStream, PutOutcome, Tier, TierUsage},
+    store::{Blob, BlobStore, BoundedStore, ByteStream, HealthCheck, PutOutcome, Tier, TierUsage},
     tee::{self, tee},
 };
 
@@ -187,7 +190,18 @@ struct TierHandle {
 struct BucketHandle {
     store: Arc<dyn BlobStore>,
     /// The background upload queue; `None` when stores reach the bucket inline.
-    uploads: Option<mpsc::Sender<CacheKey>>,
+    uploads: Option<Uploads>,
+}
+
+/// The background upload queue and its worker.
+#[derive(Debug)]
+struct Uploads {
+    queue: mpsc::Sender<CacheKey>,
+    /// Uploads queued or in progress.
+    pending: Arc<AtomicU64>,
+    /// Tells the worker to take no more keys and finish the queued ones.
+    stop: Arc<Notify>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Builds a [`Cache`] from its tiers, in lookup order.
@@ -275,8 +289,21 @@ impl CacheBuilder {
                 // Background uploads read the entry back, so its local copy must be whole.
                 (BucketWrite::Async { queue }, Some(source)) if source_cap.is_none() => {
                     let (tx, rx) = mpsc::channel(queue.max(1));
-                    tokio::spawn(upload_worker(rx, source, store.clone()));
-                    Some(tx)
+                    let pending = Arc::new(AtomicU64::new(0));
+                    let stop = Arc::new(Notify::new());
+                    let worker = tokio::spawn(upload_worker(
+                        rx,
+                        source,
+                        store.clone(),
+                        pending.clone(),
+                        stop.clone(),
+                    ));
+                    Some(Uploads {
+                        queue: tx,
+                        pending,
+                        stop,
+                        worker: Mutex::new(Some(worker)),
+                    })
                 }
                 // Inline: asked for, or there is no whole local copy to upload from.
                 _ => None,
@@ -292,6 +319,7 @@ impl CacheBuilder {
             misses: AtomicU64::new(0),
             oversized: AtomicU64::new(0),
             started: Instant::now(),
+            shutting_down: AtomicBool::new(false),
         }
     }
 }
@@ -307,6 +335,7 @@ pub struct Cache {
     misses: AtomicU64,
     oversized: AtomicU64,
     started: Instant,
+    shutting_down: AtomicBool,
 }
 
 impl Cache {
@@ -486,22 +515,75 @@ impl Cache {
 
     /// Queues a background upload to the bucket, when there is one. A full queue drops the upload.
     fn enqueue_upload(&self, key: &CacheKey) {
-        let Some(uploads) = self
-            .bucket
-            .as_ref()
-            .and_then(|bucket| bucket.uploads.as_ref())
-        else {
+        let Some(uploads) = self.uploads() else {
             return;
         };
-        match uploads.try_send(key.clone()) {
-            Ok(()) => metrics::gauge!("mammoth_bucket_upload_queue_entries").increment(1.0),
+        match uploads.queue.try_send(key.clone()) {
+            Ok(()) => {
+                uploads.pending.fetch_add(1, Ordering::Relaxed);
+                metrics::gauge!("mammoth_bucket_upload_queue_entries").increment(1.0);
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
-                metrics::counter!("mammoth_bucket_uploads_dropped_total").increment(1);
+                metrics::counter!("mammoth_bucket_uploads_dropped_total", "reason" => "queue-full")
+                    .increment(1);
                 tracing::warn!(%key, "bucket upload queue full; upload dropped");
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::error!(%key, "bucket upload workers stopped; upload dropped");
+                metrics::counter!("mammoth_bucket_uploads_dropped_total", "reason" => "shutdown")
+                    .increment(1);
+                tracing::warn!(%key, "shutting down; bucket upload dropped");
             }
+        }
+    }
+
+    fn uploads(&self) -> Option<&Uploads> {
+        self.bucket.as_ref()?.uploads.as_ref()
+    }
+
+    /// Marks the node as shutting down, so readiness fails. Requests are still served.
+    pub fn begin_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Relaxed);
+        metrics::gauge!("mammoth_shutting_down").set(1.0);
+    }
+
+    /// Whether [`begin_shutdown`](Self::begin_shutdown) was called.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Relaxed)
+    }
+
+    /// The local tiers' readiness checks, from their last background probes. Never touches the
+    /// bucket: a bucket outage should degrade nodes to their local tiers, not remove them all.
+    pub fn health(&self) -> Vec<HealthCheck> {
+        self.tiers
+            .iter()
+            .filter_map(|handle| handle.bounded.as_ref())
+            .flat_map(|store| store.health())
+            .collect()
+    }
+
+    /// Uploads queued or in progress to the bucket.
+    pub fn pending_uploads(&self) -> u64 {
+        self.uploads()
+            .map_or(0, |uploads| uploads.pending.load(Ordering::Relaxed))
+    }
+
+    /// Stops taking background uploads and waits for the queued ones to finish. Stores after
+    /// this upload nothing in the background. Bound it with a timeout: a slow bucket can make it
+    /// take as long as the queue does.
+    pub async fn flush_uploads(&self) {
+        let Some(uploads) = self.uploads() else {
+            return;
+        };
+        uploads.stop.notify_one();
+        let worker = uploads
+            .worker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(worker) = worker
+            && let Err(error) = worker.await
+        {
+            tracing::error!(%error, "bucket upload worker failed");
         }
     }
 
@@ -551,18 +633,31 @@ fn promote(key: &CacheKey, from: Tier, blob: Blob, above: &[TierHandle]) -> Blob
 }
 
 /// Uploads stored entries to the bucket, reading each one back from the deepest local tier.
+/// On `stop`, closes the queue and finishes the keys already in it.
 async fn upload_worker(
     queue: mpsc::Receiver<CacheKey>,
     source: Arc<dyn BlobStore>,
     bucket: Arc<dyn BlobStore>,
+    pending: Arc<AtomicU64>,
+    stop: Arc<Notify>,
 ) {
-    let keys = stream::unfold(queue, |mut queue| async move {
-        let key = queue.recv().await?;
+    let keys = stream::unfold((queue, stop), |(mut queue, stop)| async move {
+        let key = if queue.is_closed() {
+            queue.recv().await?
+        } else {
+            tokio::select! {
+                key = queue.recv() => key?,
+                () = stop.notified() => {
+                    queue.close();
+                    queue.recv().await?
+                }
+            }
+        };
         metrics::gauge!("mammoth_bucket_upload_queue_entries").decrement(1.0);
-        Some((key, queue))
+        Some((key, (queue, stop)))
     });
     keys.for_each_concurrent(UPLOAD_CONCURRENCY, |key| {
-        let (source, bucket) = (&source, &bucket);
+        let (source, bucket, pending) = (&source, &bucket, &pending);
         async move {
             let result = match source.get(&key).await {
                 Ok(Some(blob)) => bucket.put(&key, Some(blob.size), blob.body).await.map(Some),
@@ -581,6 +676,7 @@ async fn upload_worker(
                 }
             };
             metrics::counter!("mammoth_bucket_uploads_total", "result" => outcome).increment(1);
+            pending.fetch_sub(1, Ordering::Relaxed);
         }
     })
     .await;
@@ -816,6 +912,7 @@ mod tests {
                 path: dir.path().to_path_buf(),
                 capacity_bytes: 1 << 20,
                 max_entry_age: None,
+                free_space_buffer: 0,
             })
             .await
             .unwrap();
@@ -848,6 +945,42 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             panic!("{k} never reached the {} tier", store.tier());
+        }
+
+        #[tokio::test]
+        async fn flushing_finishes_queued_uploads_and_takes_no_more() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Async { queue: 100 });
+            let keys: Vec<_> = (0..20).map(|i| key(&format!("{i:02x}"))).collect();
+            for k in &keys {
+                cache.put(k, Some(3), body(&[b"abc"])).await.unwrap();
+            }
+            cache.flush_uploads().await;
+            assert_eq!(cache.pending_uploads(), 0);
+            for k in &keys {
+                assert!(
+                    t.bucket.head(k).await.unwrap().is_some(),
+                    "{k} not uploaded"
+                );
+            }
+
+            // After the flush, stores still succeed locally but are not uploaded.
+            let late = key("ff");
+            let outcome = cache.put(&late, Some(3), body(&[b"abc"])).await.unwrap();
+            assert_eq!(outcome, StoreOutcome::Stored);
+            assert!(t.disk.head(&late).await.unwrap().is_some());
+            assert_eq!(t.bucket.head(&late).await.unwrap(), None);
+        }
+
+        #[tokio::test]
+        async fn health_reports_local_tiers_only() {
+            let t = tiers().await;
+            let cache = cache(&t, BucketWrite::Sync);
+            let names: Vec<_> = cache.health().iter().map(|c| c.name).collect();
+            assert_eq!(names, ["storage-writable", "storage-free-space"]);
+            assert!(!cache.is_shutting_down());
+            cache.begin_shutdown();
+            assert!(cache.is_shutting_down());
         }
 
         #[tokio::test]
