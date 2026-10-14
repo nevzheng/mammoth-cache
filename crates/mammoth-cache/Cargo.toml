@@ -15,6 +15,13 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = ["mimalloc"]
+# The global allocator, fixed at build time. musl's default allocator is slow under concurrent load,
+# so release builds use one of these. With both enabled, jemalloc wins.
+mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+
 [dependencies]
 axum = "0.8"
 blake3 = "1.8.7"
@@ -24,8 +31,10 @@ futures-core = "0.3.34"
 futures-util = { version = "0.3.34", default-features = false }
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+mimalloc = { version = "0.1.52", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tikv-jemallocator = { version = "0.7.0", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "fs", "io-util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -34,3 +43,4 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 http-body-util = "0.1.5"
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }
+

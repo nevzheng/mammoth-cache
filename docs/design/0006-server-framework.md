@@ -43,15 +43,16 @@ server. Storage behaviour is in 0003, auth in [0002](0002-authentication.md).
 
 ### Framework
 
-| Concern         | Choice                                                                 |
-| --------------- | ---------------------------------------------------------------------- |
-| Runtime         | tokio, multi-threaded                                                  |
-| HTTP            | hyper 1.x through axum                                                 |
-| Middleware      | tower and tower-http (tracing, timeouts, limits, auth)                 |
-| Admin API types | Hand-written serde types for now; prost and pbjson once the API grows  |
-| Errors          | One AIP-193 error type, used by every route                            |
-| Bucket (L3)     | `object_store` crate                                                   |
-| Observability   | tracing, and a Prometheus exporter for the 0004 catalog                |
+| Concern         | Choice                                                                |
+| --------------- | --------------------------------------------------------------------- |
+| Runtime         | tokio, multi-threaded                                                 |
+| HTTP            | hyper 1.x through axum                                                |
+| Middleware      | tower and tower-http (tracing, timeouts, limits, auth)                |
+| Admin API types | Hand-written serde types for now; prost and pbjson once the API grows |
+| Errors          | One AIP-193 error type, used by every route                           |
+| Bucket (L3)     | `object_store` crate                                                  |
+| Observability   | tracing, and a Prometheus exporter for the 0004 catalog               |
+| Allocator       | mimalloc by default, jemalloc with `--features jemalloc`; build time  |
 
 axum is a thin layer over hyper. Request and response bodies stay `http_body::Body` streams, so a
 `PUT` flows into a store with backpressure, and a `GET` streams from memory, a file or the bucket.
