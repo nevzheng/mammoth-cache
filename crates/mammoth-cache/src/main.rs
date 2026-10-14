@@ -5,6 +5,15 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+// The global allocator is chosen at build time (see the features in Cargo.toml).
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const DEFAULT_ADDR: &str = "0.0.0.0:5071";
 // Until the config file (design doc 0005) lands, the memory tier is the only tier.
 const DEFAULT_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
