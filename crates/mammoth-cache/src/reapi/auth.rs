@@ -4,16 +4,16 @@
 
 use std::sync::Arc;
 
+use crate::{
+    api::error::{Reason, Status},
+    auth::{Authenticator, Credentials, Scope},
+};
 use axum::{
     extract::{Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use tonic::{Code, Status};
-
-use super::status;
-use crate::auth::{Authenticator, Credentials, Scope};
 
 /// The scope a gRPC method needs, from its path. `None` for anything else, which the router
 /// answers `UNIMPLEMENTED`.
@@ -59,41 +59,29 @@ pub(crate) async fn require(
         None => None,
         Some(Ok(value)) => match parse(&value) {
             Some(parsed) => Some(parsed),
-            None => return refuse(CREDENTIALS_INVALID, &invalid()),
+            None => return refuse(invalid()),
         },
-        Some(Err(_)) => return refuse(CREDENTIALS_INVALID, &invalid()),
+        Some(Err(_)) => return refuse(invalid()),
     };
     let credentials = presented.as_ref().map(|(user, token)| match user {
         Some(user) => Credentials::Basic { user, token },
         None => Credentials::Bearer { token },
     });
     let Ok(principal) = auth.authenticate(credentials) else {
-        return refuse(CREDENTIALS_INVALID, &invalid());
+        return refuse(invalid());
     };
     if principal.scopes.contains(scope) {
         return next.run(request).await;
     }
-    let (reason, status) = match &principal.user {
-        None => (
-            CREDENTIALS_MISSING,
-            status::error(
-                Code::Unauthenticated,
-                CREDENTIALS_MISSING,
-                "Authentication is required.",
-                &[],
-            ),
-        ),
-        Some(user) => (
-            SCOPE_MISSING,
-            status::error(
-                Code::PermissionDenied,
-                SCOPE_MISSING,
-                format!("User {user:?} lacks the {scope} scope."),
-                &[("user", user), ("requiredScope", scope.as_str())],
-            ),
-        ),
-    };
-    refuse(reason, &status)
+    refuse(match &principal.user {
+        None => Status::new(Reason::CredentialsMissing, "Authentication is required."),
+        Some(user) => Status::new(
+            Reason::ScopeMissing,
+            format!("User {user:?} lacks the {scope} scope."),
+        )
+        .with("user", user)
+        .with("requiredScope", scope.as_str()),
+    })
 }
 
 /// Parses `Bearer <token>` or `Basic <base64 user:token>`: the user, if any, and the token.
@@ -110,25 +98,16 @@ fn parse(value: &str) -> Option<(Option<String>, String)> {
     }
 }
 
-const CREDENTIALS_MISSING: &str = "CREDENTIALS_MISSING";
-const CREDENTIALS_INVALID: &str = "CREDENTIALS_INVALID";
-const SCOPE_MISSING: &str = "SCOPE_MISSING";
-
 fn invalid() -> Status {
-    status::error(
-        Code::Unauthenticated,
-        CREDENTIALS_INVALID,
-        "The credentials are not valid.",
-        &[],
-    )
+    Status::new(Reason::CredentialsInvalid, "The credentials are not valid.")
 }
 
 /// A trailers-only gRPC response carrying `status`, counted in `mammoth_auth_failures_total` by
 /// its `reason`, as the HTTP adapters count theirs.
-fn refuse(reason: &'static str, status: &Status) -> Response {
-    metrics::counter!("mammoth_auth_failures_total", "reason" => reason).increment(1);
-    status
-        .clone()
+fn refuse(status: Status) -> Response {
+    metrics::counter!("mammoth_auth_failures_total", "reason" => status.reason().as_str())
+        .increment(1);
+    tonic::Status::from(status)
         .into_http::<axum::body::Body>()
         .into_response()
 }

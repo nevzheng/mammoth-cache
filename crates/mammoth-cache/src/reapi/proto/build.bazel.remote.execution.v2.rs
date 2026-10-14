@@ -285,7 +285,7 @@ pub struct ExecuteResponse {
     #[prost(bool, tag = "2")]
     pub cached_result: bool,
     #[prost(message, optional, tag = "3")]
-    pub status: ::core::option::Option<super::super::super::super::super::google::rpc::Status>,
+    pub status: ::core::option::Option<::tonic_types::pb::Status>,
     #[prost(map = "string, message", tag = "4")]
     pub server_logs: ::std::collections::HashMap<::prost::alloc::string::String, LogFile>,
     #[prost(string, tag = "5")]
@@ -418,8 +418,7 @@ pub mod batch_update_blobs_response {
         #[prost(message, optional, tag = "1")]
         pub digest: ::core::option::Option<super::Digest>,
         #[prost(message, optional, tag = "2")]
-        pub status:
-            ::core::option::Option<super::super::super::super::super::super::google::rpc::Status>,
+        pub status: ::core::option::Option<::tonic_types::pb::Status>,
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -448,8 +447,7 @@ pub mod batch_read_blobs_response {
         #[prost(enumeration = "super::compressor::Value", tag = "4")]
         pub compressor: i32,
         #[prost(message, optional, tag = "3")]
-        pub status:
-            ::core::option::Option<super::super::super::super::super::super::google::rpc::Status>,
+        pub status: ::core::option::Option<::tonic_types::pb::Status>,
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

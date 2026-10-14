@@ -17,7 +17,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt, stream};
 use prost::Message;
 use sha2::{Digest as _, Sha256};
 use tokio::sync::mpsc::{self, error::SendTimeoutError};
-use tonic::{Code, Request, Response, Status, Streaming};
+use tonic::{Request, Response, Status, Streaming};
 
 use super::{
     digest::{self, Blob},
@@ -46,6 +46,7 @@ use super::{
     status,
 };
 use crate::{
+    api::error::{self, Reason},
     cache::{self, Admission, Cache, upload_error},
     store::{self, Tier},
 };
@@ -159,14 +160,16 @@ impl Services {
     /// Stores a blob held in memory, after checking it hashes to its digest.
     async fn store_blob(&self, blob: &Blob, data: Bytes) -> Result<(), Status> {
         if data.len() as u64 != blob.size {
-            return Err(status::invalid_argument(
-                "SIZE_MISMATCH",
+            return Err(error::Status::new(
+                Reason::SizeMismatch,
                 format!(
                     "The data is {} bytes; the digest says {}.",
                     data.len(),
                     blob.size
                 ),
-            ));
+            )
+            .with("key", blob.key.name())
+            .into());
         }
         if Sha256::digest(&data).as_slice() != blob.sha256() {
             return Err(status::digest_mismatch(&blob.key));
@@ -387,7 +390,7 @@ impl ActionCache for Services {
             digest::check_function(request.digest_function)?;
             let action = Blob::action(request.action_digest.as_ref())?;
             let result = request.action_result.ok_or_else(|| {
-                status::invalid_argument("ACTION_RESULT_MISSING", "The action result is missing.")
+                status::error(Reason::ActionResultMissing, "The action result is missing.")
             })?;
             referenced_blobs(&result)?;
             let data = Bytes::from(result.encode_to_vec());
@@ -415,8 +418,8 @@ fn batch_blobs(digests: &[Digest]) -> Result<Vec<Blob>, Status> {
         total.checked_add(blob.size)?.checked_add(BLOB_OVERHEAD)
     });
     if total.is_none_or(|total| total > CLIENT_MESSAGE_BYTES) {
-        return Err(status::invalid_argument(
-            "BATCH_TOO_LARGE",
+        return Err(status::error(
+            Reason::BatchTooLarge,
             format!(
                 "The batch's {} blobs would not fit in one {CLIENT_MESSAGE_BYTES}-byte response; \
                  max_batch_total_size_bytes is {MAX_BATCH_BYTES}. Read fewer at once, or larger \
@@ -438,8 +441,8 @@ impl ContentAddressableStorage for Services {
             let request = request.into_inner();
             digest::check_function(request.digest_function)?;
             if request.blob_digests.len() > MAX_FIND_MISSING {
-                return Err(status::invalid_argument(
-                    "TOO_MANY_DIGESTS",
+                return Err(status::error(
+                    Reason::TooManyDigests,
                     format!(
                         "The call asks about {} digests; at most {MAX_FIND_MISSING} are allowed. \
                          Split it.",
@@ -473,8 +476,8 @@ impl ContentAddressableStorage for Services {
                 total.checked_add(item.data.len() as u64)
             });
             if total.is_none_or(|total| total > MAX_BATCH_BYTES) {
-                return Err(status::invalid_argument(
-                    "BATCH_TOO_LARGE",
+                return Err(status::error(
+                    Reason::BatchTooLarge,
                     format!(
                         "The batch carries more than max_batch_total_size_bytes, \
                          {MAX_BATCH_BYTES} bytes, of blobs. Send fewer at once, or larger blobs \
@@ -486,8 +489,8 @@ impl ContentAddressableStorage for Services {
                 .map(|item| async move {
                     let outcome = match Blob::cas(item.digest.as_ref()) {
                         Err(e) => Err(e),
-                        Ok(_) if item.compressor != 0 => Err(status::invalid_argument(
-                            "UNSUPPORTED_COMPRESSOR",
+                        Ok(_) if item.compressor != 0 => Err(status::error(
+                            Reason::UnsupportedCompressor,
                             "Compressed blobs are not supported.",
                         )),
                         Ok(blob) => self.store_blob(&blob, item.data).await,
@@ -568,10 +571,8 @@ impl ContentAddressableStorage for Services {
 
 fn unimplemented(method: &str) -> Status {
     status::error(
-        Code::Unimplemented,
-        "METHOD_NOT_SUPPORTED",
+        Reason::MethodNotSupported,
         format!("{method} is not supported by this cache."),
-        &[],
     )
 }
 
@@ -590,16 +591,10 @@ impl ByteStream for Services {
                 .ok()
                 .filter(|&offset| offset <= blob.size)
                 .ok_or_else(|| {
-                    status::error(
-                        Code::OutOfRange,
-                        "OFFSET_OUT_OF_RANGE",
-                        "read_offset is outside the blob.",
-                        &[],
-                    )
+                    status::error(Reason::OffsetOutOfRange, "read_offset is outside the blob.")
                 })?;
-            let limit = u64::try_from(request.read_limit).map_err(|_| {
-                status::invalid_argument("INVALID_READ_LIMIT", "read_limit is negative.")
-            })?;
+            let limit = u64::try_from(request.read_limit)
+                .map_err(|_| status::error(Reason::InvalidReadLimit, "read_limit is negative."))?;
             let wanted = match limit {
                 0 => blob.size - offset,
                 limit => limit.min(blob.size - offset),
@@ -638,9 +633,7 @@ impl ByteStream for Services {
             let first = tokio::time::timeout(self.idle_timeout, messages.message())
                 .await
                 .map_err(|_| idle())??
-                .ok_or_else(|| {
-                    status::invalid_argument("EMPTY_WRITE", "The write sent nothing.")
-                })?;
+                .ok_or_else(|| status::error(Reason::EmptyWrite, "The write sent nothing."))?;
             let blob = digest::write_resource(&first.resource_name)?;
             let committed = to_i64(blob.size);
             if blob.is_empty() {
@@ -768,20 +761,13 @@ fn paced<T: Send + 'static>(
 
 fn stalled_read() -> Status {
     status::error(
-        Code::DeadlineExceeded,
-        "DOWNLOAD_STALLED",
+        Reason::DownloadStalled,
         "The client read nothing for too long.",
-        &[],
     )
 }
 
 fn idle() -> Status {
-    status::error(
-        Code::DeadlineExceeded,
-        "UPLOAD_IDLE",
-        "The upload sent nothing for too long.",
-        &[],
-    )
+    status::error(Reason::UploadIdle, "The upload sent nothing for too long.")
 }
 
 /// Why an upload stream failed, carried inside the `io::Error` the core reports.
@@ -820,7 +806,7 @@ fn upload_status(blob: &Blob, error: &cache::Error) -> Status {
     match upload {
         Some(UploadError::Mismatch) => status::digest_mismatch(&blob.key),
         Some(UploadError::Protocol(message)) => {
-            status::invalid_argument("INVALID_WRITE", message.clone())
+            status::error(Reason::InvalidWrite, message.clone())
         }
         Some(UploadError::Idle) => idle(),
         Some(UploadError::Client(status)) => status.clone(),
