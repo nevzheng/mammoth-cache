@@ -105,9 +105,14 @@ pub trait BoundedStore: BlobStore {
 ### Hot path rules
 
 1. `/cache/{key}` reads the raw body stream, never a buffering extractor.
-2. A `Content-Length` over the limit gets `413` before the body is read. hyper sends
-   `100 Continue` only when the body is first read, so a rejected upload is never transmitted.
-3. The size limit is also enforced on the stream, for bodies without `Content-Length`.
+2. An entry over the size limit is dropped: the server answers `200`, discards the bytes and
+   counts it. Any non-2xx store response, `413` included, turns Gradle's remote cache off for the
+   rest of the build, so refusing one large entry would cost every later hit. `413` remains
+   available as a policy (`OversizePolicy::Reject`).
+3. The decision is made from `Content-Length` before the body is read. hyper sends
+   `100 Continue` only when the body is first read, so a client using `Expect: 100-continue`
+   never uploads a dropped entry. Without it, the body is read and discarded so the client sees a
+   clean response. Bodies without `Content-Length` are checked while streaming.
 4. A memory hit is a reference-counted `Bytes`, with no copy.
 5. Disk and bucket I/O never block a tokio worker thread.
 
