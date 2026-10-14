@@ -125,7 +125,9 @@ starts warm.
 
 ### `[bucket]` (L3)
 
-Optional. With a bucket, every entry is uploaded to it, and several nodes can share it.
+Optional. With a bucket, every entry is uploaded to it, and several nodes can share it. The bucket
+tier is built (`mammoth_cache::store::bucket::BucketStore`, on the `object_store` crate), but like
+the disk tier it reaches the `mammoth` binary with the config file.
 
 | Key            | Type    | Default              | Meaning                                                                |
 | -------------- | ------- | -------------------- | ---------------------------------------------------------------------- |

@@ -7,8 +7,9 @@ and they reuse task and module outputs that other builds have already produced.
 
 > [!WARNING]
 > mammoth-cache is pre-alpha. The Gradle and Maven protocols work today with an in-memory cache, and
-> an `edge` image is published from `main`, but there is no release yet. The disk and bucket tiers,
-> the config file, authentication and most metrics are still being built. Each page says what works
+> an `edge` image is published from `main`, but there is no release yet. The disk and bucket tiers
+> exist as library code but aren't in the `mammoth` binary yet, and the config file, authentication
+> and most metrics are still being built. Each page says what works
 > now and what is planned. Don't run it in production yet.
 
 ## What it does
@@ -23,7 +24,7 @@ mammoth-cache keeps entries in up to three tiers:
 | --------- | ------------------------------------- | -------------------------------------- |
 | L1 memory | Small, hot entries                    | Available                              |
 | L2 disk   | Recently used entries, one file each  | Built; not yet in the `mammoth` binary |
-| L3 bucket | Every entry, in S3, GCS or Azure Blob | Planned                                |
+| L3 bucket | Every entry, in S3, GCS or Azure Blob | Built; not yet in the `mammoth` binary |
 
 A lookup tries memory, then disk, then the bucket, and copies a hit up into the faster tiers. With
 a bucket, nodes are stateless: you can run several behind a load balancer, and a replacement node
@@ -42,24 +43,23 @@ well.
 
 ## Feature status
 
-| Feature                                                         | Status    | Page                                        |
-| --------------------------------------------------------------- | --------- | ------------------------------------------- |
-| Gradle `GET`, `HEAD`, `PUT` on `/cache/{key}`                   | Available | [Gradle](gradle.md)                         |
-| Entry size limit, oversized stores accepted and dropped         | Available | [Gradle](gradle.md#entry-size-limit)        |
-| In-memory tier, 1 GiB with S3-FIFO eviction                     | Available | [Configuration](configuration.md)           |
-| `/ping`, `/livez`, `/readyz`                                    | Available | [Health checks](health.md)                  |
-| Admin status, `/v1/serverStatus`                                | Available | [Health checks](health.md)                  |
-| Maven routes, `/maven/{path}`                                   | Available | [Maven](maven.md)                           |
-| `mammoth.toml` config file                                      | Planned   | [Configuration](configuration.md)           |
-| Disk tier, in the library and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2)   |
-| Disk tier in the `mammoth` binary                               | Planned   | [Configuration](configuration.md#disk-l2)   |
-| Bucket tier                                                     | Planned   | [Configuration](configuration.md#bucket-l3) |
-| Users, tokens and scopes                                        | Planned   | [Authentication](authentication.md)         |
-| TLS                                                             | Planned   | [Configuration](configuration.md)           |
-| Request metrics at `/metrics`                                   | Available | [Metrics](metrics.md)                       |
-| `edge` container image from `main`                              | Available | [Quickstart](quickstart.md)                 |
-| Full metrics catalog                                            | Planned   | [Metrics](metrics.md)                       |
-| Release binaries and versioned images                           | Planned   | [Quickstart](quickstart.md)                 |
+| Feature                                                                     | Status    | Page                                      |
+| --------------------------------------------------------------------------- | --------- | ----------------------------------------- |
+| Gradle `GET`, `HEAD`, `PUT` on `/cache/{key}`                               | Available | [Gradle](gradle.md)                       |
+| Entry size limit, oversized stores accepted and dropped                     | Available | [Gradle](gradle.md#entry-size-limit)      |
+| In-memory tier, 1 GiB with S3-FIFO eviction                                 | Available | [Configuration](configuration.md)         |
+| `/ping`, `/livez`, `/readyz`                                                | Available | [Health checks](health.md)                |
+| Admin status, `/v1/serverStatus`                                            | Available | [Health checks](health.md)                |
+| Maven routes, `/maven/{path}`                                               | Available | [Maven](maven.md)                         |
+| `mammoth.toml` config file                                                  | Planned   | [Configuration](configuration.md)         |
+| Disk and bucket tiers, in the library and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |
+| Disk and bucket tiers in the `mammoth` binary                               | Planned   | [Configuration](configuration.md#disk-l2) |
+| Users, tokens and scopes                                                    | Planned   | [Authentication](authentication.md)       |
+| TLS                                                                         | Planned   | [Configuration](configuration.md)         |
+| Request metrics at `/metrics`                                               | Available | [Metrics](metrics.md)                     |
+| `edge` container image from `main`                                          | Available | [Quickstart](quickstart.md)               |
+| Full metrics catalog                                                        | Planned   | [Metrics](metrics.md)                     |
+| Release binaries and versioned images                                       | Planned   | [Quickstart](quickstart.md)               |
 
 ## Where to go next
 
