@@ -201,9 +201,9 @@ impl Default for Memory {
 pub struct Disk {
     /// The directory the tier owns.
     pub path: PathBuf,
-    /// Bytes the tier may use. The Build Cache Node's `cache.targetSize`.
+    /// Bytes the tier may use, or the whole volume. The Build Cache Node's `cache.targetSize`.
     #[serde(default = "default_disk_size")]
-    pub size: ByteSize,
+    pub size: DiskSize,
     /// Free disk space to keep. The Build Cache Node's `cache.freeSpaceBufferSize`.
     #[serde(default = "default_free_space_buffer")]
     pub free_space_buffer: ByteSize,
@@ -445,8 +445,8 @@ fn default_listen() -> SocketAddr {
     SocketAddr::from((Ipv6Addr::UNSPECIFIED, 5071))
 }
 
-fn default_disk_size() -> ByteSize {
-    ByteSize::gib(10)
+fn default_disk_size() -> DiskSize {
+    DiskSize::Fixed(ByteSize::gib(10))
 }
 
 fn default_free_space_buffer() -> ByteSize {
@@ -556,12 +556,9 @@ impl Config {
             ));
         }
         if let Some(disk) = &self.disk
-            && self.limits.max_entry_size > disk.size
+            && let DiskSize::Fixed(size) = disk.size
         {
-            return Err(format!(
-                "limits.max_entry_size ({}) is above disk.size ({})",
-                self.limits.max_entry_size, disk.size
-            ));
+            self.check_disk_capacity(size)?;
         }
         if let Some(bucket) = &self.bucket
             && bucket.write == BucketWrite::Async
@@ -603,6 +600,121 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+impl Config {
+    /// `disk.size`, resolved: `max-available` reads the volume holding `disk.path` (or its nearest
+    /// existing parent). Called once at startup and by `mammoth config check`.
+    ///
+    /// # Errors
+    ///
+    /// If the volume can't be read, or as [`Config::disk_capacity`].
+    pub fn resolve_disk_size(&self, disk: &Disk) -> Result<ByteSize, String> {
+        if let DiskSize::Fixed(_) = disk.size {
+            return self.disk_capacity(disk, 0);
+        }
+        let volume = crate::store::disk::volume_bytes(&disk.path).map_err(|e| {
+            format!(
+                "disk.size = \"max-available\": cannot read the volume at {}: {e}",
+                disk.path.display()
+            )
+        })?;
+        let capacity = self.disk_capacity(disk, volume)?;
+        tracing::info!(
+            volume = %ByteSize(volume),
+            buffer = %disk.free_space_buffer,
+            %capacity,
+            "disk tier capacity"
+        );
+        Ok(capacity)
+    }
+
+    /// The disk tier's capacity, given the total size of the volume holding `disk.path`.
+    /// `max-available` is the volume less `disk.free_space_buffer`, so it's only known at startup.
+    ///
+    /// # Errors
+    ///
+    /// If the volume is no larger than the buffer, or the capacity is below
+    /// `limits.max_entry_size`.
+    pub fn disk_capacity(&self, disk: &Disk, volume_bytes: u64) -> Result<ByteSize, String> {
+        let size = match disk.size {
+            DiskSize::Fixed(size) => size,
+            DiskSize::MaxAvailable => {
+                let buffer = disk.free_space_buffer;
+                if volume_bytes <= buffer.bytes() {
+                    return Err(format!(
+                        "disk.size = \"max-available\": the volume at {} ({}) is not larger \
+                         than disk.free_space_buffer ({buffer})",
+                        disk.path.display(),
+                        ByteSize(volume_bytes),
+                    ));
+                }
+                ByteSize(volume_bytes - buffer.bytes())
+            }
+        };
+        self.check_disk_capacity(size)?;
+        Ok(size)
+    }
+
+    fn check_disk_capacity(&self, size: ByteSize) -> Result<(), String> {
+        if self.limits.max_entry_size > size {
+            return Err(format!(
+                "limits.max_entry_size ({}) is above disk.size ({size})",
+                self.limits.max_entry_size
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `disk.size`: a size, or `"max-available"` for the whole volume less `disk.free_space_buffer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskSize {
+    /// A fixed number of bytes.
+    Fixed(ByteSize),
+    /// The volume holding `disk.path`, less the free space buffer, read at startup.
+    MaxAvailable,
+}
+
+impl DiskSize {
+    const MAX_AVAILABLE: &str = "max-available";
+}
+
+impl fmt::Display for DiskSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fixed(size) => size.fmt(f),
+            Self::MaxAvailable => f.write_str(Self::MAX_AVAILABLE),
+        }
+    }
+}
+
+impl FromStr for DiskSize {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == Self::MAX_AVAILABLE {
+            return Ok(Self::MaxAvailable);
+        }
+        s.parse()
+            .map(Self::Fixed)
+            .map_err(|e| format!("{e}, or \"{}\" for the whole volume", Self::MAX_AVAILABLE))
+    }
+}
+
+impl<'de> Deserialize<'de> for DiskSize {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bytes(u64),
+            Text(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Bytes(n) => Ok(Self::Fixed(ByteSize(n))),
+            Raw::Text(s) => s.parse().map_err(de::Error::custom),
+        }
     }
 }
 
@@ -752,7 +864,7 @@ mod tests {
         assert_eq!(config.memory.size, ByteSize::gib(1));
         assert_eq!(config.memory.eviction, EvictionPolicy::S3Fifo);
         let disk = config.disk.unwrap();
-        assert_eq!(disk.size, ByteSize::gib(10));
+        assert_eq!(disk.size, DiskSize::Fixed(ByteSize::gib(10)));
         assert_eq!(disk.free_space_buffer, ByteSize::gib(1));
         assert!(config.bucket.is_none());
         assert!(config.auth.anonymous.is_empty() && config.auth.users.is_empty());
@@ -839,7 +951,7 @@ mod tests {
         let config = parse(text).unwrap();
         assert_eq!(config.memory.eviction, EvictionPolicy::WTinyLfu);
         let disk = config.disk.unwrap();
-        assert_eq!(disk.size, ByteSize::gib(50));
+        assert_eq!(disk.size, DiskSize::Fixed(ByteSize::gib(50)));
         let age = disk.max_entry_age.unwrap().0;
         assert_eq!(age, Duration::from_hours(30 * 24));
         let bucket = config.bucket.unwrap();
@@ -1041,5 +1153,54 @@ mod tests {
         assert_eq!(ByteSize(1000).to_string(), "1000B");
         assert_eq!("90m".parse(), Ok(HumanDuration(Duration::from_mins(90))));
         assert!("30".parse::<HumanDuration>().is_err());
+    }
+
+    #[test]
+    fn disk_size_is_a_size_or_max_available() {
+        let size =
+            |text: &str| parse(&format!("{MINIMAL}size = {text}\n")).map(|c| c.disk.unwrap().size);
+        assert_eq!(size("\"50GiB\""), Ok(DiskSize::Fixed(ByteSize::gib(50))));
+        assert_eq!(size("1073741824"), Ok(DiskSize::Fixed(ByteSize::gib(1))));
+        assert_eq!(size("\"max-available\""), Ok(DiskSize::MaxAvailable));
+        for wrong in ["\"max\"", "\"maxAvailable\"", "\"Max-Available\""] {
+            let err = size(wrong).unwrap_err();
+            assert!(
+                err.contains("is not a size") && err.contains("\"max-available\""),
+                "{wrong}: {err}"
+            );
+        }
+        assert_eq!(DiskSize::MaxAvailable.to_string(), "max-available");
+        assert_eq!(DiskSize::Fixed(ByteSize::gib(2)).to_string(), "2GiB");
+    }
+
+    #[test]
+    fn max_available_is_the_volume_less_the_buffer() {
+        let mut c = parse(
+            "version = 1\n[disk]\npath = \"/d\"\nsize = \"max-available\"\n\
+             free_space_buffer = \"1GiB\"\n",
+        )
+        .unwrap();
+        let disk = c.disk.as_ref().unwrap();
+        assert_eq!(c.disk_capacity(disk, 50 << 30), Ok(ByteSize::gib(49)));
+
+        // A volume no larger than the buffer leaves nothing.
+        for volume in [1 << 30, 512 << 20, 0] {
+            let err = c.disk_capacity(disk, volume).unwrap_err();
+            assert!(
+                err.contains("not larger than disk.free_space_buffer (1GiB)"),
+                "{volume}: {err}"
+            );
+        }
+        // Room for less than one entry: names both numbers, like a fixed size would.
+        let err = c.disk_capacity(disk, (1 << 30) + (50 << 20)).unwrap_err();
+        assert_eq!(
+            err,
+            "limits.max_entry_size (100MiB) is above disk.size (50MiB)"
+        );
+
+        // A fixed size ignores the volume.
+        c.disk.as_mut().unwrap().size = DiskSize::Fixed(ByteSize::gib(5));
+        let disk = c.disk.as_ref().unwrap();
+        assert_eq!(c.disk_capacity(disk, 1 << 30), Ok(ByteSize::gib(5)));
     }
 }

@@ -37,7 +37,7 @@ self-hosted node without Develocity.
 | BCN                                   | mammoth-cache                                                        |
 | ------------------------------------- | -------------------------------------------------------------------- |
 | `cache.targetSize` (`fixed`, `size`)  | `disk.size` (`50000` MiB becomes `"50000MiB"`)                       |
-| `cache.targetSize.type: maxAvailable` | Not supported yet: set `disk.size` to the volume less the buffer     |
+| `cache.targetSize.type: maxAvailable` | `disk.size = "max-available"`                                        |
 | `cache.freeSpaceBufferSize`           | `disk.free_space_buffer`                                             |
 | `cache.maxArtifactSize`               | `limits.max_entry_size`                                              |
 | `cache.maxEntryAgeInHours`            | `disk.max_entry_age` (`72` becomes `"72h"`)                          |
