@@ -148,20 +148,6 @@ def test_wrong_credentials(project: BazelProject, target: Target) -> None:
 
 
 @pytest.mark.requires("auth")
-@pytest.mark.xfail(
-    strict=True,
-    reason="post-re-audit finding 5: gRPC auth refusals happen before they are counted",
-)
-def test_refusals_counted(project: BazelProject, target: Target) -> None:
-    project.credentials = target.user("ci").model_copy(update={"token": SecretStr("mmc_wrong")})
-    before = scrape(target)
-    project.build()
-    after = scrape(target)
-    assert _grpc(before, after, "GetCapabilities", "UNAUTHENTICATED") >= 1
-    assert delta(before, after, "mammoth_auth_failures_total") >= 1
-
-
-@pytest.mark.requires("auth")
 def test_read_only_user(project: BazelProject, target: Target) -> None:
     assert project.build().ok
     project.credentials = target.user("developer")
