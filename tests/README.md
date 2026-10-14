@@ -94,8 +94,11 @@ the harness controls, a third machine restarts the node and stops the bucket at 
 nothing the model holds may be lost and nothing may answer 5xx. `test_races.py` races concurrent
 stores of one key (an immutable key keeps the body whose store answered `201`, a mutable one ends
 with one whole body) and breaks uploads part way (never served, and the next store of the key still
-succeeds); `MAMMOTH_E2E_RACE_EXAMPLES` sets its examples (default 12). `test_edges.py` pins contract
-edge cases; known bugs there are strict xfails.
+succeeds); `MAMMOTH_E2E_RACE_EXAMPLES` sets its examples (default 12). With `reapi`, `test_reapi.py`
+mixes HTTP `/bazel/` calls with gRPC `BatchUpdateBlobs`, `BatchReadBlobs`, ByteStream reads at
+random offsets, `FindMissingBlobs` and action-result calls, and checks both protocols always see one
+cache; its gRPC stubs are generated from `third_party/proto` into the harness cache on first use.
+`test_edges.py` pins contract edge cases; known bugs there are strict xfails.
 
 `MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40), and
 `MAMMOTH_E2E_CHAOS_EXAMPLES` the restart and outage machine (default 6).

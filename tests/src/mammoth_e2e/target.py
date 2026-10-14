@@ -19,6 +19,7 @@ class Feature(StrEnum):
     DISK = "disk"  # stores reach the disk tier and survive a restart
     BUCKET = "bucket"  # stores reach the bucket, and nodes refill from it
     BAZEL = "bazel"  # serves Bazel's HTTP cache on /bazel/ (doc 0012)
+    REAPI = "reapi"  # serves the REAPI cache over gRPC at `reapi_address` (doc 0016)
 
 
 class Bucket(BaseModel):
@@ -75,6 +76,8 @@ class Target(BaseSettings):
     # "memory-bucket". Anonymous requests may read and write on them.
     topologies: dict[str, HttpUrl] = Field(default_factory=dict)
     prometheus_url: HttpUrl | None = None
+    # host:port of the REAPI gRPC listener ([reapi] listen), in plain gRPC.
+    reapi_address: str | None = None
     features: frozenset[Feature] = frozenset()
     max_entry_size: int = 100 * 1024 * 1024  # [limits] max_entry_size
     memory_max_entry_size: int = 1024 * 1024  # [memory] max_entry_size

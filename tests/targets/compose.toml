@@ -7,8 +7,9 @@ proxy_url = "http://localhost:8080" # nginx, set up as docs/user/deployment.md s
 proxy_defaults_url = "http://localhost:8081" # the same nginx on its defaults
 
 # Server features this target has. Tests that need a missing one are skipped, so a feature is
-# switched on here in the PR that builds it. Known: config, auth, disk, bucket, bazel.
-features = ["config", "auth", "disk", "bucket", "bazel"]
+# switched on here in the PR that builds it. Known: config, auth, disk, bucket, bazel, reapi.
+features = ["config", "auth", "disk", "bucket", "bazel", "reapi"]
+reapi_address = "localhost:6011" # [reapi] listen on the mammoth service
 
 # Must match deploy/compose/config/*.toml.
 max_entry_size = 16_777_216 # [limits] max_entry_size = "16MiB"
