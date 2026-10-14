@@ -825,6 +825,15 @@ async fn workload_moves_the_live_counters() {
         ),
         1
     );
+    assert_cache_outcomes(&delta);
+}
+
+/// How much a series moved across [`workload`], by name and labels.
+type Delta<'a> = dyn Fn(&str, &[(&str, &str)]) -> i64 + 'a;
+
+/// The cache outcome counters after [`workload`]: store results, entry sizes and
+/// lookups by tier.
+fn assert_cache_outcomes(delta: &Delta<'_>) {
     // Store outcomes: four written, one oversized, and a size for each one written.
     let stores = |result| delta("mammoth_cache_stores_total", &[("result", result)]);
     assert_eq!(stores("stored"), STORED);
