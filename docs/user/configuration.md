@@ -166,6 +166,10 @@ tier is built on the `object_store` crate.
 | `write`        | string  | `async`              | `async` answers a store once it's on disk; `sync` waits for the upload |
 | `upload_queue` | integer | `1000`               | Uploads waiting at once, for `async`; more are dropped and counted     |
 
+With `sync`, a failed upload still answers the store with success, since the entry is stored on
+the node and Gradle would turn its cache off over an error; the failure is logged and counted in
+`mammoth_bucket_uploads_total{result="error"}`.
+
 Credentials come from the environment, never from the file: workload identity (EKS IRSA or Pod
 Identity, GKE, AKS), instance roles and VM service accounts, or keys in the cloud's usual variables
 (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for S3-compatible stores). AWS profiles and SSO are

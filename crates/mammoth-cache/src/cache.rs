@@ -12,6 +12,7 @@
 //!   with [`BucketWrite::Sync`]. A node with no local tier writes straight to the bucket.
 
 use std::{
+    collections::{HashMap, HashSet},
     fmt, io,
     sync::{
         Arc, Mutex, PoisonError,
@@ -320,6 +321,7 @@ impl CacheBuilder {
             oversized: AtomicU64::new(0),
             started: Instant::now(),
             shutting_down: AtomicBool::new(false),
+            writing: Mutex::default(),
         }
     }
 }
@@ -336,6 +338,23 @@ pub struct Cache {
     oversized: AtomicU64,
     started: Instant,
     shutting_down: AtomicBool,
+    /// Immutable keys being stored now. One store per key writes; the rest find it exists.
+    writing: Mutex<HashSet<CacheKey>>,
+}
+
+/// Holds an immutable key in [`Cache::writing`] while it is stored.
+struct Writing<'a> {
+    keys: &'a Mutex<HashSet<CacheKey>>,
+    key: CacheKey,
+}
+
+impl Drop for Writing<'_> {
+    fn drop(&mut self) {
+        self.keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.key);
+    }
 }
 
 impl Cache {
@@ -428,8 +447,8 @@ impl Cache {
 
     /// Stores an entry from a stream. `declared_size` is the request's `Content-Length`.
     ///
-    /// A store to an existing immutable (Gradle) key writes nothing; one to a mutable (Maven) key
-    /// replaces the entry.
+    /// A store to an existing immutable (Gradle) key writes nothing, nor does one racing another
+    /// store of the same key; one to a mutable (Maven) key replaces the entry.
     ///
     /// An entry over the size limit is dropped or refused according to the [`OversizePolicy`],
     /// whether its declared size says so or the body passes the limit while streaming. A body
@@ -447,9 +466,28 @@ impl Cache {
             Admission::Drop => return Ok(StoreOutcome::Dropped),
             Admission::Reject(e) => return Err(e),
         }
-        if key.namespace().is_immutable() && self.head(key).await?.is_some() {
-            return Ok(StoreOutcome::Exists);
-        }
+        let _writing = if key.namespace().is_immutable() {
+            // Racing stores of one key may carry different bytes (a task that is not
+            // reproducible), so only the first is written, and every tier gets the same copy.
+            if !self
+                .writing
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key.clone())
+            {
+                return Ok(StoreOutcome::Exists);
+            }
+            let writing = Writing {
+                keys: &self.writing,
+                key: key.clone(),
+            };
+            if self.head(key).await?.is_some() {
+                return Ok(StoreOutcome::Exists);
+            }
+            Some(writing)
+        } else {
+            None
+        };
         // The deepest local tier decides the outcome; the others, and the bucket when it is
         // written inline, get copies of the same stream.
         let mut writers: Vec<&Arc<dyn BlobStore>> = self
@@ -487,6 +525,14 @@ impl Cache {
         .await;
         if result.is_ok() {
             for (tier, outcome) in secondary {
+                if tier == Tier::Bucket {
+                    // A sync upload counts like a background one. Its failure still answers the
+                    // client with success: the entry is stored locally, and Gradle would turn its
+                    // cache off over an error.
+                    let result = if outcome.is_ok() { "ok" } else { "error" };
+                    metrics::counter!("mammoth_bucket_uploads_total", "result" => result)
+                        .increment(1);
+                }
                 if let Err(error) = outcome {
                     tracing::warn!(%key, %tier, %error, "write to a secondary tier failed");
                 }
@@ -610,14 +656,22 @@ fn promote(key: &CacheKey, from: Tier, blob: Blob, above: &[TierHandle]) -> Blob
         return blob;
     }
     let size = blob.size;
+    // Skip tiers that would discard the entry anyway.
+    let above: Vec<&TierHandle> = above
+        .iter()
+        .filter(|handle| handle.store.max_entry_size().is_none_or(|max| size <= max))
+        .collect();
+    if above.is_empty() {
+        return blob;
+    }
     let (body, copies) = tee(blob.body, above.len(), tee::Mode::Lossy, Some(size));
-    for (handle, copy) in above.iter().zip(copies) {
+    for (handle, copy) in above.into_iter().zip(copies) {
         let store = handle.store.clone();
         let key = key.clone();
         tokio::spawn(async move {
             let to = store.tier();
             match store.put(&key, Some(size), copy).await {
-                Ok(_) => {
+                Ok(PutOutcome::Stored) => {
                     metrics::counter!(
                         "mammoth_tier_promotions_total",
                         "from" => from.as_str(),
@@ -625,6 +679,7 @@ fn promote(key: &CacheKey, from: Tier, blob: Blob, above: &[TierHandle]) -> Blob
                     )
                     .increment(1);
                 }
+                Ok(_) => {}
                 Err(error) => tracing::debug!(%key, %from, %to, %error, "promotion abandoned"),
             }
         });
@@ -656,30 +711,57 @@ async fn upload_worker(
         metrics::gauge!("mammoth_bucket_upload_queue_entries").decrement(1.0);
         Some((key, (queue, stop)))
     });
+    // Keys being uploaded, and those stored again meanwhile. A replaced (Maven or Bazel AC) entry
+    // is uploaded again after the upload in progress, never beside it, so the last upload to
+    // finish is always the newest copy.
+    let in_flight = Mutex::new(HashMap::<CacheKey, bool>::new());
     keys.for_each_concurrent(UPLOAD_CONCURRENCY, |key| {
-        let (source, bucket, pending) = (&source, &bucket, &pending);
+        let (source, bucket, pending, in_flight) = (&source, &bucket, &pending, &in_flight);
         async move {
-            let result = match source.get(&key).await {
-                Ok(Some(blob)) => bucket.put(&key, Some(blob.size), blob.body).await.map(Some),
-                Ok(None) => Ok(None),
-                Err(e) => Err(e),
-            };
-            let outcome = match result {
-                Ok(Some(_)) => "ok",
-                Ok(None) => {
-                    tracing::debug!(%key, "entry left the local tiers before its upload");
-                    "skipped"
+            {
+                let mut in_flight = in_flight.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(again) = in_flight.get_mut(&key) {
+                    *again = true;
+                    pending.fetch_sub(1, Ordering::Relaxed);
+                    return;
                 }
-                Err(error) => {
-                    tracing::warn!(%key, %error, "bucket upload failed");
-                    "error"
+                in_flight.insert(key.clone(), false);
+            }
+            loop {
+                upload(&key, source.as_ref(), bucket.as_ref()).await;
+                let mut in_flight = in_flight.lock().unwrap_or_else(PoisonError::into_inner);
+                if in_flight.get(&key) == Some(&true) {
+                    in_flight.insert(key.clone(), false);
+                } else {
+                    in_flight.remove(&key);
+                    break;
                 }
-            };
-            metrics::counter!("mammoth_bucket_uploads_total", "result" => outcome).increment(1);
+            }
             pending.fetch_sub(1, Ordering::Relaxed);
         }
     })
     .await;
+}
+
+/// Uploads one entry from `source` to the bucket, and counts the result.
+async fn upload(key: &CacheKey, source: &dyn BlobStore, bucket: &dyn BlobStore) {
+    let result = match source.get(key).await {
+        Ok(Some(blob)) => bucket.put(key, Some(blob.size), blob.body).await.map(Some),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e),
+    };
+    let outcome = match result {
+        Ok(Some(_)) => "ok",
+        Ok(None) => {
+            tracing::debug!(%key, "entry left the local tiers before its upload");
+            "skipped"
+        }
+        Err(error) => {
+            tracing::warn!(%key, %error, "bucket upload failed");
+            "error"
+        }
+    };
+    metrics::counter!("mammoth_bucket_uploads_total", "result" => outcome).increment(1);
 }
 
 /// Fails the stream once more than `limit` bytes have passed, so the store discards the entry.
@@ -970,6 +1052,53 @@ mod tests {
             assert_eq!(outcome, StoreOutcome::Stored);
             assert!(t.disk.head(&late).await.unwrap().is_some());
             assert_eq!(t.bucket.head(&late).await.unwrap(), None);
+        }
+
+        #[tokio::test]
+        async fn racing_stores_of_one_key_write_one_copy() {
+            let t = tiers().await;
+            let cache = Arc::new(cache(&t, BucketWrite::Sync));
+            let k = key("ab12");
+            let racers = (0..8_u8).map(|i| {
+                let (cache, k) = (cache.clone(), k.clone());
+                tokio::spawn(async move {
+                    // Slow bodies, so the stores overlap.
+                    let chunks = stream::iter([[i; 4], [i; 4]]).then(|chunk| async move {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Ok(Bytes::copy_from_slice(&chunk))
+                    });
+                    cache.put(&k, Some(8), chunks.boxed()).await.unwrap()
+                })
+            });
+            let outcomes = future::join_all(racers).await;
+            let stored = outcomes
+                .into_iter()
+                .filter(|outcome| *outcome.as_ref().unwrap() == StoreOutcome::Stored)
+                .count();
+            assert_eq!(stored, 1);
+            let memory = read_all(t.memory.get(&k).await.unwrap().unwrap()).await;
+            let disk = read_all(t.disk.get(&k).await.unwrap().unwrap()).await;
+            let bucket = read_all(t.bucket.get(&k).await.unwrap().unwrap()).await;
+            assert_eq!(memory, disk);
+            assert_eq!(memory, bucket);
+        }
+
+        #[tokio::test]
+        async fn a_replaced_entry_uploads_its_newest_copy() {
+            let t = tiers().await;
+            // Uploads read from the memory tier here, to test their order alone.
+            let cache = Cache::builder()
+                .bounded_tier(t.memory.clone())
+                .bucket_tier(t.bucket.clone(), BucketWrite::Async { queue: 100 })
+                .build();
+            let k = CacheKey::maven("v1/g/a/buildinfo.xml").unwrap();
+            for version in [b"v1", b"v2", b"v3"] {
+                cache.put(&k, Some(2), body(&[version])).await.unwrap();
+            }
+            cache.flush_uploads().await;
+            let bucket = read_all(t.bucket.get(&k).await.unwrap().unwrap()).await;
+            assert_eq!(bucket, b"v3");
+            assert_eq!(cache.pending_uploads(), 0);
         }
 
         #[tokio::test]

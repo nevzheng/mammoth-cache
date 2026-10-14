@@ -167,6 +167,51 @@ async fn an_oversized_body_sent_without_expect_is_drained_and_the_connection_reu
     assert_eq!(get(addr, "c1").await.0, 404);
 }
 
+/// Sends a request with a body on `stream` and returns the response status.
+async fn send(stream: &mut TcpStream, head: &str, body: &[u8]) -> u16 {
+    stream.write_all(head.as_bytes()).await.unwrap();
+    stream.write_all(body).await.unwrap();
+    read_response(stream).await.0
+}
+
+#[tokio::test]
+async fn a_repeated_upload_is_drained_and_the_connection_reused() {
+    let addr = start().await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let body = vec![b'x'; 1000];
+    let head = put_head("e1", body.len() as u64, false, Some(CI));
+    assert_eq!(send(&mut stream, &head, &body).await, 201);
+    // The key is stored, so the second upload is not needed, but its body is already sent.
+    assert_eq!(send(&mut stream, &head, &body).await, 200);
+    assert_eq!(
+        send(&mut stream, &put_head("e2", 2, false, Some(CI)), b"ok").await,
+        201
+    );
+
+    // With `Expect`, the server answers without asking for the body.
+    stream
+        .write_all(put_head("e1", body.len() as u64, true, Some(CI)).as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(read_response(&mut stream).await.0, 200);
+}
+
+#[tokio::test]
+async fn a_refused_body_sent_without_expect_is_drained_and_the_connection_reused() {
+    let addr = start().await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    // Large enough that the client is still sending when the answer comes.
+    let body = vec![b'x'; 1 << 20];
+    let maven = |len: usize| {
+        format!(
+            "PUT /maven/v1/y.jar HTTP/1.1\r\nHost: test\r\nContent-Length: {len}\r\n\
+             Authorization: {CI}\r\n\r\n"
+        )
+    };
+    assert_eq!(send(&mut stream, &maven(body.len()), &body).await, 413);
+    assert_eq!(send(&mut stream, &maven(2), b"ok").await, 201);
+}
+
 #[tokio::test]
 async fn a_client_that_disconnects_mid_upload_stores_nothing() {
     let addr = start().await;
