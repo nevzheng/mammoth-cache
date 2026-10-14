@@ -31,7 +31,7 @@ This doc covers:
 
 - Why there is a cap at all, and why 100 MiB is the default.
 - The memory threshold.
-- What each tier admits. Eviction policies are in 0009
+- What each tier admits. Eviction policies are in 0010
   ([#13](https://github.com/nevzheng/mammoth-cache/pull/13)).
 - What the node does with an oversized `PUT`.
 
@@ -254,7 +254,7 @@ Entries over the L1 threshold follow the normal path into L2 and L3; they just s
 
 ### Admission by tier
 
-Eviction policies, the memory store and per-entry metadata are in 0009
+Eviction policies, the memory store and per-entry metadata are in 0010
 ([#13](https://github.com/nevzheng/mammoth-cache/pull/13)). This doc only says which entries each
 tier admits.
 
