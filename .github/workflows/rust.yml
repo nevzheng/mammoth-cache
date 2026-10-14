@@ -8,44 +8,20 @@ on:
 permissions:
   contents: read
 
+# A newer push cancels a pull request's run; every main commit runs to the end.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
   RUSTDOCFLAGS: -Dwarnings
 
+# Bazel is the build of record: bazel.yml builds, lints (clippy, rustfmt) and tests every target.
+# These Cargo jobs cover only what the Bazel build doesn't: the generated REAPI code, the allocators
+# other than the default, the minimum supported Rust version and cargo-deny.
 jobs:
-  fmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Installs the toolchain and components pinned in rust-toolchain.toml.
-      - run: rustup toolchain install
-      - run: cargo fmt --all --check
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo clippy --workspace --all-targets --all-features --locked
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
-        with:
-          tool: cargo-nextest
-      - run: cargo nextest run --workspace --locked
-      - run: cargo test --doc --workspace --locked
-
   # The REAPI code in src/reapi/proto/ is generated and checked in. Regenerate it from the vendored
   # protos and fail on any difference, so the protos, the generator and the code cannot drift.
   reapi-codegen:
@@ -67,7 +43,7 @@ jobs:
             exit 1
           fi
 
-  # The default build uses mimalloc; check the other allocator choices still build and pass.
+  # Bazel builds the default allocator, mimalloc; check the others still lint, build and pass.
   allocators:
     runs-on: ubuntu-latest
     strategy:
@@ -75,12 +51,13 @@ jobs:
       matrix:
         features: ["--no-default-features", "--no-default-features --features jemalloc"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-nextest
+      - run: cargo clippy --workspace --all-targets --locked ${{ matrix.features }}
       - run: cargo nextest run --workspace --locked ${{ matrix.features }}
 
   msrv:

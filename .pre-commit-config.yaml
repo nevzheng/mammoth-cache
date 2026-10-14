@@ -13,9 +13,9 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
-      - id: cargo-clippy
-        name: cargo clippy
-        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - id: bazel-lint
+        name: clippy and rustfmt (bazel --config=lint)
+        entry: bazel build --config=ci --config=lint //...
         language: system
         types: [rust]
         pass_filenames: false
