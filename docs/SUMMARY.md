@@ -31,4 +31,5 @@
   - [0008: Supported clients and acceptance testing](design/0008-supported-clients.md)
   - [0009: Releases and packaging](design/0009-releases.md)
   - [0010: Memory tier, eviction policies and entry metadata](design/0010-memory-tier-and-eviction.md)
+  - [0013: Running behind load balancers and on Kubernetes](design/0013-deployment.md)
   - [Investigations](design/investigations.md)
