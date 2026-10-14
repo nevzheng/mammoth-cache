@@ -107,6 +107,10 @@ Nodes are stateless and interchangeable; the bucket is the only shared state.
 | L2   | Recently used entries, one file each | Configured bytes, free-space buffer, age | LRU by bytes, plus maximum age               |
 | L3   | Every stored entry                   | The bucket                               | Bucket lifecycle rules (for example 30 days) |
 
+Every key in every tier carries its protocol's namespace (`gradle/<hex key>`, `maven/<path>`), so a
+Maven path can never collide with a Gradle hash. Gradle entries are immutable; Maven objects may be
+replaced, because they are not content-addressed ([0001](0001-api-contracts.md)).
+
 Large entries skip L1 so that one big artifact cannot flush many small, hot ones. L2 writes go to a
 temporary file renamed into place, so a crash never leaves a partial entry.
 

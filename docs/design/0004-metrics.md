@@ -91,15 +91,20 @@ costs money. The provider's own metrics cover it.
 
 #### Serving
 
-| Metric                                  | Type      | Labels                     | Meaning                                    |
-| --------------------------------------- | --------- | -------------------------- | ------------------------------------------ |
-| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`  | Requests by route template and status      |
-| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`          | Time to the last byte of the response      |
-| `mammoth_http_requests_in_flight`       | gauge     | `route`                    | Requests being served                      |
-| `mammoth_auth_failures_total`           | counter   | `reason`                   | Rejected credentials, by AIP-193 `reason`  |
-| `mammoth_build_info`                    | gauge     | `version`, `revision`      | Always 1; identifies the build             |
+| Metric                                  | Type      | Labels                              | Meaning                                       |
+| --------------------------------------- | --------- | ----------------------------------- | --------------------------------------------- |
+| `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route template, status and client |
+| `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by Gradle version             |
+| `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response         |
+| `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                         |
+| `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by AIP-193 `reason`     |
+| `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build                |
 
-`route` is the route template (`/cache/{key}`), never the requested path. Standard `process_*`
+`route` is the route template (`/cache/{key}`), never the requested path. `client` is `gradle`,
+`maven` or `other`, from the `User-Agent` prefix (`Gradle/`, `Apache-Maven/`). `gradle_version` is
+the major and minor version from `X-Gradle-Version` (`8.10`), or `other` if it does not parse.
+Neither is trusted: clients choose them, so they label metrics and logs and nothing else, and there
+is no list of supported clients. Standard `process_*`
 metrics (memory, CPU, file descriptors) are exported too.
 
 ### Example queries

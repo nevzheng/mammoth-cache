@@ -85,6 +85,25 @@ Gradle's user guide says a `413` on store only skips the entry. Gradle's client 
 later) treats it like any other non-2xx status and turns the remote cache off for the rest of the
 build, so no refusal is free.
 
+### Maven
+
+The Apache Maven Build Cache Extension stores several named files per build under paths such as
+`/v1.2/<groupId>/<artifactId>/<checksum>/buildinfo.xml`, so it cannot share `/cache/{key}` and its
+strict hex keys. It gets its own namespace, `/maven/{path}`, defined in
+`api/openapi/maven-build-cache.v1.yaml`:
+
+- `GET`, `HEAD` and `PUT`, with the path treated as an opaque key in a namespace separate from
+  Gradle's. Segments are limited to letters, digits, `.`, `_` and `-`, and `..` is rejected.
+- A store replaces what is at the path. Unlike Gradle entries, these objects are not
+  content-addressed, so they are the one place a stored entry can change.
+- `OPTIONS` answers without a `DAV` header, so a client with WebDAV on skips `MKCOL`. A stray
+  `MKCOL` gets `201` and does nothing.
+- Maven sends credentials on `GET` only after a challenge, so every `401` carries
+  `WWW-Authenticate`.
+- Any failed load is a miss for Maven and a failed store is only logged, so the status codes need
+  none of the care Gradle's do. An oversized store gets an honest `413` here: unlike Gradle, Maven
+  keeps using the cache, and a silent drop could leave a build's `buildinfo.xml` without its files.
+
 ### Operational endpoints
 
 Defined in `api/openapi/ops.v1.yaml`. No authentication.
@@ -129,7 +148,5 @@ The docs site publishes all OpenAPI documents, including the one generated from 
 
 ## Open questions
 
-- Maven: its build cache extension uses a path layout (`/v1.1/<groupId>/<artifactId>/...`) rather
-  than a single key. Needs its own route and spec.
 - Whether `/metrics` should support optional authentication.
 - Generator and Bazel wiring for the admin OpenAPI document and for linting in CI.
