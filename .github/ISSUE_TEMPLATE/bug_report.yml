@@ -1,0 +1,43 @@
+name: Bug report
+description: Something isn't working as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, Gradle settings and requests that trigger the problem.
+      placeholder: |
+        1. Start mammoth-cache with ...
+        2. Run ./gradlew build --build-cache ...
+        3. See ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: mammoth-cache version or commit
+    validations:
+      required: true
+  - type: input
+    id: gradle-version
+    attributes:
+      label: Gradle version
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: e.g. Ubuntu 24.04 x86_64, macOS 15 arm64
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any log output. It is rendered as code, so no backticks are needed.
+      render: shell

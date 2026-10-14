@@ -45,3 +45,7 @@ style = "underscore" # _emphasis_
 
 [MD050]
 style = "asterisk" # **strong**
+
+# GitHub inserts the PR template into the PR body, so it has no top-level heading.
+[per-file-ignores]
+".github/pull_request_template.md" = ["MD041"]
