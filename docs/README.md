@@ -6,11 +6,12 @@ Cache Node, which reaches end of life after December 31, 2026: same `/cache/` pa
 `/ping`, and no Develocity. One static binary, a few lines of config and a load balancer, and your
 builds keep their cache.
 
-> [!WARNING]
-> mammoth-cache is pre-alpha. It serves Gradle, Maven and (off by default) Bazel builds from memory,
-> disk and an optional bucket, configured by `mammoth.toml`, with token authentication, graceful
-> shutdown and optional built-in TLS. There is no release yet, and part of the metrics catalog is
-> still being wired up. See [feature status](user/README.md#feature-status).
+> [!NOTE]
+> Early stage: there is no tagged release yet, and `main` and the `edge` image are what we test.
+> They serve Gradle, Maven and (off by default) Bazel builds from memory, disk and an optional
+> bucket, with token authentication, graceful shutdown and optional TLS; part of the metrics catalog
+> is still being wired up. Deploy at your own judgment. See
+> [feature status](user/README.md#feature-status).
 
 ## Why mammoth-cache
 
