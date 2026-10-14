@@ -11,7 +11,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 use axum::{
@@ -31,7 +31,7 @@ use mammoth_cache::{
         memory::{EvictionPolicy, MemoryConfig, MemoryStore},
     },
 };
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -42,12 +42,9 @@ async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
     LOCK.lock().await
 }
 
-/// The Prometheus recorder, installed once for the whole test binary.
+/// The node's Prometheus recorder, installed once for the whole test binary.
 fn recorder() -> PrometheusHandle {
-    static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
-    HANDLE
-        .get_or_init(|| PrometheusBuilder::new().install_recorder().unwrap())
-        .clone()
+    mammoth_cache::telemetry::test_recorder()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -306,7 +303,7 @@ const CATALOG: &[Metric] = &[
         name: "mammoth_build_info",
         kind: Kind::Gauge,
         labels: &[Label("version", None), Label("revision", None)],
-        live: false,
+        live: true,
     },
 ];
 
@@ -832,6 +829,40 @@ async fn server_status_agrees_with_the_counters() {
             (lookups("hit"), lookups("miss")),
             (count("hitCount"), count("missCount"))
         );
+    }
+}
+
+#[tokio::test]
+async fn exposition_has_help_build_info_and_process_metrics() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = three_tier_app(dir.path(), authenticator()).await;
+    send(&app, gradle_get("a3f5e1c09b2d4e7f8a1b6c3d5e9f0a99")).await;
+    let response = send(&app, Request::get("/metrics").body(Body::empty()).unwrap()).await;
+    let body = text(response).await;
+    let scrape = Scrape::parse(&body);
+
+    // Every exported `mammoth_` family carries the HELP text from 0004.
+    let families: BTreeSet<String> = scrape
+        .types
+        .keys()
+        .filter(|f| f.starts_with("mammoth_"))
+        .cloned()
+        .collect();
+    assert!(!families.is_empty());
+    for family in &families {
+        assert!(
+            body.contains(&format!("# HELP {family} ")),
+            "{family}: no HELP line"
+        );
+    }
+
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(
+        scrape.count("mammoth_build_info", &[("version", version)]),
+        1
+    );
+    if cfg!(target_os = "linux") {
+        assert!(scrape.value("process_resident_memory_bytes", &[]) > 0.0);
     }
 }
 

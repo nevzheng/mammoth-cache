@@ -7,6 +7,7 @@
 //! - [`config`]: the `mammoth.toml` file.
 //! - [`http`]: inbound adapters for the Gradle protocol, health checks and the admin API.
 //! - [`server`]: connections, timeouts and the shutdown drain.
+//! - [`telemetry`]: the Prometheus recorder behind `/metrics`.
 //! - [`tls`]: the optional built-in TLS certificate and its reload.
 //!
 //! The crate is a library with a thin `mammoth` binary, so a custom build can supply its own
@@ -20,6 +21,7 @@ pub mod key;
 pub mod server;
 pub mod store;
 mod tee;
+pub mod telemetry;
 pub mod tls;
 
 pub use http::{router, router_with, router_with_auth};

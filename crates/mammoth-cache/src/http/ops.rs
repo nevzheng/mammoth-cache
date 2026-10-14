@@ -74,8 +74,7 @@ pub(super) async fn readyz(
     Ok(out)
 }
 
-/// Prometheus metrics in the text exposition format. The catalog is design doc 0004; only the
-/// request counters are recorded so far.
+/// Prometheus metrics in the text exposition format. The catalog is design doc 0004.
 pub(super) async fn metrics(State(state): State<AppState>) -> Result<Response, ApiError> {
     let handle = state
         .metrics
@@ -85,5 +84,5 @@ pub(super) async fn metrics(State(state): State<AppState>) -> Result<Response, A
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/plain; version=0.0.4"),
     )];
-    Ok((headers, handle.render()).into_response())
+    Ok((headers, crate::telemetry::render(handle)).into_response())
 }

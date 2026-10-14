@@ -128,8 +128,8 @@ all five.
 
 1. **Recorder and HELP.** Move recorder construction into a `telemetry` module: install the
    recorder, set the buckets, call `describe_*` for every catalogued metric, record
-   `mammoth_build_info` (version from Cargo, revision from a `build.rs` `git rev-parse`, `unknown`
-   when not in a checkout), and add `metrics-process` for `process_*`. Tests get a
+   `mammoth_build_info` (version from Cargo, revision from `MAMMOTH_REVISION` at build time, which
+   the release workflow sets, and `unknown` otherwise), and add `metrics-process` for `process_*`. Tests get a
    `telemetry::test_recorder()` that installs once per process behind a `OnceLock` and returns the
    handle.
 2. **Cache outcomes.** In `Cache::get`, `head` and `put`: `mammoth_cache_lookups_total`,
@@ -291,8 +291,9 @@ not the user name.
 
 ## Open questions
 
-- `mammoth_build_info{revision}`: `build.rs` with `git rev-parse`, or stamp it in the release
-  workflow and leave `unknown` in local builds?
+Decided 2026-10-14: `mammoth_build_info{revision}` is stamped by the release workflow through
+`MAMMOTH_REVISION`, and local builds say `unknown`. A `build.rs` running `git rev-parse` would rerun
+on every commit, and finds no checkout in the Docker and Bazel sandboxes anyway.
 
 Decided 2026-10-14: `mammoth_tier_oldest_entry_age_seconds` ships for `disk` first, from the disk
 index, and `memory` follows behind a `MemoryBackend` trait method with a default of "not reported".

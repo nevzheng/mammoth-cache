@@ -10,9 +10,9 @@ use mammoth_cache::{
         disk::{DiskConfig, DiskStore},
         memory::{MemoryConfig, MemoryStore},
     },
+    telemetry,
     tls::{self, Certificates},
 };
-use metrics_exporter_prometheus::PrometheusBuilder;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -179,6 +179,8 @@ async fn serve(config: Config) -> io::Result<()> {
              behind a proxy that terminates TLS, or tokens cross the network in clear"
         );
     }
+    // Before the tiers open, so what they record while opening is kept.
+    let metrics = telemetry::install().map_err(io::Error::other)?;
     let cache = build_cache(&config).await?;
     let protocols = &config.protocols;
     tracing::info!(
@@ -194,9 +196,6 @@ async fn serve(config: Config) -> io::Result<()> {
         "mammoth-cache listening"
     );
 
-    let metrics = PrometheusBuilder::new()
-        .install_recorder()
-        .map_err(io::Error::other)?;
     let cache = Arc::new(cache);
     let app = mammoth_cache::router_with(
         cache.clone(),
