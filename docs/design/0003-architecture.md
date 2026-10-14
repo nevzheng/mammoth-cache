@@ -65,8 +65,10 @@ From Gradle's HTTP build cache client:
 - Gradle reads only status codes. Some fail the build; most other errors turn the remote cache off
   for the rest of the build ([0001](0001-api-contracts.md)).
 - No backoff: `Retry-After` is ignored, so `429` and `503` cannot be used to pace clients.
-- `413` on store is the only refusal Gradle skips without consequence.
+- No refusal is free. The Gradle user guide says `413` on store only skips the entry, but the client
+  code turns the remote cache off for that too.
 - HTTP Basic is the only authentication ([0002](0002-authentication.md)).
+- `Expect: 100-continue` must be honoured, so refused uploads are never sent.
 
 From the environment:
 
@@ -152,8 +154,10 @@ sequenceDiagram
 
 ### Write path
 
-1. Reject the upload early (`413`) when `Content-Length` exceeds the entry limit, before reading
-   the body where `Expect: 100-continue` allows.
+1. Accept and drop an oversized upload (`Content-Length` over the entry limit): answer `200`
+   without storing it, and count it. With `Expect: 100-continue` the body is never sent; without
+   it, the body is read and discarded, since closing the connection early is also an error to
+   Gradle. An upload that passes the limit mid-stream is dropped the same way.
 2. Stream the body to a temporary file in L2, checking the size limit as bytes arrive.
 3. Rename it into place, then answer the client.
 4. Upload to L3 in the background through a bounded queue.
@@ -173,7 +177,7 @@ sequenceDiagram
     participant B as L3 bucket
     G->>N: PUT /cache/{key} (Expect: 100-continue)
     alt Content-Length over the limit
-        N-->>G: 413, entry skipped
+        N-->>G: 200, entry dropped and counted, body never sent
     else accepted
         N-->>G: 100 Continue
         G->>N: body
@@ -261,9 +265,9 @@ is handled inside instead:
 - A limit on open connections, so excess clients wait in the listen queue.
 - When the bucket upload queue is full, the upload is dropped and counted. That costs a later miss
   only.
-- Optionally, under sustained overload, answer `PUT` with `413`. It is the one refusal Gradle
-  treats as "skip this entry" without turning the cache off. It stretches the status's meaning, so
-  it is off by default.
+- There is no refusal Gradle survives with the cache still on (`413` included). Oversized entries
+  are already accepted and dropped; doing the same to shed load under overload is an open
+  question.
 
 ## Cross-cutting concerns
 
@@ -325,6 +329,8 @@ Every tier reports hits, misses, latency, size and evictions. The metric catalog
 
 ## Open questions
 
+- Whether to shed `PUT`s under sustained overload by accepting and dropping them, as oversized
+  entries are.
 - The default L1 size threshold for an entry.
 - Whether to index L2 on restart or start cold.
 - Which object stores to support first.

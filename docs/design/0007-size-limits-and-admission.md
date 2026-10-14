@@ -1,4 +1,4 @@
-# 0007: Entry size limits, admission and eviction
+# 0007: Entry size limits and admission
 
 ## Status
 
@@ -10,9 +10,9 @@ mammoth-cache caps the size of an entry it stores, 100 MiB by default as in the 
 and the cap can be raised or turned off. An oversized `PUT` is accepted and dropped: the client gets
 a success status, the bytes are discarded, and a metric counts it. A second, smaller threshold keeps
 large entries out of memory. This doc explains why a cap protects hit rate in a cache bounded by
-bytes, gives the arithmetic and a simulation behind the defaults, and specifies how each tier admits
-and evicts entries. The simulation's workload is synthetic, so its numbers are modelled, not
-measured; the doc says which is which throughout.
+bytes, gives the arithmetic and a simulation behind the defaults, and specifies what each tier
+admits. The simulation's workload is synthetic, so its numbers are modelled, not measured; the doc
+says which is which throughout.
 
 ## Context and scope
 
@@ -23,15 +23,16 @@ server is the only place to apply one. The Build Cache Node (BCN) defaults to a 
 ([Develocity build cache docs](https://docs.develocity.ai/2026.2/administration/build-acceleration/build-cache/)),
 and evicts least recently used entries.
 
-The project decided (2026-10-14) that an oversized store is accepted and dropped rather than refused
-with `413`. This doc specifies that behaviour; [0001](0001-api-contracts.md) and
-[0003](0003-architecture.md) still describe `413` and will be updated to match.
+The project decided (2026-10-14) that an oversized store is accepted and dropped, answered with
+`200`, as [0001](0001-api-contracts.md) and [0003](0003-architecture.md) now say. This doc gives the
+reasoning behind the limit and the details of the drop.
 
 This doc covers:
 
 - Why there is a cap at all, and why 100 MiB is the default.
 - The memory threshold.
-- Admission and eviction in L1 and L2.
+- What each tier admits. Eviction policies are in 0009
+  ([#13](https://github.com/nevzheng/mammoth-cache/pull/13)).
 - What the node does with an oversized `PUT`.
 
 The bucket tier (L3) has no eviction of its own; its lifecycle rules apply, as in 0003.
@@ -66,8 +67,9 @@ The objective is build time saved, which is close to hit ratio but not the same:
 
 Constraints:
 
-- Gradle reads only status codes. Most errors on `PUT` turn the remote cache off for the rest of
-  the build ([0003](0003-architecture.md)), so dropping an entry must look like success.
+- Gradle reads only status codes. Any error on `PUT`, `413` included, turns the remote cache off
+  for the rest of the build ([0003](0003-architecture.md)), so dropping an entry must look like
+  success.
 - Gradle may send `Expect: 100-continue` (the `useExpectContinue` setting on its HTTP build cache),
   which lets the node answer before the body is sent.
 - Entries are immutable and reproducible. A dropped or evicted entry costs a later miss, nothing
@@ -221,11 +223,11 @@ off; the key name and the `"none"` value are for 0005 to settle.
 ```mermaid
 flowchart TD
     put["PUT /cache/{key}"] --> cl{"Content-Length<br/>over the cap?"}
-    cl -- "yes, Expect: 100-continue" --> early["202, no 100 Continue<br/>body never sent"]
-    cl -- "yes, no Expect" --> drain["Read and discard the body<br/>202"]
+    cl -- "yes, Expect: 100-continue" --> early["200, no 100 Continue<br/>body never sent"]
+    cl -- "yes, no Expect" --> drain["Read and discard the body<br/>200"]
     cl -- "no, or unknown" --> stream["Stream to temp file in L2,<br/>counting bytes"]
     stream --> over{"Bytes so far<br/>over the cap?"}
-    over -- yes --> abort["Delete temp file,<br/>discard the rest, 202"]
+    over -- yes --> abort["Delete temp file,<br/>discard the rest, 200"]
     over -- "no, body complete" --> keep["Rename into L2,<br/>queue L3 upload, 201"]
     early --> metric["count too_large"]
     drain --> metric
@@ -233,62 +235,55 @@ flowchart TD
 ```
 
 1. If `Content-Length` is over the cap and the request carries `Expect: 100-continue`, answer
-   `202 Accepted` at once without `100 Continue`. HTTP lets a server send a final status instead
+   `200` at once without `100 Continue`. HTTP lets a server send a final status instead
    of `100`, and the client then does not send the body
    ([RFC 9110 §10.1.1](https://www.rfc-editor.org/rfc/rfc9110#section-10.1.1)).
 2. If `Content-Length` is over the cap without `Expect`, read the body and discard it, then answer
-   `202`. Closing the connection early would surface as an I/O error in Gradle and turn the remote
+   `200`. Closing the connection early would surface as an I/O error in Gradle and turn the remote
    cache off for the build, so the node pays the bandwidth instead.
 3. If the length is unknown (chunked) or under the cap, stream to a temporary file as usual. If the
-   bytes received pass the cap, delete the file, discard the rest of the body and answer `202`. The
+   bytes received pass the cap, delete the file, discard the rest of the body and answer `200`. The
    node never holds more than the cap per upload.
 4. Count every drop in `mammoth_cache_stores_total{result="too_large"}`
    ([0004](0004-metrics.md)).
 
-`202 Accepted` is chosen over `200` or `201` because it does not claim the entry was stored, and
-Gradle treats every `2xx` as success. The final status code belongs to 0001.
+`200` is the status [0001](0001-api-contracts.md) sets for a dropped entry. Gradle reads nothing but
+the status code.
 
 Entries over the L1 threshold follow the normal path into L2 and L3; they just skip memory.
 
-### Admission and eviction by tier
+### Admission by tier
 
-| Tier | Admission                                                      | Eviction                    |
-| ---- | -------------------------------------------------------------- | --------------------------- |
-| L1   | Size threshold, then TinyLFU frequency admission               | Window plus segmented LRU   |
-| L2   | Global cap; frequency admission optional, off by default       | LRU by bytes, plus max age  |
-| L3   | Global cap                                                     | Bucket lifecycle rules      |
+Eviction policies, the memory store and per-entry metadata are in 0009
+([#13](https://github.com/nevzheng/mammoth-cache/pull/13)). This doc only says which entries each
+tier admits.
 
-#### L1: W-TinyLFU
+| Tier | Admits                                                                     |
+| ---- | -------------------------------------------------------------------------- |
+| L1   | Entries up to `memory.max_entry_size`; the eviction policy may admit fewer |
+| L2   | Entries up to the global cap; frequency admission optional, off by default |
+| L3   | Entries up to the global cap                                               |
 
-Memory is small and hot, so it uses W-TinyLFU
-([Einziger, Friedman and Manes, 2017](https://arxiv.org/abs/1512.00727)). A new entry enters a small
-LRU window (about 1 % of the tier). When it leaves the window, it joins the main segmented LRU only
-if a count-min sketch, aged by halving, says it is used more often than what it would evict. The
-sketch takes a few bytes per tracked key.
+#### Size-aware frequency admission
 
-With variable sizes the comparison must be against every entry the newcomer would evict, not just
-the first. Einziger, Friedman, Eytan and Manes compare three ways of doing this
+When a policy compares a newcomer's frequency with what it would evict, entries of different sizes
+need care: the newcomer must be compared with every entry it would evict, not just the first.
+Einziger, Friedman, Eytan and Manes compare three ways of doing this
 ([2021](https://arxiv.org/abs/2105.08770)) and recommend "aggregated victims": admit only if the
-newcomer's frequency beats the sum of its victims' frequencies. The simulator uses that rule.
+newcomer's frequency beats the sum of its victims' frequencies. The simulator uses that rule. Any
+frequency-based policy offered in 0009 ([#13](https://github.com/nevzheng/mammoth-cache/pull/13))
+should behave the same way with variable sizes.
 
-Existing Rust crates such as `moka` (TinyLFU admission with a per-entry weigher) and `foyer` (a
-hybrid memory and disk cache with several policies) are candidates. Picking one is for the code,
-not this doc.
+#### Frequency admission in L2
 
-#### L2: LRU by bytes
-
-L2 stays LRU by bytes with an optional maximum age, as in [0003](0003-architecture.md). It is easy
-to reason about, matches the BCN, and the model shows that the global cap recovers most of the hit
-ratio LRU loses to large entries.
-
-Frequency admission in L2 is a configuration option, off by default:
+L2 admits every entry under the global cap by default. Frequency admission is an option:
 
 - **With a bucket**, rejecting an entry from L2 is cheap. It still reaches L3, and a later hit
   promotes it once its frequency is high enough. The model shows six points of hit ratio gained at
   8 GiB.
 - **Without a bucket**, L2 is the only copy, and rejecting a new entry loses the next team member's
   hit on it. Gradle stores an entry right after the miss that built it, so its frequency is at most
-  2 when it is offered. LRU admits everything, which suits this case.
+  2 when it is offered. Admitting everything suits this case.
 
 Turning it on by default waits for measurements from real deployments (see "Open questions").
 
@@ -301,7 +296,7 @@ so it needs no admission policy.
 
 ### Performance
 
-- An early `202` costs one round trip and no body bytes.
+- An early `200` costs one round trip and no body bytes.
 - A drained body costs the bandwidth of the upload, bounded by how fast the client sends it. The
   node discards bytes as they arrive and holds no buffer.
 - A TinyLFU sketch costs one hash and a few counter updates per access.
@@ -331,9 +326,10 @@ drained and those never sent. It is proposed here for 0004 to adopt.
 
 - **No cap.** Gradle has none, and it would be simplest. Rejected as the default for the reasons
   above, kept as a setting.
-- **Refuse with `413`.** Gradle skips the entry without turning the cache off, and the body is not
-  read. Rejected by the project in favour of accept and drop. It remains available if Gradle's
-  handling of an early `202` with `Expect: 100-continue` turns out not to work.
+- **Refuse with `413`.** The BCN does this, and the body is never read. Gradle's user guide says
+  `413` only skips the entry, but its client turns the remote cache off for the rest of the build
+  ([0003](0003-architecture.md)). It remains available as the `Reject` oversize policy
+  ([0001](0001-api-contracts.md)).
 - **Close the connection on an oversized body.** Saves bandwidth, but Gradle sees an I/O error and
   turns the remote cache off for the rest of the build.
 - **Probabilistic size-aware admission (AdaptSize).** Admits an entry with probability falling
@@ -355,7 +351,7 @@ drained and those never sent. It is proposed here for 0004 to adopt.
 - Real entry size distributions. Measure `mammoth_cache_entry_size_bytes` on early deployments, or
   build a few open-source projects with a local build cache and histogram the entries, then rerun
   the simulator with that distribution and a real access trace.
-- Does Gradle's HTTP client accept a final `202` in place of `100 Continue`, and does it keep the
+- Does Gradle's HTTP client accept a final `200` in place of `100 Continue`, and does it keep the
   connection? Test against each supported Gradle version before relying on it.
 - Should frequency admission in L2 default to on when a bucket is configured?
 - The startup check on the cap as a fraction of L2 size: which fraction, and warn or refuse?

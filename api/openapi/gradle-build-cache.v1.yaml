@@ -5,17 +5,22 @@ info:
   summary: The Gradle HTTP build cache protocol, as served by mammoth-cache.
   description: |
     Gradle owns this contract; this document describes it, it does not design it. Sources:
-    the Gradle user guide (https://docs.gradle.org/current/userguide/build_cache.html) and
-    `HttpBuildCacheService` in gradle/gradle.
+    the Gradle user guide (https://docs.gradle.org/current/userguide/build_cache.html),
+    and `HttpBuildCacheService` and `BaseRemoteBuildCacheServiceHandle` in gradle/gradle.
 
     Rules that come from Gradle and override API style guides, including AIP-193:
 
     - Gradle reads only the status code. Error bodies follow AIP-193 for humans and tools.
     - These statuses **fail the build**: 305, 400, 401, 403, 405, 406, 407, 411, 415, 417, 426,
       505, 511. Never return one for a condition the build should survive.
-    - Any other non-2xx status turns the remote cache off for the rest of the build.
-    - `413` on store is documented as non-fatal: the entry is skipped.
+    - Any other non-2xx status, `413`, `429` and every `5xx` included, turns the remote cache off
+      for the rest of the build (Gradle 4.3 and later). The Gradle user guide says `413` on store
+      only skips the entry, but the client code has no such case.
+    - Gradle never retries a failed request and ignores `Retry-After`.
     - Entries are content-addressed, so they never change once stored.
+
+    Gradle `HttpBuildCache` sends HTTP Basic preemptively; it supports nothing else. Develocity
+    clients are not supported.
 
     Configure Gradle with the base URL `https://<host>/cache/`.
   contact:
@@ -53,9 +58,12 @@ paths:
       summary: Load a cache entry
       description: |
         A hit returns the entry exactly as it was stored. Gradle sends
-        `Accept: application/vnd.gradle.build-cache-artifact.v2, */*`; the server answers with
-        `application/octet-stream`, which that `*/*` accepts.
+        `Accept: application/vnd.gradle.build-cache-artifact.v1, */*` up to 8.7 and `.v2` from 8.8;
+        the server answers with `application/octet-stream`, which that `*/*` accepts.
       tags: [gradle]
+      parameters:
+        - $ref: "#/components/parameters/GradleVersion"
+        - $ref: "#/components/parameters/UserAgent"
       responses:
         "200":
           description: Hit.
@@ -109,12 +117,27 @@ paths:
       operationId: storeEntry
       summary: Store a cache entry
       description: |
-        Gradle sends `Content-Type: application/vnd.gradle.build-cache-artifact.v2`. The server
-        accepts any content type and stores the body as opaque bytes; it must never answer `415`,
-        which fails the build. Storing a key that already exists succeeds without rewriting it.
-        Clients may send `Expect: 100-continue` so the server can reject an oversized or
-        unauthorized upload before the body is sent.
+        Gradle sends `Content-Type: application/vnd.gradle.build-cache-artifact.v1` up to 8.7 and
+        `.v2` from 8.8. The server accepts any content type and stores the body as opaque bytes;
+        it must never answer `415`, which fails the build. Storing a key that already exists
+        succeeds without rewriting it.
+
+        The server must honour `Expect: 100-continue` (sent when `useExpectContinue` is set, and
+        always through a proxy with credentials): it checks credentials, scope and
+        `Content-Length` before answering `100 Continue`, so a refused upload is never sent.
+
+        An entry over the size limit is accepted and dropped: the server answers `200`, discards
+        the bytes and counts the drop in `mammoth_cache_stores_total{result="too_large"}`. A
+        `413` would turn the remote cache off for the rest of the build, costing every later hit
+        for the sake of one entry. With `Expect: 100-continue` the server answers `200` instead of
+        `100 Continue`, so the body is never sent; without it, the server reads and discards the
+        body, because closing the connection early would also count as an error. A server set to
+        the `Reject` oversize policy answers `413` instead, as the Build Cache Node does.
       tags: [gradle]
+      parameters:
+        - $ref: "#/components/parameters/GradleVersion"
+        - $ref: "#/components/parameters/UserAgent"
+        - $ref: "#/components/parameters/Expect"
       requestBody:
         required: true
         content:
@@ -127,7 +150,9 @@ paths:
         "201":
           description: Stored.
         "200":
-          description: The entry was already present; nothing was written.
+          description: |
+            Nothing was written: the entry was already present, or it was over the size limit and
+            was dropped.
         "400":
           $ref: "#/components/responses/InvalidKey"
         "413":
@@ -144,6 +169,36 @@ components:
   securitySchemes:
     basicAuth:
       $ref: "./common.yaml#/components/securitySchemes/basicAuth"
+  parameters:
+    GradleVersion:
+      name: X-Gradle-Version
+      in: header
+      required: false
+      description: The Gradle version, sent by Gradle 4.0 and later. Used for metrics and logs only.
+      schema:
+        type: string
+        maxLength: 64
+        pattern: "^[0-9A-Za-z.+-]+$"
+        examples: ["8.10"]
+    UserAgent:
+      name: User-Agent
+      in: header
+      required: false
+      description: |
+        Gradle sends `Gradle/<version> (<os>;<os version>;<arch>) (<vendor>;<java>;<vm>)`. Used for
+        metrics and logs only; never for authentication or behaviour, since clients choose it.
+      schema:
+        type: string
+        maxLength: 512
+        examples: ["Gradle/8.10 (Linux;6.1;amd64) (Eclipse Adoptium;17.0.9;17.0.9+9)"]
+    Expect:
+      name: Expect
+      in: header
+      required: false
+      description: Lets the server refuse an upload before the body is sent.
+      schema:
+        type: string
+        const: 100-continue
   responses:
     InvalidKey:
       description: |
@@ -181,9 +236,11 @@ components:
                     key: a3f5e1c09b2d4e7f8a1b6c3d5e9f0a2b
     EntryTooLarge:
       description: |
-        The entry is larger than the configured limit. Gradle skips the entry and carries on.
-        AIP-193 alone would suggest `400 INVALID_ARGUMENT`, which would fail the build, so the
-        protocol status `413` wins and the body keeps the canonical name `OUT_OF_RANGE`.
+        The entry is larger than the configured limit, and the server is set to the `Reject`
+        oversize policy; by default it answers `200` and drops the entry. Gradle does not fail the
+        build on `413`, but turns the remote cache off for the rest of it. AIP-193 alone would
+        suggest `400 INVALID_ARGUMENT`, which would fail the build, so the protocol status `413`
+        wins and the body keeps the canonical name `OUT_OF_RANGE`.
       content:
         application/json:
           schema:
