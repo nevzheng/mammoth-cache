@@ -87,19 +87,23 @@ The gRPC listener for the REAPI cache, used only when `protocols.reapi` is on. I
 How connections time out and how the node shuts down. Design doc
 [0013](../design/0013-deployment.md) explains the choices.
 
-| Key                 | Type     | Default | Example  | Status    | Meaning                                                                                |
-| ------------------- | -------- | ------- | -------- | --------- | -------------------------------------------------------------------------------------- |
-| `shutdown_delay`    | duration | `5s`    | `"10s"`  | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail                  |
-| `shutdown_timeout`  | duration | `25s`   | `"55s"`  | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads             |
-| `idle_timeout`      | duration | `75s`   | `"620s"` | Available | How long a connection may wait for, and take to send, its next request's headers       |
-| `body_read_timeout` | duration | `60s`   | `"2m"`   | Available | How long an upload may send nothing before it fails; per read, not in total            |
-| `send_timeout`      | duration | `60s`   | `"2m"`   | Available | How long a response may make no progress because the client stopped reading; per write |
+Every key applies to both ports, the HTTP `listen` and the gRPC `[reapi] listen`, except where the
+table says otherwise.
+
+| Key                 | Type     | Default | Example  | Status    | Meaning                                                                                       |
+| ------------------- | -------- | ------- | -------- | --------- | --------------------------------------------------------------------------------------------- |
+| `shutdown_delay`    | duration | `5s`    | `"10s"`  | Available | After `SIGTERM`, keep serving while load balancers see `/readyz` fail                         |
+| `shutdown_timeout`  | duration | `25s`   | `"55s"`  | Available | From `SIGTERM`, the most time to finish requests and queued bucket uploads                    |
+| `idle_timeout`      | duration | `75s`   | `"620s"` | Available | How long an HTTP connection may wait for its next request's headers; a new gRPC one, any byte |
+| `body_read_timeout` | duration | `60s`   | `"2m"`   | Available | How long an upload may send nothing before it fails; per read, not in total                   |
+| `send_timeout`      | duration | `60s`   | `"2m"`   | Available | How long a response may make no progress because the client stopped reading; per write        |
 
 On `SIGTERM` or Ctrl-C the node fails `/readyz`, keeps serving for `shutdown_delay`, stops
-accepting connections, finishes requests in flight, then finishes queued bucket uploads, all
-within `shutdown_timeout`. A second signal exits at once. Keep `shutdown_timeout` below the
-platform's grace period (30 s on Kubernetes), and `shutdown_delay` below `shutdown_timeout`; the
-second is checked at startup, and the last three must be above zero.
+accepting connections, finishes requests in flight on both ports, then finishes queued bucket
+uploads, all within `shutdown_timeout`. Connections that have not sent a request close as the drain
+starts. A second signal exits at once. Keep `shutdown_timeout` below the platform's grace period
+(30 s on Kubernetes), and `shutdown_delay` below `shutdown_timeout`; the second is checked at
+startup, and the last three must be above zero.
 
 Keep `idle_timeout` above the load balancer's idle timeout (60 s on AWS ALB and nginx), or the
 load balancer reuses a connection the node has just closed and returns `502`. Google Cloud load
@@ -128,7 +132,8 @@ protocol versions are fixed, not settings.
 | ---------------- | ---- | -------- | ---------- | --------- | ---------------------------------------------------------------------------------------------------------- |
 | `max_entry_size` | size | `100MiB` | `"500MiB"` | Available | Largest entry stored. Gradle stores over it are accepted and dropped; Maven and Bazel stores get `413`.    |
 
-`limits.max_entry_size` may not be larger than `disk.size`. It is the Build Cache Node's
+`limits.max_entry_size` may not be larger than `disk.size` (with `"max-available"`, than the size
+it resolves to at startup). It is the Build Cache Node's
 `cache.maxArtifactSize`; design doc [0007](../design/0007-size-limits-and-admission.md) explains
 the limits.
 
@@ -149,12 +154,19 @@ above it; see [Memory and disk sizing](deployment.md#memory-and-disk-sizing).
 
 Optional. Without it the node keeps entries in memory only, which suits trials and tests.
 
-| Key                 | Type     | Default  | Example              | Status    | Meaning                                                       |
-| ------------------- | -------- | -------- | -------------------- | --------- | ------------------------------------------------------------- |
-| `path`              | path     | required | `"/var/lib/mammoth"` | Available | Directory for entries; each node needs its own                |
-| `size`              | size     | `10GiB`  | `"50GiB"`            | Available | Space for entries, counting each file in whole 4 KiB blocks   |
-| `free_space_buffer` | size     | `1GiB`   | `"5GiB"`             | Available | Free space to keep on the volume; the tier shrinks to keep it |
-| `max_entry_age`     | duration | none     | `"30d"`              | Available | Evict entries older than this                                 |
+| Key                 | Type                      | Default  | Example              | Status    | Meaning                                                       |
+| ------------------- | ------------------------- | -------- | -------------------- | --------- | ------------------------------------------------------------- |
+| `path`              | path                      | required | `"/var/lib/mammoth"` | Available | Directory for entries; each node needs its own                |
+| `size`              | size or `"max-available"` | `10GiB`  | `"50GiB"`            | Available | Space for entries, counting each file in whole 4 KiB blocks   |
+| `free_space_buffer` | size                      | `1GiB`   | `"5GiB"`             | Available | Free space to keep on the volume; the tier shrinks to keep it |
+| `max_entry_age`     | duration                  | none     | `"30d"`              | Available | Evict entries older than this                                 |
+
+`size = "max-available"` gives the tier the whole volume holding `path`, less
+`free_space_buffer`, like the Build Cache Node's `targetSize.type: maxAvailable`. The node reads
+the volume's size once at startup and logs it as `disk tier capacity`; a resized volume needs a
+restart. `mammoth_tier_capacity_bytes{tier="disk"}` and `/v1/serverStatus` show the result. On a
+tmpfs, the volume is the tmpfs size. Startup and `mammoth config check` fail if the volume is no
+larger than the buffer, or the result is below `limits.max_entry_size`.
 
 Entries are written to a temporary file and renamed into place, so a crash never leaves a partial
 entry. Each file carries a CRC32C checksum, checked on every read; a damaged entry is treated as a
@@ -268,6 +280,4 @@ mammoth-cache is pre-alpha. Some settings are accepted but have no effect yet, a
 designed but not accepted yet:
 
 - `log.access_log` is validated, but the node doesn't write an access log yet.
-- `disk.size = "max-available"`, to use the whole volume like the Build Cache Node's
-  `targetSize.type: maxAvailable`, is in design doc 0005 but not supported: give a size.
 - A list of trusted proxies, for client addresses in the access log, comes with the access log.

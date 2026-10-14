@@ -10,7 +10,7 @@ use mammoth_cache::{
     auth,
     cache::{BucketLimits, BucketWrite, Cache},
     config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
-    reapi::{self, GrpcSettings},
+    reapi,
     server::{self, ServerSettings, TlsSettings},
     store::{
         bucket::{BucketConfig, BucketStore},
@@ -225,7 +225,13 @@ async fn serve(config: Config) -> io::Result<()> {
         body_read_timeout: config.server.body_read_timeout.0,
         send_timeout: config.server.send_timeout.0,
     };
-    let signal = shutdown_signals();
+    let stop = shutdown_signals();
+    let signal = || {
+        let mut stopped = stop.subscribe();
+        async move {
+            let _ = stopped.wait_for(|stop| *stop).await;
+        }
+    };
     let tls = match certificates {
         Some(certificates) => {
             let tls = TlsSettings {
@@ -237,52 +243,39 @@ async fn serve(config: Config) -> io::Result<()> {
         }
         None => None,
     };
-    let grpc = grpc_listener.map(|listener| {
+    let mut servers = Vec::new();
+    if let Some(listener) = grpc_listener {
         let routes = reapi::routes(cache.clone(), auth, settings.body_read_timeout);
-        let grpc_settings = GrpcSettings {
-            shutdown_delay: settings.shutdown_delay,
-            shutdown_timeout: settings.shutdown_timeout,
-            idle_timeout: settings.body_read_timeout,
-        };
-        tokio::spawn(reapi::serve(
-            listener,
-            tls.clone(),
-            routes,
-            grpc_settings,
-            signal(),
-        ))
-    });
-    let http = match tls {
-        Some(tls) => server::serve_tls(listener, tls, app, cache, settings, signal()).await,
-        None => server::serve(listener, app, cache, settings, signal()).await,
-    };
-    if let Some(grpc) = grpc {
-        match grpc.await {
-            Ok(result) => result?,
-            Err(error) => return Err(io::Error::other(error)),
-        }
+        let served = reapi::serve(listener, tls.clone(), routes, settings, signal());
+        servers.push(("gRPC", tokio::spawn(served)));
     }
-    http
+    let http = {
+        let cache = cache.clone();
+        let signal = signal();
+        async move {
+            match tls {
+                Some(tls) => server::serve_tls(listener, tls, app, cache, settings, signal).await,
+                None => server::serve(listener, app, cache, settings, signal).await,
+            }
+        }
+    };
+    servers.push(("HTTP", tokio::spawn(http)));
+    server::run_node(&cache, servers, &stop, settings.shutdown_timeout).await
 }
 
-/// Watches for the shutdown signal and returns a maker of futures that resolve on it, one per
-/// listener, so one signal stops both. A second signal exits without draining.
-fn shutdown_signals() -> impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
-{
-    let (stop, stopped) = tokio::sync::watch::channel(false);
+/// Watches for the shutdown signal, which sets the returned flag; the servers drain when it is
+/// set. A second signal exits without draining.
+fn shutdown_signals() -> tokio::sync::watch::Sender<bool> {
+    let (stop, _) = tokio::sync::watch::channel(false);
+    let signalled = stop.clone();
     tokio::spawn(async move {
         shutdown_signal().await;
-        let _ = stop.send(true);
+        let _ = signalled.send(true);
         shutdown_signal().await;
         tracing::warn!("second shutdown signal; exiting without draining");
         std::process::exit(130);
     });
-    move || {
-        let mut stopped = stopped.clone();
-        Box::pin(async move {
-            let _ = stopped.wait_for(|stop| *stop).await;
-        })
-    }
+    stop
 }
 
 /// Builds the tiers in lookup order: memory, then disk, then the bucket.
@@ -298,9 +291,12 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         .max_entry_size(config.limits.max_entry_size.bytes())
         .bounded_tier(Arc::new(memory));
     if let Some(disk) = &config.disk {
+        let capacity = config
+            .resolve_disk_size(disk)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         let store = DiskStore::open(DiskConfig {
             path: disk.path.clone(),
-            capacity_bytes: disk.size.bytes(),
+            capacity_bytes: capacity.bytes(),
             max_entry_age: disk.max_entry_age.map(|age| age.0),
             free_space_buffer: disk.free_space_buffer.bytes(),
         })
@@ -351,6 +347,7 @@ fn check(config: &Config) -> Result<(), String> {
     if let Some(disk) = &config.disk {
         check_disk_path(&disk.path)
             .map_err(|e| format!("disk.path {}: {e}", disk.path.display()))?;
+        config.resolve_disk_size(disk)?;
     }
     Ok(())
 }
@@ -494,6 +491,14 @@ mod tests {
                 ),
                 "not a directory",
             ),
+            (
+                &format!(
+                    "[disk]\npath = \"{}\"\nsize = \"max-available\"\n\
+                     free_space_buffer = \"1000000TiB\"\n",
+                    dir.path().display()
+                ),
+                "not larger than disk.free_space_buffer (1000000TiB)",
+            ),
         ];
         for (extra, expected) in cases {
             let err = check(&config(dir.path(), extra)).unwrap_err();
@@ -511,6 +516,8 @@ mod tests {
             dir.path().display()
         );
         check(&config(dir.path(), &extra)).unwrap();
+        let max_available = extra.replace("\"1GiB\"", "\"max-available\"");
+        check(&config(dir.path(), &max_available)).unwrap();
         assert!(!path.exists(), "config check created the disk path");
     }
 }

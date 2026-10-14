@@ -52,8 +52,10 @@ username = "admin"
 token = "mmc_e2eAdminTokenNotSecretUsedOnlyInTests04"
 scopes = ["admin:read"]
 
-# Tier topologies besides the full one (deploy/compose/config/topology-*.toml).
+# Tier topologies besides the full one (deploy/compose/config/topology-*.toml), and the
+# max-available node (deploy/compose/config/max-available.toml).
 [topologies]
 memory = "http://localhost:5074"
 memory-disk = "http://localhost:5075"
 memory-bucket = "http://localhost:5076"
+max-available = "http://localhost:5077" # disk.size = "max-available" on a 64 MiB tmpfs
