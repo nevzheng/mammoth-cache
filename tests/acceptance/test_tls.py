@@ -83,3 +83,20 @@ def test_bazel(tmp_path: Path, bazel_version: str, target: Target, tls: Tls) -> 
     assert hit.ok, hit.describe()
     assert hit.remote_hits() == 2, hit.describe()
     assert hit.executed() == 0, hit.describe()
+
+
+@pytest.mark.requires("bazel")
+@pytest.mark.requires("reapi")
+def test_bazel_grpcs(tmp_path: Path, bazel_version: str, target: Target, tls: Tls) -> None:
+    """The REAPI listener serves the same certificate as HTTP (docs/user/reapi.md)."""
+    if tls.reapi_address is None:
+        pytest.skip("target's TLS node has no REAPI address")
+    project = BazelProject.create(tmp_path, bazel_version, f"grpcs://{tls.reapi_address}")
+    project.credentials = target.credentials
+    project.tls_certificate = tls.cert_dir / "ca.crt"
+    stored = project.build()
+    assert stored.ok, stored.describe()
+    hit = project.build()
+    assert hit.ok, hit.describe()
+    assert hit.remote_hits() == 2, hit.describe()
+    assert hit.executed() == 0, hit.describe()
