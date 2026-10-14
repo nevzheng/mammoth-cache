@@ -6,7 +6,7 @@ Draft
 
 ## Summary
 
-mammoth-cache reads one static YAML file at startup and never writes to it. The file covers the
+mammoth-cache reads one static TOML file at startup and never writes to it. The file covers the
 listener, TLS, the three storage tiers, users and logging. Settings can't be changed at runtime:
 to change one, edit the file and restart the node, which is cheap because nodes are stateless. The
 file's shape starts from the Build Cache Node's `config.yaml` and adds only what the memory and
@@ -54,69 +54,72 @@ This doc covers the file's shape and rules. Auth is in [0002](0002-authenticatio
 
 ### Example
 
-```yaml
-# mammoth.yaml
-version: 1
+```toml
+#:schema https://nevzheng.github.io/mammoth-cache/schema/mammoth.schema.json
+# mammoth.toml
+version = 1
+listen = "0.0.0.0:5071"
 
-listen: 0.0.0.0:5071
+[tls] # optional; omit to serve plain HTTP, e.g. behind a TLS-terminating proxy
+cert = "/etc/mammoth/tls.crt"
+key = "/etc/mammoth/tls.key"
 
-tls: # optional; omit to serve plain HTTP, e.g. behind a TLS-terminating proxy
-  cert: /etc/mammoth/tls.crt
-  key: /etc/mammoth/tls.key
+[limits]
+max_entry_size = "100MiB" # BCN cache.maxArtifactSize
 
-limits:
-  max_entry_size: 100MiB # BCN cache.maxArtifactSize
+[memory] # L1
+size = "1GiB"
+max_entry_size = "1MiB" # larger entries skip memory
 
-memory: # L1
-  size: 1GiB
-  max_entry_size: 1MiB # larger entries skip memory
+[disk] # L2
+path = "/var/lib/mammoth"
+size = "50GiB" # or "max-available", like BCN targetSize.type
+free_space_buffer = "1GiB" # BCN cache.freeSpaceBufferSize
+max_entry_age = "30d" # optional; BCN cache.maxEntryAgeInHours
 
-disk: # L2
-  path: /var/lib/mammoth
-  size: 50GiB # or max-available, like BCN targetSize.type
-  free_space_buffer: 1GiB # BCN cache.freeSpaceBufferSize
-  max_entry_age: 30d # optional; BCN cache.maxEntryAgeInHours
+[bucket] # L3, optional
+url = "s3://acme-build-cache/mammoth/" # also gs://, az://, file://
+region = "us-east-1"
+# endpoint = "https://<account>.r2.cloudflarestorage.com" # S3-compatible stores only
+write = "async" # or "sync": answer a PUT only after the upload
+upload_queue = 1000 # async only
 
-bucket: # L3, optional
-  url: s3://acme-build-cache/mammoth/ # also gs://, az://, file://
-  region: us-east-1
-  # endpoint: https://<account>.r2.cloudflarestorage.com # S3-compatible stores only
-  write: async # or sync: answer a PUT only after the upload
-  upload_queue: 1000 # async only
+[auth]
+anonymous = [] # BCN anonymousLevel; scopes for requests without credentials
 
-auth:
-  anonymous: [] # BCN anonymousLevel; scopes for requests without credentials
-  users:
-    ci:
-      note: Continuous integration
-      scopes: [cache:read, cache:write]
-      token_hashes:
-        - sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
-    developers:
-      scopes: [cache:read]
-      token_hashes:
-        - sha256:60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752
+[auth.users.ci]
+note = "Continuous integration"
+scopes = ["cache:read", "cache:write"]
+token_hashes = ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"]
 
-metrics:
-  require_auth: false
+[auth.users.developers]
+scopes = ["cache:read"]
+token_hashes = ["sha256:60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752"]
 
-log:
-  level: info # error, warn, info, debug, trace
-  format: json # or text
-  access_log: true
+[metrics]
+require_auth = false
+
+[log]
+level = "info" # error, warn, info, debug, trace
+format = "json" # or "text"
+access_log = true
 ```
 
 ### Rules
 
-- **Location:** the path given by `--config`, else `MAMMOTH_CONFIG`, else `./mammoth.yaml`. That is
+- **Location:** the path given by `--config`, else `MAMMOTH_CONFIG`, else `./mammoth.toml`. That is
   the only environment variable or flag that affects settings.
 - **Defaults:** every key except `version` and `disk.path` is optional. Defaults follow the BCN
   where it has one (100 MiB entries, 1 GiB free-space buffer, no anonymous access).
 - **Validation:** unknown keys, wrong types, unparseable units and contradictions (an L1 entry
-  limit above the overall entry limit, `write: sync` with no bucket) are errors at startup.
+  limit above the overall entry limit, `write = "sync"` with no bucket) are errors at startup.
   `mammoth config check` runs the same validation without starting the server.
-- **Schema:** a JSON Schema for the file is published with the API contracts, so editors using
-  the YAML language server validate and complete it.
+- **Schema:** TOML has no schema language of its own, but it shares JSON's data model, so the file
+  is described by a JSON Schema. The schema is generated from the Rust config types (for example
+  with `schemars`), so it cannot drift from the parser, and published with the API contracts.
+  Editors with Taplo ("Even Better TOML") or tombi validate and complete the file through the
+  `#:schema` line or a SchemaStore entry for `mammoth.toml`. CI checks the example configs with
+  `taplo check --schema`.
 - **Units:** sizes use binary suffixes (`KiB`, `MiB`, `GiB`, `TiB`), durations `s`, `m`, `h`, `d`.
 - **Secrets:** the file holds token hashes, which are not secrets. Bucket credentials come from the
   cloud's credential chain (see [0003](0003-architecture.md)). Nothing in the file needs to be kept
@@ -128,21 +131,21 @@ log:
 
 ### Migrating from the Build Cache Node
 
-| BCN                                   | mammoth-cache                                                |
-| ------------------------------------- | ------------------------------------------------------------ |
-| `cache.targetSize` (`fixed`, `size`)  | `disk.size` (`50000` MiB becomes `50000MiB`)                 |
-| `cache.targetSize.type: maxAvailable` | `disk.size: max-available`                                   |
-| `cache.freeSpaceBufferSize`           | `disk.free_space_buffer`                                     |
-| `cache.maxArtifactSize`               | `limits.max_entry_size`                                      |
-| `cache.maxEntryAgeInHours`            | `disk.max_entry_age`                                         |
-| `anonymousLevel: read`/`readwrite`    | `auth.anonymous: [cache:read]` / `[cache:read, cache:write]` |
-| `users.<name>.level`                  | `auth.users.<name>.scopes`                                   |
-| `users.<name>.password`               | No equivalent: issue a token with `mammoth token new`        |
-| `users.<name>.note`                   | `auth.users.<name>.note`                                     |
-| `--port`, `PORT`                      | `listen`                                                     |
-| `conf/ssl.crt`, `conf/ssl.key`        | `tls.cert`, `tls.key`                                        |
-| `--data-dir`                          | `disk.path`                                                  |
-| `uiAccess`, `registration`            | Not applicable                                               |
+| BCN                                   | mammoth-cache                                                        |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| `cache.targetSize` (`fixed`, `size`)  | `disk.size` (`50000` MiB becomes `"50000MiB"`)                       |
+| `cache.targetSize.type: maxAvailable` | `disk.size = "max-available"`                                        |
+| `cache.freeSpaceBufferSize`           | `disk.free_space_buffer`                                             |
+| `cache.maxArtifactSize`               | `limits.max_entry_size`                                              |
+| `cache.maxEntryAgeInHours`            | `disk.max_entry_age`                                                 |
+| `anonymousLevel: read`/`readwrite`    | `auth.anonymous = ["cache:read"]` or `["cache:read", "cache:write"]` |
+| `users.<name>.level`                  | `auth.users.<name>.scopes`                                           |
+| `users.<name>.password`               | No equivalent: issue a token with `mammoth token new`                |
+| `users.<name>.note`                   | `auth.users.<name>.note`                                             |
+| `--port`, `PORT`                      | `listen`                                                             |
+| `conf/ssl.crt`, `conf/ssl.key`        | `tls.cert`, `tls.key`                                                |
+| `--data-dir`                          | `disk.path`                                                          |
+| `uiAccess`, `registration`            | Not applicable                                                       |
 
 BCN password hashes can't be converted, because mammoth-cache authenticates with generated tokens.
 Each BCN user needs a new token, set in Gradle where the password was.
@@ -158,8 +161,10 @@ pod when the certificate changes.
 
 ## Alternatives considered
 
-- **TOML:** the Rust ecosystem's usual format, with fewer surprises than YAML. YAML wins on
-  familiarity: BCN users and Kubernetes manifests already use it.
+- **YAML,** like the BCN's `config.yaml`: familiar to BCN users and Kubernetes manifests, but full
+  of surprises (implicit types, the "Norway problem", significant indentation). TOML is the Rust
+  ecosystem's usual format, has one obvious way to write each value, and maps onto JSON Schema just
+  as well. The migration table covers the change of format.
 - **BCN's file as is:** keys in bare MiB and hours, no place for the memory and bucket tiers, and
   password hashes. A translation table serves migrating users better.
 - **Environment variable overrides for every key** (bazel-remote, fosterstack/cache): convenient
