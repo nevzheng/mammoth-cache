@@ -16,7 +16,7 @@ default size, so a miss on a key the model holds is a bug, not eviction.
 from __future__ import annotations
 
 import uuid
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, override
 
@@ -25,10 +25,12 @@ from hypothesis import strategies as st
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, consumes, initialize, rule
 
 from mammoth_e2e import blobs
+from mammoth_e2e.metrics import Scrape, parse
 from mammoth_e2e.protocols import BAZEL_CAS, GRADLE, Protocol, sha256
 
 if TYPE_CHECKING:
     from mammoth_e2e.contract import Contracts
+    from mammoth_e2e.stack import Stack
     from mammoth_e2e.target import Credentials, Target
 
 HEX = "0123456789abcdef"
@@ -136,6 +138,10 @@ class CacheModel(RuleBasedStateMachine):
         self.salt = uuid.uuid4().hex[:16]
         self.stored: dict[Key, bytes] = {}
         self.history: deque[str] = deque(maxlen=8)
+        # What this example sent, as mammoth_http_requests_total counts it: (route, method, code).
+        self.sent: Counter[tuple[str, str, str]] = Counter()
+        self.baseline: Scrape | None = None
+        self.last: Scrape | None = None
         self.http = httpx.Client(base_url=self.target.url("/"), timeout=httpx.Timeout(30.0))
 
     @override
@@ -145,16 +151,19 @@ class CacheModel(RuleBasedStateMachine):
     # Sending, with every response checked against the contract.
 
     def send(
-        self, caller: Caller, method: str, key: Key, body: bytes | None = None
+        self,
+        caller: Caller,
+        method: str,
+        key: Key,
+        body: bytes | None = None,
+        *,
+        close: bool = False,
     ) -> httpx.Response:
         headers = dict(caller.headers)
+        if close:
+            headers["Connection"] = "close"
         if key.protocol == GRADLE and method == "PUT":
             headers["Content-Type"] = "application/vnd.gradle.build-cache-artifact.v2"
-        if method == "PUT":
-            # A re-store the node answers before reading the body closes the connection without
-            # saying so, and the next request on it races the close. test_edges pins that bug;
-            # until it is fixed, stores here use their own connection so the model stays stable.
-            headers["Connection"] = "close"
         try:
             response = self.http.request(
                 method,
@@ -168,6 +177,7 @@ class CacheModel(RuleBasedStateMachine):
             raise AssertionError(
                 f"{method} {key.path}: {e!r}; requests before it:\n  {recent}"
             ) from e
+        self.sent[key.protocol.metrics_route, method, str(response.status_code)] += 1
         self.history.append(
             f"{caller.label} {method} {key.path} ({len(body or b'')} B) -> {response.status_code}"
         )
@@ -227,6 +237,49 @@ class CacheModel(RuleBasedStateMachine):
     @initialize()
     def start(self) -> None:
         assert self.protocols, "no protocol enabled on this target"
+        self.baseline = self.last = self.scrape()
+
+    # Metrics: what the node counts must match what this example sent.
+
+    def scrape(self) -> Scrape | None:
+        """`/metrics`, as a user with `metrics:read` if any; `None` if it is closed to us."""
+        reader = next((c for c in callers(self.target) if "metrics:read" in c.scopes), None)
+        response = self.http.get(
+            "/metrics",
+            headers=reader.headers if reader else {},
+            auth=(reader.auth if reader and reader.auth else httpx.USE_CLIENT_DEFAULT),
+        )
+        return parse(response.text) if response.status_code == 200 else None
+
+    @rule()
+    def metrics_add_up(self) -> None:
+        """Counters never go down, and the request counter moved by exactly what was sent.
+
+        Assumes nothing else sends cache requests to the node while the test runs.
+        """
+        if self.baseline is None or self.last is None:
+            return
+        now = self.scrape()
+        assert now is not None, "/metrics stopped answering"
+        for (name, labels), value in self.last.samples.items():
+            if name.endswith("_total"):
+                current = now.samples.get((name, labels), 0.0)
+                assert current >= value, f"{name}{dict(labels)} went from {value} to {current}"
+        routes = {p.metrics_route for p in self.protocols}
+        moved: Counter[tuple[str, str, str]] = Counter()
+        for (name, labels), value in now.samples.items():
+            if name != "mammoth_http_requests_total":
+                continue
+            label = dict(labels)
+            if label.get("route") in routes:
+                key = (label["route"], label["method"], label["code"])
+                moved[key] += int(value - self.baseline.samples.get((name, labels), 0.0))
+        moved = +moved  # drop zero entries
+        assert moved == +self.sent, (
+            f"mammoth_http_requests_total moved by {dict(moved)}, but this example sent "
+            f"{dict(self.sent)}"
+        )
+        self.last = now
 
     @rule(target=keys, data=st.data())
     def new_key(self, data: st.DataObject) -> Key:
@@ -333,7 +386,9 @@ class AuthModel(CacheModel):
         if denial is None:
             self.store(caller, key, body)
             return
-        self.refused(self.send(caller, "PUT", key, body), denial)
+        # A refused upload closes the connection without saying so (test_edges pins it), so it
+        # gets a connection of its own until that is fixed.
+        self.refused(self.send(caller, "PUT", key, body, close=True), denial)
         self.load(self.owner, key)  # the refused store changed nothing
 
     @rule(data=st.data(), key=CacheModel.keys, method=st.sampled_from(["GET", "HEAD"]))
@@ -344,3 +399,49 @@ class AuthModel(CacheModel):
             (self.load if method == "GET" else self.check)(caller, key)
             return
         self.refused(self.send(caller, method, key), denial)
+
+
+class ChaosModel(CacheModel):
+    """`CacheModel`, plus node restarts and bucket outages, on a stack the harness controls.
+
+    The node has a disk, so everything the model holds is on local disk: a restart must lose
+    nothing, and while the bucket is down every read must still hit with the right bytes and
+    every store must still succeed. Nothing may answer 5xx.
+    """
+
+    stack: ClassVar[Stack]
+    has_bucket: ClassVar[bool]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bucket_down = False
+
+    def reconnect(self) -> None:
+        """A restarted node has dropped every connection; start over, and reset the counters."""
+        self.http = httpx.Client(base_url=self.target.url("/"), timeout=httpx.Timeout(30.0))
+        self.sent.clear()
+        self.baseline = self.last = self.scrape()
+
+    @rule()
+    def restart_node(self) -> None:
+        # Close our idle keep-alive connections first, or the graceful drain waits them out.
+        self.http.close()
+        self.stack.restart("mammoth")
+        self.reconnect()
+
+    @rule()
+    def stop_bucket(self) -> None:
+        if self.has_bucket and not self.bucket_down:
+            self.stack.stop("seaweedfs")
+            self.bucket_down = True
+
+    @rule()
+    def start_bucket(self) -> None:
+        if self.bucket_down:
+            self.stack.start("seaweedfs")
+            self.bucket_down = False
+
+    @override
+    def teardown(self) -> None:
+        self.start_bucket()
+        super().teardown()

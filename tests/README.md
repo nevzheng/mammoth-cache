@@ -70,8 +70,13 @@ CAS, compare every answer with a dictionary of what was stored, and check every 
 `api/openapi/`. With `auth`, a second machine sends requests as anonymous, each user over Basic and
 Bearer, and a wrong token, and checks each gets exactly what its scopes allow and that a refused
 store changes nothing; give users their `scopes` and set `anonymous_scopes` in the profile.
+`test_model.py` also checks that counters never go down and that `mammoth_http_requests_total` moved
+by exactly the requests each sequence sent, so nothing else may send cache requests to the node
+during the run. On a stack the harness controls, a third machine restarts the node and stops the
+bucket at random; with a disk, nothing the model holds may be lost and nothing may answer 5xx.
 `test_edges.py` pins contract edge cases; known bugs there are strict xfails.
 
-`MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40).
+`MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40), and
+`MAMMOTH_E2E_CHAOS_EXAMPLES` the restart and outage machine (default 6).
 `MAMMOTH_E2E_CONTRACTS` points at another `api/openapi/` when testing a different build. A failure
 prints the shortest sequence of requests that reproduces it.
