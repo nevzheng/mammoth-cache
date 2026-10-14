@@ -110,6 +110,9 @@ rumdl check .
 
 ## Documentation
 
+Project docs live in [docs/](docs/README.md). Changes that affect the protocol, storage,
+configuration or operations need a [design doc](docs/design/README.md).
+
 Markdown is linted with [rumdl](https://rumdl.dev/) using the repository's `.rumdl.toml`. Before
 pushing doc changes, run:
 

@@ -3,6 +3,11 @@
 A fast, open-source remote build cache node for Gradle, written in Rust. Early days: nothing to run
 yet.
 
+## Documentation
+
+See [docs/](docs/README.md) for the [user guide](docs/user/README.md) and
+[design docs](docs/design/README.md).
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
