@@ -53,7 +53,7 @@ All error responses use the AIP-193 JSON form of `google.rpc.Status`:
   "error": {
     "code": 413,
     "message": "Cache entry is 157286400 bytes; the limit is 104857600.",
-    "status": "OUT_OF_RANGE",
+    "status": "INVALID_ARGUMENT",
     "details": [
       {
         "@type": "type.googleapis.com/google.rpc.ErrorInfo",
@@ -88,6 +88,17 @@ code follows Gradle; the body still follows AIP-193 with the canonical name that
 Gradle's user guide says a `413` on store only skips the entry. Gradle's client code (4.3 and
 later) treats it like any other non-2xx status and turns the remote cache off for the rest of the
 build, so no refusal is free.
+
+Three more apply beyond Gradle's routes:
+
+| Situation                            | AIP-193 alone          | mammoth-cache sends                       | Why                         |
+| ------------------------------------ | ---------------------- | ----------------------------------------- | --------------------------- |
+| Entry over size limit (Maven, Bazel) | `400 INVALID_ARGUMENT` | `413 ENTRY_TOO_LARGE`                     | Both log a 413 and carry on |
+| Method the route lacks               | `501 UNIMPLEMENTED`    | `405 METHOD_NOT_ALLOWED`, with `Allow`    | HTTP semantics              |
+| Client abandoned an upload           | `499` or `504`         | `400` (`UPLOAD_CANCELLED`, `UPLOAD_IDLE`) | Every failed upload has     |
+|                                      |                        |                                           | always been `400`           |
+
+[0017](0017-errors.md) lists every reason with its code and status.
 
 ### Maven
 
