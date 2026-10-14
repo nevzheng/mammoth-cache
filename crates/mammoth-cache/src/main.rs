@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::{Context as _, anyhow};
 use clap::{Parser, Subcommand};
 use mammoth_cache::{
     auth,
@@ -75,15 +76,15 @@ fn main() -> ExitCode {
     }
     let (config, source) = match load_config(cli.config) {
         Ok(loaded) => loaded,
-        Err(message) => {
-            eprintln!("mammoth: {message}");
+        Err(error) => {
+            eprintln!("mammoth: {error:#}");
             return ExitCode::FAILURE;
         }
     };
     if matches!(cli.command, Some(Command::Config(ConfigCommand::Check))) {
         // Check what the file points at too, without the startup log.
         if let Err(error) = check(&config) {
-            eprintln!("mammoth: {error}");
+            eprintln!("mammoth: {error:#}");
             return ExitCode::FAILURE;
         }
         eprintln!("config ok");
@@ -113,7 +114,7 @@ fn main() -> ExitCode {
     match runtime.block_on(serve(config)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            tracing::error!(%error, "mammoth-cache stopped");
+            tracing::error!(error = format!("{error:#}"), "mammoth-cache stopped");
             ExitCode::FAILURE
         }
     }
@@ -143,13 +144,13 @@ fn new_token() -> ExitCode {
 }
 
 /// Returns the config and the file it came from, if any.
-fn load_config(explicit: Option<PathBuf>) -> Result<(Config, Option<PathBuf>), String> {
+fn load_config(explicit: Option<PathBuf>) -> anyhow::Result<(Config, Option<PathBuf>)> {
     let chosen = explicit.is_some() || env::var_os(PATH_ENV).is_some();
     let path = Config::locate(explicit);
     if !chosen && !path.exists() {
         return Ok((Config::fallback(), None));
     }
-    let config = Config::load(&path).map_err(|e| e.to_string())?;
+    let config = Config::load(&path)?;
     Ok((config, Some(path)))
 }
 
@@ -164,7 +165,7 @@ fn init_logging(config: &Config) {
     }
 }
 
-async fn serve(config: Config) -> io::Result<()> {
+async fn serve(config: Config) -> anyhow::Result<()> {
     let auth = config.auth.authenticator(&config.metrics);
     // Before anything else, so a bad certificate fails fast.
     let certificates = match &config.tls {
@@ -186,7 +187,7 @@ async fn serve(config: Config) -> io::Result<()> {
         );
     }
     // Before the tiers open, so what they record while opening is kept.
-    let metrics = telemetry::install().map_err(io::Error::other)?;
+    let metrics = telemetry::install().context("cannot install the metrics recorder")?;
     let cache = build_cache(&config).await?;
     let protocols = &config.protocols;
     tracing::info!(
@@ -196,9 +197,11 @@ async fn serve(config: Config) -> io::Result<()> {
         reapi = protocols.reapi,
         "protocols"
     );
-    let listener = server::bind(config.listen)?;
+    let listener =
+        server::bind(config.listen).with_context(|| format!("listen {}", config.listen))?;
     let grpc_listener = if protocols.reapi {
-        let listener = server::bind(config.reapi.listen)?;
+        let listener = server::bind(config.reapi.listen)
+            .with_context(|| format!("reapi.listen {}", config.reapi.listen))?;
         tracing::info!(
             addr = %listener.local_addr()?,
             scheme = if certificates.is_some() { "grpcs" } else { "grpc" },
@@ -260,7 +263,7 @@ async fn serve(config: Config) -> io::Result<()> {
         }
     };
     servers.push(("HTTP", tokio::spawn(http)));
-    server::run_node(&cache, servers, &stop, settings.shutdown_timeout).await
+    Ok(server::run_node(&cache, servers, &stop, settings.shutdown_timeout).await?)
 }
 
 /// Watches for the shutdown signal, which sets the returned flag; the servers drain when it is
@@ -279,21 +282,19 @@ fn shutdown_signals() -> tokio::sync::watch::Sender<bool> {
 }
 
 /// Builds the tiers in lookup order: memory, then disk, then the bucket.
-async fn build_cache(config: &Config) -> io::Result<Cache> {
+async fn build_cache(config: &Config) -> anyhow::Result<Cache> {
     let memory: MemoryStore = MemoryStore::with_config(MemoryConfig {
         capacity_bytes: config.memory.size.bytes(),
         max_entry_bytes: config.memory.max_entry_size.bytes(),
         eviction: config.memory.eviction,
     })
-    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    .context("memory.eviction")?;
     // With memory as the deepest tier, the cache caps entries at memory.max_entry_size.
     let mut builder = Cache::builder()
         .max_entry_size(config.limits.max_entry_size.bytes())
         .bounded_tier(Arc::new(memory));
     if let Some(disk) = &config.disk {
-        let capacity = config
-            .resolve_disk_size(disk)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let capacity = config.resolve_disk_size(disk).map_err(|e| anyhow!(e))?;
         let store = DiskStore::open(DiskConfig {
             path: disk.path.clone(),
             capacity_bytes: capacity.bytes(),
@@ -306,7 +307,7 @@ async fn build_cache(config: &Config) -> io::Result<Cache> {
         tracing::warn!("no [disk] configured: running memory only, entries are lost on restart");
     }
     if let Some(bucket) = &config.bucket {
-        let store = BucketStore::open(&bucket_config(bucket))?;
+        let store = BucketStore::open(&bucket_config(bucket)).context("bucket.url")?;
         let write = match bucket.write {
             config::BucketWrite::Async => BucketWrite::Async {
                 queue: bucket.upload_queue,
@@ -356,22 +357,21 @@ fn bucket_config(bucket: &config::Bucket) -> BucketConfig {
 /// What `config check` can find without starting the node: a certificate that doesn't load, a
 /// bucket URL no client accepts, or a disk path that can't be used. It contacts nothing and
 /// writes nothing.
-fn check(config: &Config) -> Result<(), String> {
+fn check(config: &Config) -> anyhow::Result<()> {
     if let Some(tls) = &config.tls {
         // With generate, a missing pair is fine: startup writes it.
-        let generated = tls.generate
-            && tls::both_missing(&tls.cert, &tls.key).map_err(|e| format!("tls: {e}"))?;
+        let generated = tls.generate && tls::both_missing(&tls.cert, &tls.key).context("tls")?;
         if !generated {
-            Certificates::load(&tls.cert, &tls.key).map_err(|e| e.to_string())?;
+            Certificates::load(&tls.cert, &tls.key)?;
         }
     }
     if let Some(bucket) = &config.bucket {
-        BucketStore::open(&bucket_config(bucket)).map_err(|e| format!("bucket.url: {e}"))?;
+        BucketStore::open(&bucket_config(bucket)).context("bucket.url")?;
     }
     if let Some(disk) = &config.disk {
         check_disk_path(&disk.path)
-            .map_err(|e| format!("disk.path {}: {e}", disk.path.display()))?;
-        config.resolve_disk_size(disk)?;
+            .with_context(|| format!("disk.path {}", disk.path.display()))?;
+        config.resolve_disk_size(disk).map_err(|e| anyhow!(e))?;
     }
     Ok(())
 }
@@ -525,7 +525,7 @@ mod tests {
             ),
         ];
         for (extra, expected) in cases {
-            let err = check(&config(dir.path(), extra)).unwrap_err();
+            let err = format!("{:#}", check(&config(dir.path(), extra)).unwrap_err());
             assert!(err.contains(expected), "{extra:?}: {err}");
         }
     }
@@ -542,7 +542,7 @@ mod tests {
         );
         let generate = format!("{tls}generate = true\n");
 
-        let err = check(&config(dir.path(), &tls)).unwrap_err();
+        let err = format!("{:#}", check(&config(dir.path(), &tls)).unwrap_err());
         assert!(err.contains("cannot read the TLS certificate"), "{err}");
         check(&config(dir.path(), &generate)).unwrap();
         assert!(
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(loaded.current().cert, again.current().cert);
 
         std::fs::remove_file(&key).unwrap();
-        let err = check(&first).unwrap_err();
+        let err = format!("{:#}", check(&first).unwrap_err());
         assert!(err.contains("delete both"), "{err}");
         let err = load_certificates(first.tls.as_ref().unwrap()).unwrap_err();
         assert!(err.to_string().contains("delete both"), "{err}");
