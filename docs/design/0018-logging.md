@@ -212,6 +212,7 @@ HTTP:
 | `user_agent.original`       | `Gradle/8.10 (…)` |                                                                         |
 | `user.name`                 | `ci`              | Or `anonymous`                                                          |
 | `mammoth.protocol`          | `gradle`          | `gradle`, `maven`, `bazel`, `admin`, `other`                            |
+| `mammoth.cache.key`         | `gradle/4f1c…`    | The entry, named as operational lines name it                           |
 | `mammoth.cache.result`      | `hit`             | Cache routes: `hit`, `miss`, `stored`, `exists`, `too_large`, `refused` |
 | `mammoth.cache.tier`        | `disk`            | On a hit: the tier that served it                                       |
 | `mammoth.duration_ms`       | `3.214`           | Request start to last byte or disconnect, to the microsecond            |
@@ -220,7 +221,9 @@ HTTP:
 
 gRPC uses `rpc.system` (`grpc`), `rpc.service`, `rpc.method` and `rpc.grpc.status_code` from the
 OpenTelemetry RPC conventions, plus the sizes, client, user, duration, `trace_id` and, for
-`FindMissingBlobs`, `BatchReadBlobs` and `BatchUpdateBlobs`, `mammoth.digests` (how many).
+`FindMissingBlobs`, `BatchReadBlobs` and `BatchUpdateBlobs`, `mammoth.digests` (how many). Both
+carry `mammoth.protocol` (`reapi` for gRPC), and the key, result and tier when the request touched
+exactly one entry.
 
 `message` is `request` for HTTP and `call` for gRPC.
 

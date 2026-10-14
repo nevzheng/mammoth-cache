@@ -32,7 +32,8 @@ use tracing_subscriber::{
 use crate::config::{Log, LogFormat};
 
 /// Installs the global subscriber for `log`, writing to stdout through a buffer of
-/// `log.buffer_lines` lines. `RUST_LOG`, when set, replaces `log.level`.
+/// `log.buffer_lines` lines. The access log is written whatever `log.level` says, when
+/// `log.access_log` is on. `RUST_LOG`, when set, replaces both.
 ///
 /// Keep the guard until the process exits: dropping it flushes the lines still buffered.
 pub fn init(log: &Log) -> WorkerGuard {
@@ -42,7 +43,10 @@ pub fn init(log: &Log) -> WorkerGuard {
         .thread_name("mammoth-log")
         .finish(io::stdout());
     let _ = DROPPED.set(writer.error_counter());
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| log.level.as_str().into());
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let access = if log.access_log { "info" } else { "off" };
+        format!("{},{}={access}", log.level.as_str(), crate::access::TARGET).into()
+    });
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(writer);

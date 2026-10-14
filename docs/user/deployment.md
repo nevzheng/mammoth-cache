@@ -37,7 +37,7 @@ What a node needs to run well on Kubernetes, and where each part is covered:
 | Memory under the container limit         | [Memory and disk sizing](#memory-and-disk-sizing)       | Done     |
 | `/metrics` not exposed publicly          | [Metrics](#metrics)                                     | Done     |
 | TLS                                      | At the ingress, or [`[tls]` on the node](#tls)          | Done     |
-| Access log with client addresses         | `log.access_log` and `trusted_proxies`                  | Planned  |
+| Access log with client addresses         | [Logs](logs.md#access-log) and `trusted_proxies`        | Done     |
 | Helm chart or example manifests          | Not shipped; use the snippets on this page              | None     |
 
 ## Proxy settings
@@ -296,8 +296,9 @@ The settings are in the `[server]` section (see [Configuration](configuration.md
 
 `idle_timeout` also bounds how long a client may take to send request headers: hyper starts that
 timer as soon as a keep-alive connection goes idle, so a shorter header timeout would close idle
-connections before the load balancer does. `trusted_proxies`, for `X-Forwarded-For` in the access
-log, comes with the access log.
+connections before the load balancer does. Set `trusted_proxies` to the load balancers' addresses,
+so the access log shows each client's address from `X-Forwarded-For` rather than the load
+balancer's.
 
 There is deliberately no total request timeout, since a 100 MiB entry over a slow CI link is
 legitimate. Behind a Google Cloud load balancer, whose idle timeout is 600 s, raise `idle_timeout`

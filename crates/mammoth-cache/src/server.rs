@@ -5,6 +5,7 @@
 //! serves each connection with hyper directly.
 
 use std::{
+    convert::Infallible,
     future::Future,
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -17,12 +18,17 @@ use std::{
 use axum::{
     Router,
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
+    http,
     middleware::{self, Next},
     response::Response,
+    routing::future::RouteFuture,
 };
 use futures_util::{StreamExt, stream, stream::FuturesUnordered};
-use hyper::server::conn::{http1, http2};
+use hyper::{
+    body::Incoming,
+    server::conn::{http1, http2},
+};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo, TokioTimer},
     server::graceful::{GracefulShutdown, Watcher},
@@ -411,6 +417,31 @@ impl AcceptErrors {
     }
 }
 
+/// The router for one connection, adding the peer's address to each request as [`ConnectInfo`].
+#[derive(Clone)]
+struct Connection {
+    app: Router,
+    peer: Option<SocketAddr>,
+}
+
+impl tower::Service<http::Request<Incoming>> for Connection {
+    type Response = Response;
+    type Error = Infallible;
+    type Future = RouteFuture<Infallible>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+        // A router is always ready.
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, mut request: http::Request<Incoming>) -> Self::Future {
+        if let Some(peer) = self.peer {
+            request.extensions_mut().insert(ConnectInfo(peer));
+        }
+        self.app.call(request)
+    }
+}
+
 /// Starts serving one accepted connection, after a TLS handshake if `tls` is set. The handshake
 /// runs in the connection's own task, so a slow client cannot hold up the accept loop.
 fn accept(
@@ -429,7 +460,12 @@ fn accept(
     // Taken now, so the drain also waits for connections still in their handshake.
     let watcher = graceful.watcher();
     let draining = draining.subscribe();
-    let app = app.clone();
+    // The peer's address, for the access log; a socket that already lost it is served anyway.
+    let peer = stream.peer_addr().ok();
+    let app = Connection {
+        app: app.clone(),
+        peer,
+    };
     let Some(tls) = tls else {
         tokio::spawn(serve_connection(
             stream, app, protocol, watcher, draining, settings,
@@ -459,7 +495,7 @@ fn accept(
 
 async fn serve_connection<S>(
     stream: S,
-    app: Router,
+    app: Connection,
     protocol: Protocol,
     watcher: Watcher,
     mut draining: watch::Receiver<bool>,

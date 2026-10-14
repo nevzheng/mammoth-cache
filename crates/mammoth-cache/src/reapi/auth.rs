@@ -70,6 +70,9 @@ pub(crate) async fn require(
     let Ok(principal) = auth.authenticate(credentials) else {
         return refuse(invalid());
     };
+    if let Some(user) = &principal.user {
+        crate::access::user(user);
+    }
     if principal.scopes.contains(scope) {
         return next.run(request).await;
     }
