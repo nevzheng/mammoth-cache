@@ -1,7 +1,7 @@
 """Regression tests for the persona audit of 2026-10-14, one per finding a client can see.
 
 Each test describes the behaviour the audit asks for. Findings 1, 2, 9, 10 and 12 are fixed on
-main (#46, #47); finding 4 is open, so its test is a strict xfail and the fix removes the marker.
+main (#46, #47). Finding 4, a bucket outage, has its own module: test_bucket_outage.py.
 
 Not here: finding 3 (a read racing an overwrite) needs a disk read to land between two syscalls,
 which HTTP timing does not reach reliably, and 5, 6, 7 and 13 need faults below the HTTP surface
@@ -12,10 +12,8 @@ in #47 and has no outcome the suite can see without racing the upload queue.
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
-import httpx
 import pytest
 
 from mammoth_e2e import blobs, metrics, raw
@@ -68,28 +66,6 @@ def test_large_re_store_completes(client: CacheClient, target: Target, store: st
         assert client.bazel_put("cas", sha256(body), body).status_code == 201
     headers = auth_headers(target.credentials)
     assert raw.put_whole(str(target.base_url), path, headers, body) == 200
-
-
-@pytest.mark.requires("bucket")
-@pytest.mark.control
-@pytest.mark.xfail(strict=True, reason="audit 4: a bucket outage stalls every local miss")
-def test_bucket_outage_keeps_misses_fast(client: CacheClient, controlled: Stack) -> None:
-    """A bucket that stops answering (not one that refuses connections) must not stall misses."""
-    controlled.pause("seaweedfs")
-    try:
-        started = time.monotonic()
-        try:
-            miss = client.gradle_get(blobs.gradle_key())
-        except httpx.TimeoutException:
-            pytest.fail("a miss timed out while the bucket was down")
-        assert miss.status_code == 404
-        assert time.monotonic() - started < MISS_BUDGET
-        started = time.monotonic()
-        stored = client.gradle_put(blobs.gradle_key(), blobs.payload(1000))
-        assert stored.status_code == 201
-        assert time.monotonic() - started < MISS_BUDGET
-    finally:
-        controlled.unpause("seaweedfs")
 
 
 @pytest.mark.parametrize(
