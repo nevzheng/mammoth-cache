@@ -273,17 +273,44 @@ No part of this design needs a shared or synchronised clock.
 
 ### Swapping the implementation
 
-Two seams keep the choices here reversible:
+The memory tier is generic over its cache library. `MemoryStore` owns the `BlobStore` and
+`BoundedStore` contracts (streaming, size checks, put-if-absent, metrics) once, and delegates
+storage and eviction to a small backend trait:
 
-- **Tier level:** every tier implements `BlobStore`, and the local ones `BoundedStore` (0006). A
-  different memory tier is a new adapter, and the core does not change.
-- **Library level:** foyer appears only inside `MemoryStore`. The `memory.eviction` value is parsed
-  into mammoth's own `EvictionPolicy` enum, which `MemoryStore` maps to the library's
-  configuration, so replacing foyer with moka or quick_cache changes one file and, at most, the set
-  of accepted values.
+```rust
+/// A concurrent, byte-weighted cache with a configurable eviction policy.
+pub trait MemoryBackend: Send + Sync + fmt::Debug + 'static {
+    /// Builds the cache. Fails if this backend does not offer `policy`.
+    fn new(config: &MemoryConfig, listener: EvictionListener) -> Result<Self, ConfigError>
+    where
+        Self: Sized;
 
-There is deliberately no eviction-policy trait of mammoth's own: implementing policies is what the
-library is for, and a trait would invite maintaining them here.
+    fn get(&self, key: &CacheKey) -> Option<MemEntry>;
+    /// Inserts, replacing any existing value; evicts per the policy to make room.
+    fn insert(&self, key: CacheKey, entry: MemEntry);
+    fn remove(&self, key: &CacheKey) -> Option<MemEntry>;
+    /// Weighted bytes held and the capacity, for `BoundedStore::usage`.
+    fn usage(&self) -> (u64, u64);
+}
+
+pub struct MemoryStore<B: MemoryBackend = FoyerBackend> { backend: B, /* counters */ }
+
+/// Parsed from `memory.eviction`; independent of any library.
+pub enum EvictionPolicy { S3Fifo, Lru, WTinyLfu, Sieve, Fifo }
+```
+
+- **Default:** `FoyerBackend`, the only backend in the default build. It maps every
+  `EvictionPolicy` to a foyer `EvictionConfig`.
+- **Others:** a moka or quick_cache backend is one file implementing `MemoryBackend`, behind a Cargo
+  feature, accepting the policies it supports and rejecting the rest at startup.
+- **Static dispatch:** `MemoryStore` is generic, not `dyn`, so the hot path pays no virtual call.
+  The binary picks the backend at compile time; there is no backend key in `mammoth.toml`.
+- **Tier level:** above this, the memory tier is still just one `BlobStore` adapter (0006), so the
+  core never sees the backend.
+
+`EvictionPolicy` is a list of names, not a trait: the policies themselves are implemented by the
+library. A policy no library offers would be added by implementing `MemoryBackend` for a
+hand-written cache, which this seam allows but this doc does not plan.
 
 ### Maven entries
 
