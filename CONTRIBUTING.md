@@ -80,7 +80,7 @@ for a branch, then force-push.
 
 mammoth-cache is pre-alpha. Cargo is the source of truth today; a [Bazel](https://bazel.build/)
 build (bzlmod and `rules_rust`) will come later and read the same `Cargo.toml` and `Cargo.lock`.
-The toolchain is pinned in `rust-toolchain.toml`, and the minimum supported Rust version is 1.85.
+The toolchain is pinned in `rust-toolchain.toml`, and the minimum supported Rust version is 1.91.
 
 ```sh
 cargo build
@@ -111,7 +111,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo nextest run --workspace --locked
 cargo test --doc --workspace --locked
-cargo +1.85 check --workspace --locked   # MSRV
+cargo +1.91 check --workspace --locked   # MSRV
 cargo deny check                         # licenses, advisories, sources
 rumdl check .
 ```
