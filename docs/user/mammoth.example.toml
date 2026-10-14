@@ -83,3 +83,4 @@ require_auth = false # require a token with metrics:read on /metrics
 level = "info" # error, warn, info, debug or trace; RUST_LOG overrides it
 format = "json" # or "text"
 access_log = true # log each request (not enforced yet)
+buffer_lines = 128000 # lines held for stdout; more are dropped, and counted, when it can't keep up

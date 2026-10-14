@@ -389,6 +389,9 @@ pub struct Log {
     pub format: LogFormat,
     /// Whether every request is logged.
     pub access_log: bool,
+    /// Lines held for the background writer. When stdout can't keep up and the buffer is full,
+    /// lines are dropped and counted.
+    pub buffer_lines: usize,
 }
 
 impl Default for Log {
@@ -397,6 +400,7 @@ impl Default for Log {
             level: LogLevel::Info,
             format: LogFormat::Json,
             access_log: true,
+            buffer_lines: 128_000,
         }
     }
 }
@@ -573,6 +577,9 @@ impl Config {
             && bucket.upload_queue == 0
         {
             return Err("bucket.upload_queue must be at least 1".to_owned());
+        }
+        if self.log.buffer_lines == 0 {
+            return Err("log.buffer_lines must be at least 1".to_owned());
         }
         if let Some(bucket) = &self.bucket {
             if bucket.timeout.0.is_zero() {

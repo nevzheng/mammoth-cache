@@ -59,6 +59,7 @@ tonic = { version = "0.14.6", default-features = false, features = ["codegen", "
 tonic-prost = "0.14.6"
 tonic-types = "0.14.6"
 tracing = "0.1.44"
+tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2.5.8"
 
