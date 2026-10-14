@@ -46,8 +46,8 @@ build --remote_header=Authorization=Bearer <token>
 A `--credential_helper` works as well. Leave `--remote_cache_compression` off: the node advertises
 no compressors yet, so there is nothing for the flag to use. `--remote_download_minimal` (build
 without the bytes) is safe: the node answers an action result as a miss when any output it lists has
-been evicted, including any file inside an output directory (one whose `Tree` is over 4 MiB, tens of
-thousands of files, is not checked).
+been evicted, including any file inside an output directory (one whose `Tree` does not decode, or is
+over 4 MiB, tens of thousands of files, is not checked).
 
 Unlike the HTTP cache, Bazel fails the build when it cannot reach a gRPC cache or its token is
 refused ("Failed to query remote execution capabilities"), so keep the node behind a load balancer
@@ -146,13 +146,13 @@ executor is configured to use mammoth-cache as its CAS backend.
 - **Blob size.** `limits.max_entry_size` (100 MiB by default) caps every blob and is advertised to
   clients. A larger upload gets `INVALID_ARGUMENT` with reason `ENTRY_TOO_LARGE`, which clients
   don't retry.
-- **Batches.** The node advertises 3.75 MiB of blob data per `BatchUpdateBlobs` and
-  `BatchReadBlobs` call, below gRPC's usual 4 MiB message limit to leave room for each blob's
-  digest and status; clients send larger blobs over `ByteStream` on their own. An upload carrying
-  more, or a read whose response could pass 4 MiB (counting about 256 bytes per blob besides its
-  data, which only very many small blobs reach), is refused whole with `INVALID_ARGUMENT` and
-  reason `BATCH_TOO_LARGE`. A message past what the node decodes at all (8 MiB for batches, 4.25
-  MiB for `ByteStream`) gets `RESOURCE_EXHAUSTED` with reason `MESSAGE_TOO_LARGE`.
+- **Batches.** The node advertises 3.75 MiB of blob data per `BatchUpdateBlobs` and `BatchReadBlobs`
+  call, below gRPC's usual 4 MiB message limit to leave room for each blob's digest and status;
+  clients send larger blobs over `ByteStream` on their own. A batch carrying or asking for more, or
+  a read whose response could pass 4 MiB (counting about 256 bytes per blob besides its data, which
+  only very many small blobs reach), is refused whole with `INVALID_ARGUMENT` and reason
+  `BATCH_TOO_LARGE`. A message past what the node decodes at all (8 MiB for batches, 4.25 MiB for
+  `ByteStream`) gets `RESOURCE_EXHAUSTED` with reason `MESSAGE_TOO_LARGE`.
 - **Existence checks.** One `FindMissingBlobs` call may ask about 10,000 digests; more get
   `INVALID_ARGUMENT` with reason `TOO_MANY_DIGESTS`. Each digest not on the node costs a bucket
   `HEAD`.

@@ -21,6 +21,8 @@ from mammoth_e2e.reapi import Reapi, attempt
 from mammoth_e2e.target import Feature
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mammoth_e2e.bucket import BucketInspector
     from mammoth_e2e.contract import Contracts
     from mammoth_e2e.stack import Stack
@@ -34,6 +36,18 @@ def test_grpc_and_http_share_one_cache(
     target: Target, live: Stack | None, contracts: Contracts
 ) -> None:
     del live
+    run_state_machine_as_test(
+        _machine(target, contracts),
+        settings=settings(
+            max_examples=EXAMPLES,
+            stateful_step_count=30,
+            deadline=None,
+            suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+        ),
+    )
+
+
+def _machine(target: Target, contracts: Contracts) -> type[ParityModel]:
     writer = writer_credentials(target) if target.has(Feature.AUTH) else None
 
     class Machine(ParityModel):
@@ -42,15 +56,57 @@ def test_grpc_and_http_share_one_cache(
     Machine.target, Machine.contracts = target, contracts
     Machine.owner = full_access(target)
     Machine.authorization = basic(writer) if writer is not None else None
-    run_state_machine_as_test(
-        Machine,
-        settings=settings(
-            max_examples=EXAMPLES,
-            stateful_step_count=30,
-            deadline=None,
-            suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
-        ),
-    )
+    return Machine
+
+
+def _unreadable_tree(m: ParityModel) -> None:
+    """An output directory whose tree blob is not a `Tree` (a 1-byte blob) is still a hit."""
+    action = m.first_action(seed="")
+    empty = m.first_blob(size=0, seed="0000")
+    m.start()
+    m.batch_read_many(found=[empty])
+    tree = m.new_blob(seed="0000", size=1)
+    m.batch_upload(corrupt=set(), drawn=[tree])
+    m.store_result(action=action, exit_code=0, outputs=[], stdout=None, trees=[tree], way="http")
+    m.get_result(action=action, way="grpc")
+
+
+def _empty_blob_over_http(m: ParityModel) -> None:
+    """The empty blob reads over HTTP although nobody stored it."""
+    m.first_action(seed="")
+    empty = m.first_blob(size=0, seed="0000")
+    m.start()
+    m.batch_read_many(found=[empty])
+    m.batch_upload_too_big(seed="0000")
+    m.read(blob=empty, limit=1_791_652_643_733_496_121_956_237_312, offset=1675, way="http")
+
+
+def _batch_read_past_the_advertised_limit(m: ParityModel) -> None:
+    """A batch read one byte past max_batch_total_size_bytes is refused, though it would fit."""
+    m.first_action(seed="")
+    empty = m.first_blob(size=0, seed="0000")
+    m.start()
+    m.batch_read_many(found=[empty])
+    m.batch_read_too_big(claimed=3_932_161, found=[])
+
+
+@pytest.mark.requires("bazel", "reapi")
+@pytest.mark.parametrize(
+    "steps",
+    [_unreadable_tree, _empty_blob_over_http, _batch_read_past_the_advertised_limit],
+    ids=lambda f: f.__name__.strip("_"),
+)
+def test_found_examples(
+    target: Target, live: Stack | None, contracts: Contracts, steps: Callable[[ParityModel], None]
+) -> None:
+    """Sequences random runs of `test_grpc_and_http_share_one_cache` once failed on (#114),
+    replayed on every run: the derandomized CI profile would not draw them."""
+    del live
+    machine = _machine(target, contracts)()
+    try:
+        steps(machine)
+    finally:
+        machine.teardown()
 
 
 def _bucket_up(target: Target, client: Reapi) -> None:
