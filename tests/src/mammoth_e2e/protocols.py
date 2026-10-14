@@ -13,6 +13,7 @@ class Protocol:
     name: str
     prefix: str  # the route without the key, e.g. "/cache/"
     template: str  # the path template in the OpenAPI contract
+    metrics_route: str  # the `route` label on mammoth_http_requests_total
     mutable: bool  # a store to an existing key replaces it
     content_addressed: bool  # the key is the SHA-256 of the body
     feature: Feature | None = None  # the server feature that turns it on
@@ -42,11 +43,16 @@ def _maven_segment(segment: str) -> bool:
     return segment not in {"", ".", ".."} and set(segment) <= allowed
 
 
-GRADLE = Protocol("gradle", "/cache/", "/cache/{key}", mutable=False, content_addressed=False)
-MAVEN = Protocol("maven", "/maven/", "/maven/{path}", mutable=True, content_addressed=False)
+GRADLE = Protocol(
+    "gradle", "/cache/", "/cache/{key}", "/cache/{key}", mutable=False, content_addressed=False
+)
+MAVEN = Protocol(
+    "maven", "/maven/", "/maven/{path}", "/maven/{*path}", mutable=True, content_addressed=False
+)
 BAZEL_AC = Protocol(
     "bazel-ac",
     "/bazel/ac/",
+    "/bazel/ac/{digest}",
     "/bazel/ac/{digest}",
     mutable=True,
     content_addressed=False,
@@ -55,6 +61,7 @@ BAZEL_AC = Protocol(
 BAZEL_CAS = Protocol(
     "bazel-cas",
     "/bazel/cas/",
+    "/bazel/cas/{digest}",
     "/bazel/cas/{digest}",
     mutable=False,
     content_addressed=True,
