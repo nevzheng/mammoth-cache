@@ -25,7 +25,7 @@ endpoint = "http://seaweedfs:8333"
 gradle = true
 maven = true
 bazel = true
-reapi = true # gRPC on [reapi] listen, 0.0.0.0:6011 by default
+reapi = true # gRPC on [reapi] listen, [::]:6011 by default
 
 [auth]
 anonymous = []
