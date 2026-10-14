@@ -11,8 +11,8 @@ distributing and supporting after December 31, 2026: same `/cache/` path, same p
 `/ping` health check, and no Develocity. One static binary, a few lines of config and a load
 balancer, and your builds keep their cache.
 
-> Pre-alpha. Everything below marked "today" works on `main` and ships in the `edge` image, but
-> there is no release yet. Don't run it in production yet.
+> Early stage: there is no tagged release yet, and `main` and the `edge` image are what we test.
+> Everything below marked "today" works there. Deploy at your own judgment.
 
 ## What it is
 
