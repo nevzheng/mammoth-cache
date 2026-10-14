@@ -154,6 +154,10 @@ publishes.
 
 ### Verification
 
+- Before anything is published, `scripts/smoke-test.sh` runs each binary on its own runner and the
+  amd64 image: `--version` must match `Cargo.toml` (and the tag, on a release), and a node started
+  with a token from `mammoth token new` must answer `/ping`, store and serve a Gradle entry, refuse
+  it without credentials, and exit 0 on `SIGTERM`.
 - `SHA256SUMS` on every release.
 - A GitHub build provenance attestation for each tarball and for the image, checked with
   `gh attestation verify <file> -R nevzheng/mammoth-cache` or
