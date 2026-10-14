@@ -48,10 +48,14 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      # react and react-dom are pinned together: redocly takes both with a range, and npm can
+      # resolve them to different patch versions, which crashes redocly at startup.
       - run: >-
           npm install --no-save --no-package-lock
           @stoplight/spectral-cli@6.17.0
           @stoplight/spectral-owasp-ruleset@2.0.1
           @redocly/cli@1.34.21
+          react@19.3.0
+          react-dom@19.3.0
       - run: npx spectral lint --fail-severity=warn -r api/.spectral.yaml api/openapi/*.yaml
       - run: npx redocly lint --config api/redocly.yaml
