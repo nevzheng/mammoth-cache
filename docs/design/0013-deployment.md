@@ -131,18 +131,19 @@ operators need a `startupProbe` with a generous `failureThreshold`, documented i
 
 Set on the hyper connection builder. axum 0.8's `axum::serve` exposes neither a timer nor
 `header_read_timeout`, so the server accepts connections itself and serves each with
-`hyper_util::server::conn::auto::Builder` (`serve_connection_with_upgrades`):
+hyper's `http1::Builder`:
 
 | Setting               | Default | Why                                                                   |
 | --------------------- | ------- | --------------------------------------------------------------------- |
-| `header_read_timeout` | 30 s    | Bounds slow or stuck clients holding a connection before a request    |
 | `idle_timeout`        | 75 s    | Closes idle keep-alive connections; must exceed the LB's idle timeout |
 | `body_read_timeout`   | 60 s    | Per read, not total: aborts an upload that sends nothing this long    |
 
-There is deliberately no total request timeout: a 100 MiB entry over a slow CI link is legitimate.
-`idle_timeout` must be longer than the load balancer's, or the LB reuses a connection the server
-has just closed and returns `502`. 75 s clears AWS ALB's 60 s and nginx's 60 s upstream keep-alive;
-Google Cloud's 600 s needs it raised, which the guide says.
+`idle_timeout` also bounds header reads: hyper 1.x starts its header timer as soon as a keep-alive
+connection goes idle, so a separate, shorter header timeout would close idle connections before the
+LB does. There is deliberately no total request timeout: a 100 MiB entry over a slow CI link is
+legitimate. `idle_timeout` must be longer than the load balancer's, or the LB reuses a connection
+the server has just closed and returns `502`. 75 s clears AWS ALB's 60 s and nginx's 60 s upstream
+keep-alive; Google Cloud's 600 s needs it raised, which the guide says.
 
 Accepted sockets also get `TCP_NODELAY`, which axum does not set, so small responses (`HEAD`
 answers, misses) are not delayed by Nagle's algorithm.
@@ -163,7 +164,6 @@ built. `listen` stays a top-level key, as today, for compatibility:
 [server]
 shutdown_delay = "5s"
 shutdown_timeout = "25s"
-header_read_timeout = "30s"
 idle_timeout = "75s"
 body_read_timeout = "60s"
 trusted_proxies = [] # e.g. ["10.0.0.0/8"]
@@ -224,12 +224,12 @@ in the file.
 
 | Step | Change                                                             | Owner            | State           |
 | ---- | ------------------------------------------------------------------ | ---------------- | --------------- |
-| 1    | Handle `SIGTERM`                                                   | Framework thread | PR #33          |
-| 2    | Drain: readiness `503`, `shutdown_delay`, deadline, flush uploads  | Framework thread | Proposed        |
-| 3    | Readiness checks, and enforce `free_space_buffer` on writes        | Framework thread | Proposed        |
-| 4    | Timeouts and `TCP_NODELAY`, `[server]` config, update 0005         | Framework thread | Proposed        |
-| 5    | `docs/user/deployment.md`: proxies, hit locality, DNS, TLS, sizing | Docs thread      | Proposed        |
-| 6    | Update `docs/user/health.md` probes (`startupProbe`, drain)        | Docs thread      | Proposed        |
+| 1    | Handle `SIGTERM`                                                   | Framework thread | Done (#33)      |
+| 2    | Drain: readiness `503`, `shutdown_delay`, deadline, flush uploads  | Framework thread | Done (#39)      |
+| 3    | Readiness checks, and enforce `free_space_buffer` on writes        | Framework thread | Done (#39)      |
+| 4    | Timeouts and `TCP_NODELAY`, `[server]` config, update 0005         | Framework thread | Done (#39)      |
+| 5    | `docs/user/deployment.md`: proxies, hit locality, DNS, TLS, sizing | Docs thread      | Done (#36)      |
+| 6    | Update `docs/user/health.md` probes (`startupProbe`, drain)        | Docs thread      | Done (#36)      |
 | 7    | E2E: `SIGTERM` during an upload; 100 MiB `PUT` through nginx       | E2E thread       | Proposed        |
 | 8    | Example manifests in `deploy/kubernetes/`                          | Nevin            | Dropped         |
 | 9    | `X-Forwarded-For` in the access log with `trusted_proxies`         | Framework thread | With access log |
