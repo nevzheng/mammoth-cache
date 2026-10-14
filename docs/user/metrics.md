@@ -91,6 +91,16 @@ cloud provider's metrics.
 from the `User-Agent`. The standard `process_*` metrics (memory, CPU, file descriptors) are planned
 too.
 
+### TLS
+
+Only with [`[tls]`](configuration.md#tls) set.
+
+| Metric                                   | Type    | Labels                          | Meaning                                       |
+| ---------------------------------------- | ------- | ------------------------------- | --------------------------------------------- |
+| `mammoth_tls_certificate_expiry_seconds` | gauge   |                                 | When the serving certificate expires, Unix s  |
+| `mammoth_tls_reloads_total`              | counter | `result` (`ok`, `error`)        | Renewed certificates swapped in, or refused   |
+| `mammoth_tls_handshake_failures_total`   | counter | `reason` (`error`, `timeout`)   | Handshakes that failed, such as plain HTTP    |
+
 ## Useful queries
 
 ```promql
@@ -107,6 +117,9 @@ sum(rate(mammoth_cache_stores_total{result="too_large"}[5m]))
 
 # p99 time to first byte from the bucket
 histogram_quantile(0.99, sum by (le) (rate(mammoth_tier_read_duration_seconds_bucket{tier="bucket"}[5m])))
+
+# Days until the TLS certificate expires; alert below 14
+(mammoth_tls_certificate_expiry_seconds - time()) / 86400
 ```
 
 If `mammoth_tier_oldest_entry_age_seconds` for the disk is shorter than the life of a typical

@@ -33,7 +33,7 @@ What a node needs to run well on Kubernetes, and where each part is covered:
 | Non-root, read-only root filesystem      | The distroless image writes only `disk.path`            | Done     |
 | Memory under the container limit         | [Memory and disk sizing](#memory-and-disk-sizing)       | Done     |
 | `/metrics` not exposed publicly          | [Metrics](#metrics)                                     | Done     |
-| TLS                                      | At the ingress for now; `[tls]` on the node is planned  | Partial  |
+| TLS                                      | At the ingress, or [`[tls]` on the node](#tls)          | Done     |
 | Access log with client addresses         | `log.access_log` and `trusted_proxies`                  | Planned  |
 | Helm chart or example manifests          | Not shipped; use the snippets on this page              | None     |
 
@@ -91,10 +91,38 @@ endpoint and, on a cloud, for its credential endpoints.
 
 ## TLS
 
-Terminate TLS at the ingress or load balancer; the node speaks plain HTTP and doesn't accept a
-`[tls]` section yet. Serve the cache on its own host, such as `cache.example.com`, rather than under
-a path prefix: routes are fixed at `/cache/` and `/maven/`. With authentication on, the node logs a
-warning at startup as a reminder that tokens must not cross the network in clear.
+On Kubernetes, terminate TLS at the ingress or load balancer and serve plain HTTP to the pods. Serve
+the cache on its own host, such as `cache.example.com`, rather than under a path prefix: routes are
+fixed at `/cache/` and `/maven/`. With authentication on and no `[tls]`, the node logs a warning at
+startup as a reminder that tokens must not cross the network in clear.
+
+### TLS on the node
+
+Set [`[tls]`](configuration.md#tls) to have the node serve HTTPS itself, with no proxy. Use it on
+a single VM, or on a cluster that must encrypt the hop from the ingress to the pod without a
+service mesh. Design doc [0014](../design/0014-tls.md) has the reasoning.
+
+```toml
+[tls]
+cert = "/etc/mammoth/tls/tls.crt" # the certificate, then any intermediates
+key = "/etc/mammoth/tls/tls.key"
+```
+
+- **Renewal.** The node re-reads both files every minute and serves a changed pair to new
+  connections, with no restart. A pair that fails the checks (unreadable, or a key that doesn't
+  match) is skipped and logged, and the old certificate keeps serving. This works with cert-manager
+  updating a mounted Secret and with certbot rewriting files. With certbot, copy the renewed files
+  into place from a deploy hook; the node must be able to read them as its own user (uid 65532 in
+  the image).
+- **Probes and scrapes.** Probes need `scheme: HTTPS` (kubelet doesn't verify the certificate), load
+  balancer health checks need the HTTPS protocol, and Prometheus needs `scheme: https` with a
+  `tls_config` naming the CA.
+- **Clients.** Gradle, Maven and Bazel trust what the JVM trusts. A certificate from a public CA
+  works as is; for a private CA, import it into the JVM trust store (`keytool -importcert`) or point
+  `javax.net.ssl.trustStore` at one.
+- **What's not offered.** One port serves either HTTP or HTTPS, not both, and there are no client
+  certificates, ACME, or TLS version or cipher settings: TLS 1.2 and 1.3 with rustls's defaults.
+  Put a proxy in front for any of those.
 
 ## Memory and disk sizing
 
