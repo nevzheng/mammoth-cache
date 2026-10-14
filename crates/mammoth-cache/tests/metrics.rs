@@ -856,10 +856,15 @@ async fn exposition_has_help_build_info_and_process_metrics() {
         );
     }
 
-    let version = env!("CARGO_PKG_VERSION");
-    assert_eq!(
-        scrape.count("mammoth_build_info", &[("version", version)]),
-        1
+    // One sample, always 1. Not compared with this test's own `CARGO_PKG_VERSION`: Bazel sets
+    // that per target, and only the library gets the crate's version.
+    let info: Vec<_> = scrape.samples_of("mammoth_build_info").collect();
+    assert_eq!(info.len(), 1, "{info:?}");
+    let (_, labels, value) = info[0];
+    assert!((*value - 1.0).abs() < f64::EPSILON, "{value}");
+    assert!(
+        labels.get("version").is_some_and(|v| !v.is_empty()),
+        "{labels:?}"
     );
     if cfg!(target_os = "linux") {
         assert!(scrape.value("process_resident_memory_bytes", &[]) > 0.0);
