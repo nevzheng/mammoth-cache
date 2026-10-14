@@ -8,8 +8,10 @@ Draft
 
 mammoth-cache has one credential: a generated access token belonging to a user listed in the static
 config file. Each user has scopes such as `cache:read` and `cache:write`. Gradle sends the token as
-the password in HTTP Basic auth, because that is all its client supports; every other route takes
-it as a Bearer token. Health checks are always open, metrics are open unless configured otherwise.
+the password in HTTP Basic auth, because that is all its client supports; every other route takes it
+as a Bearer token. `/cache/` also accepts Bearer and Basic with an empty user name, which
+Develocity clients are likely to send (unverified until their traffic is captured). Health checks
+are always open, metrics are open unless configured otherwise.
 
 ## Motivation
 
@@ -67,6 +69,7 @@ it out, remove the old one.
 | Route         | Credential                                                                                  |
 | ------------- | ------------------------------------------------------------------------------------------- |
 | `/cache/`     | HTTP Basic: the user name and the token as password. Gradle sends it preemptively.          |
+|               | Also Bearer, or Basic with an empty user name (Develocity clients, unverified).             |
 | `/v1/...`     | `Authorization: Bearer <token>`                                                             |
 | `/metrics`    | Open by default; `Authorization: Bearer <token>` when configured. Prometheus supports both. |
 | Health checks | Always open                                                                                 |
