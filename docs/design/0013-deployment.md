@@ -44,7 +44,8 @@ which stays a proxy's job for now, as [0005](0005-configuration.md) and the conf
 
 ### Non-goals
 
-- A Helm chart or operator. One example set of manifests is enough for now.
+- A Helm chart, an operator or example manifests. The project ships none; the user guide's
+  deployment page gives the settings and snippets an operator needs.
 - Service discovery or node-to-node traffic. Nodes stay independent.
 - In-process TLS, HTTP/2 or h2c to the backend.
 - A configurable path prefix (`base_path`). Serve the cache on its own host instead.
@@ -230,7 +231,7 @@ in the file.
 | 5    | `docs/user/deployment.md`: proxies, hit locality, DNS, TLS, sizing | Docs thread      | Proposed        |
 | 6    | Update `docs/user/health.md` probes (`startupProbe`, drain)        | Docs thread      | Proposed        |
 | 7    | E2E: `SIGTERM` during an upload; 100 MiB `PUT` through nginx       | E2E thread       | Proposed        |
-| 8    | Example manifests in `deploy/kubernetes/`                          | Nevin to decide  | Proposed        |
+| 8    | Example manifests in `deploy/kubernetes/`                          | Nevin            | Dropped         |
 | 9    | `X-Forwarded-For` in the access log with `trusted_proxies`         | Framework thread | With access log |
 
 Steps 2 to 4 can ship as one PR; 5 and 6 can start now, marking server behaviour "Planned" until

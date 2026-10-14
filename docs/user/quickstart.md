@@ -2,9 +2,10 @@
 
 This page gets a node running on your machine and checks that it stores and serves an entry.
 
-Today a node keeps entries in memory only (1 GiB, least useful entries evicted first), listens on
-port 5071, which is the Build Cache Node's port, and has no authentication. Everything is lost
-when it stops.
+Without a config file, a node keeps entries in memory only (1 GiB, least useful entries evicted
+first), listens on port 5071, which is the Build Cache Node's port, and allows every request.
+Everything is lost when it stops. Add a [config file](configuration.md) for the disk and bucket
+tiers and authentication.
 
 ## With Docker
 

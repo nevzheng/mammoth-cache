@@ -54,7 +54,8 @@ well.
 | Disk and bucket tiers, in the library and [custom builds](custom-builds.md) | Available | [Configuration](configuration.md#disk-l2) |
 | Disk and bucket tiers in the `mammoth` binary                               | Available | [Configuration](configuration.md#disk-l2) |
 | Users, tokens and scopes                                                    | Available | [Authentication](authentication.md)       |
-| TLS                                                                         | Planned   | [Configuration](configuration.md)         |
+| TLS                                                                         | Planned   | [Deployment](deployment.md#tls)           |
+| Graceful shutdown, readiness storage checks, timeouts                       | Planned   | [Deployment](deployment.md)               |
 | Request metrics at `/metrics`                                               | Available | [Metrics](metrics.md)                     |
 | `edge` container image from `main`                                          | Available | [Quickstart](quickstart.md)               |
 | Full metrics catalog                                                        | Planned   | [Metrics](metrics.md)                     |
@@ -66,6 +67,7 @@ well.
 - [Gradle](gradle.md) and [Maven](maven.md): point your builds at it.
 - [Migrating from the Build Cache Node](migrating.md): what maps to what.
 - [Configuration reference](configuration.md): every setting.
+- [Deployment](deployment.md): load balancers, Kubernetes, sizing.
 - [Custom builds](custom-builds.md): build your own distribution with your own storage backend.
 
 The [design docs](../design/README.md) explain why mammoth-cache works the way it does.

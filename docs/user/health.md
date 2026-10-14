@@ -15,32 +15,54 @@ through `/readyz` without restarting it.
 
 ```text
 [+]config ok
+[+]shutting-down ok
 [+]storage-writable ok
 [+]storage-free-space ok
 readyz check passed
 ```
 
-Today the only check is `config`. The storage checks, that the disk tier is writable and has more
-free space than its buffer, arrive with the disk tier. A failed check answers `503` with an AIP-193
-error naming it.
+| Check                | Fails when                                                    | Status    |
+| -------------------- | ------------------------------------------------------------- | --------- |
+| `config`             | Never once serving                                            | Available |
+| `shutting-down`      | A shutdown signal arrived; the node is draining               | Planned   |
+| `storage-writable`   | The disk tier can't create and remove a probe file            | Planned   |
+| `storage-free-space` | Free space on the disk tier is below `disk.free_space_buffer` | Planned   |
+
+A failed check answers `503` with an AIP-193 error naming it. The checks run in the background and
+the probe reads the last result, so a slow disk can't time a probe out. The bucket is deliberately
+not a check: a bucket outage should leave every node serving from its local tiers, not take them
+all out of rotation at once.
 
 ## Kubernetes
 
 ```yaml
-containers:
-  - name: mammoth
-    image: ghcr.io/nevzheng/mammoth-cache:edge # a version tag once releases exist
-    ports:
-      - containerPort: 5071
-    livenessProbe:
-      httpGet:
-        path: /livez
-        port: 5071
-    readinessProbe:
-      httpGet:
-        path: /readyz
-        port: 5071
+startupProbe: # the disk tier indexes its files before the port opens
+  httpGet: { path: /livez, port: 5071 }
+  periodSeconds: 5
+  failureThreshold: 60 # up to 5 minutes; raise it for a large disk
+livenessProbe:
+  httpGet: { path: /livez, port: 5071 }
+readinessProbe:
+  httpGet: { path: /readyz, port: 5071 }
+  periodSeconds: 5
 ```
+
+The node opens its port only after the disk tier has indexed the entries already on disk, so with a
+large disk the port refuses connections for a while after start. The `startupProbe` keeps
+Kubernetes from restarting it during that time.
+
+### Draining
+
+> [!NOTE]
+> Draining is planned (design doc [0013](../design/0013-deployment.md)). Today the node stops at
+> once, so a rolling update can cut uploads in flight.
+
+On `SIGTERM` the node will turn `/readyz` to `503` (check `shutting-down`) and keep `/livez` at
+`200`, so it leaves rotation without being restarted. It keeps serving for `server.shutdown_delay`
+(5 s) while load balancers catch up, then finishes requests in flight and flushes bucket uploads
+before exiting, all within `server.shutdown_timeout` (25 s). No `preStop` hook is needed, and the
+distroless image couldn't run one. Keep `terminationGracePeriodSeconds` at its default 30 s or
+above `shutdown_timeout`. See [Deployment](deployment.md#shutdown-and-timeouts).
 
 ## Server status
 
