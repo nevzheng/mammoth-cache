@@ -74,6 +74,7 @@ is out of scope: mammoth-cache is a cache, not a remote build system.
 - [Configuration reference](configuration.md): every setting.
 - [Deployment](deployment.md): load balancers, Kubernetes, sizing.
 - [Logs](logs.md): the JSON line format and the access log.
+- [Errors](errors.md): every error reason, with its code and status.
 - [Custom builds](custom-builds.md): build your own distribution with your own storage backend.
 
 The [design docs](../design/README.md) explain why mammoth-cache works the way it does.
