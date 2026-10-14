@@ -155,9 +155,10 @@ sequenceDiagram
 
 ### Write path
 
-1. Handle an oversized upload (`Content-Length` over the entry limit) before reading the body,
-   where `Expect: 100-continue` allows. Whether that is `413` or a `2xx` that drops the entry is
-   open (see Open questions).
+1. Accept and drop an oversized upload (`Content-Length` over the entry limit): answer `200`
+   without storing it, and count it. With `Expect: 100-continue` the body is never sent; without
+   it, the body is read and discarded, since closing the connection early is also an error to
+   Gradle. An upload that passes the limit mid-stream is dropped the same way.
 2. Stream the body to a temporary file in L2, checking the size limit as bytes arrive.
 3. Rename it into place, then answer the client.
 4. Upload to L3 in the background through a bounded queue.
@@ -177,7 +178,7 @@ sequenceDiagram
     participant B as L3 bucket
     G->>N: PUT /cache/{key} (Expect: 100-continue)
     alt Content-Length over the limit
-        N-->>G: 413 or 2xx (open), body never sent
+        N-->>G: 200, entry dropped and counted, body never sent
     else accepted
         N-->>G: 100 Continue
         G->>N: body
@@ -265,8 +266,9 @@ is handled inside instead:
 - A limit on open connections, so excess clients wait in the listen queue.
 - When the bucket upload queue is full, the upload is dropped and counted. That costs a later miss
   only.
-- There is no refusal Gradle survives with the cache still on (`413` included), so shedding load
-  means accepting a `PUT` and dropping it, counted in a metric. Whether to do that is open.
+- There is no refusal Gradle survives with the cache still on (`413` included). Oversized entries
+  are already accepted and dropped; doing the same to shed load under overload is an open
+  question.
 
 ## Cross-cutting concerns
 
@@ -328,8 +330,8 @@ Every tier reports hits, misses, latency, size and evictions. The metric catalog
 
 ## Open questions
 
-- What to answer for an oversized or shed `PUT`: `413`, which turns Gradle's remote cache off for
-  the rest of the build, or `2xx` with the entry dropped and counted.
+- Whether to shed `PUT`s under sustained overload by accepting and dropping them, as oversized
+  entries are.
 - The default L1 size threshold for an entry.
 - Whether to index L2 on restart or start cold.
 - Which object stores to support first.

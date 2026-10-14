@@ -130,9 +130,12 @@ paths:
         always through a proxy with credentials): it checks credentials, scope and
         `Content-Length` before answering `100 Continue`, so a refused upload is never sent.
 
-        What the server does with an entry over the size limit is not decided yet. `413` is
-        honest, but turns the remote cache off for the rest of that build; the alternative is to
-        answer `2xx`, drop the entry and count it in a metric.
+        An entry over the size limit is accepted and dropped: the server answers `200`, discards
+        the bytes and counts the drop in `mammoth_cache_stores_total{result="too_large"}`. A
+        `413` would turn the remote cache off for the rest of the build, costing every later hit
+        for the sake of one entry. With `Expect: 100-continue` the server answers `200` instead of
+        `100 Continue`, so the body is never sent; without it, the server reads and discards the
+        body, because closing the connection early would also count as an error.
       tags: [gradle]
       parameters:
         - $ref: "#/components/parameters/GradleVersion"
@@ -150,11 +153,11 @@ paths:
         "201":
           description: Stored.
         "200":
-          description: The entry was already present; nothing was written.
+          description: |
+            Nothing was written: the entry was already present, or it was over the size limit and
+            was dropped.
         "400":
           $ref: "#/components/responses/InvalidKey"
-        "413":
-          $ref: "#/components/responses/EntryTooLarge"
         "401":
           $ref: "./common.yaml#/components/responses/Unauthenticated"
         "403":
@@ -234,26 +237,3 @@ components:
                   domain: mammoth-cache.dev
                   metadata:
                     key: a3f5e1c09b2d4e7f8a1b6c3d5e9f0a2b
-    EntryTooLarge:
-      description: |
-        The entry is larger than the configured limit. Gradle does not fail the build, but turns
-        the remote cache off for the rest of it. AIP-193 alone would suggest
-        `400 INVALID_ARGUMENT`, which would fail the build, so the protocol status `413` wins and
-        the body keeps the canonical name `OUT_OF_RANGE`. Whether the server answers `413` at all
-        is still open; see the `PUT` description.
-      content:
-        application/json:
-          schema:
-            $ref: "./common.yaml#/components/schemas/ErrorResponse"
-          example:
-            error:
-              code: 413
-              message: Cache entry is 157286400 bytes; the limit is 104857600.
-              status: OUT_OF_RANGE
-              details:
-                - "@type": type.googleapis.com/google.rpc.ErrorInfo
-                  reason: ENTRY_TOO_LARGE
-                  domain: mammoth-cache.dev
-                  metadata:
-                    entryBytes: "157286400"
-                    maxEntryBytes: "104857600"
