@@ -68,6 +68,18 @@ format = "json"
 | `version` | integer | required       | Schema version of the file; `1`                          |
 | `listen`  | string  | `0.0.0.0:5071` | Address and port. 5071 is the Build Cache Node's port.   |
 
+### `[protocols]`
+
+Which clients the node serves. A protocol that is off has no routes: its requests get `404`, like
+any unknown path. Health checks, metrics and the admin API are always served. At least one
+protocol must be on.
+
+| Key      | Type    | Default | Meaning                                                 |
+| -------- | ------- | ------- | ------------------------------------------------------- |
+| `gradle` | boolean | `true`  | Gradle's build cache at `/cache/`                       |
+| `maven`  | boolean | `true`  | The Maven Build Cache Extension at `/maven/`            |
+| `bazel`  | boolean | `false` | Bazel's HTTP cache at `/bazel/`; see [Bazel](bazel.md)  |
+
 ### `[tls]`
 
 Not built yet: a `[tls]` section is rejected at startup. Serve plain HTTP behind a proxy that

@@ -2,6 +2,7 @@
 
 mod admin;
 mod auth;
+mod bazel;
 mod entries;
 pub mod error;
 mod gradle;
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use axum::{Router, extract::DefaultBodyLimit, middleware, routing::get};
 use metrics_exporter_prometheus::PrometheusHandle;
 
-use crate::{auth::Authenticator, cache::Cache};
+use crate::{auth::Authenticator, cache::Cache, config::Protocols};
 use error::ApiError;
 
 /// State shared by every handler.
@@ -26,35 +27,66 @@ pub struct AppState {
     pub metrics: Option<PrometheusHandle>,
 }
 
-/// Builds the HTTP router over a cache, open to everyone. `metrics` renders `/metrics`; without
-/// it, `/metrics` answers `501`.
+/// Builds the HTTP router over a cache, open to everyone, serving the default protocols.
+/// `metrics` renders `/metrics`; without it, `/metrics` answers `501`.
 pub fn router(cache: Arc<Cache>, metrics: Option<PrometheusHandle>) -> Router {
     router_with_auth(cache, metrics, Arc::new(Authenticator::open()))
 }
 
-/// Builds the HTTP router over a cache, checking every request against `auth`.
+/// Builds the HTTP router over a cache, serving the default protocols and checking every request
+/// against `auth`.
 pub fn router_with_auth(
     cache: Arc<Cache>,
     metrics: Option<PrometheusHandle>,
     auth: Arc<Authenticator>,
 ) -> Router {
-    let entries = Router::new()
-        .route(
+    router_with(cache, metrics, auth, Protocols::default())
+}
+
+/// Builds the HTTP router over a cache, checking every request against `auth`. Only the
+/// `protocols` that are on get routes; requests for the others get the `404` of an unknown path.
+pub fn router_with(
+    cache: Arc<Cache>,
+    metrics: Option<PrometheusHandle>,
+    auth: Arc<Authenticator>,
+    protocols: Protocols,
+) -> Router {
+    let mut entries = Router::new();
+    if protocols.gradle {
+        entries = entries.route(
             "/cache/{key}",
             get(gradle::load_entry)
                 .head(gradle::check_entry)
                 .put(gradle::store_entry),
-        )
-        .route(
+        );
+    }
+    if protocols.maven {
+        entries = entries.route(
             "/maven/{*path}",
             get(maven::load_object)
                 .head(maven::check_object)
                 .put(maven::store_object)
                 .options(maven::describe_object)
                 .fallback(maven::other_method),
-        )
-        // Entry bodies are streamed and the core enforces the entry size limit.
-        .layer(DefaultBodyLimit::disable());
+        );
+    }
+    if protocols.bazel {
+        entries = entries
+            .route(
+                "/bazel/ac/{digest}",
+                get(bazel::load_action)
+                    .head(bazel::check_action)
+                    .put(bazel::store_action),
+            )
+            .route(
+                "/bazel/cas/{digest}",
+                get(bazel::load_blob)
+                    .head(bazel::check_blob)
+                    .put(bazel::store_blob),
+            );
+    }
+    // Entry bodies are streamed and the core enforces the entry size limit.
+    let entries = entries.layer(DefaultBodyLimit::disable());
 
     Router::new()
         .merge(entries)

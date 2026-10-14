@@ -382,7 +382,8 @@ impl Cache {
     pub fn oversize_policy(&self, namespace: Namespace) -> OversizePolicy {
         match namespace {
             Namespace::Gradle => self.oversize,
-            Namespace::Maven => OversizePolicy::Reject,
+            // Maven and Bazel only log a failed store and keep using the cache.
+            Namespace::Maven | Namespace::BazelAc | Namespace::BazelCas => OversizePolicy::Reject,
         }
     }
 

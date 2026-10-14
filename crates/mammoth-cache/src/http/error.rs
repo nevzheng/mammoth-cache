@@ -80,6 +80,7 @@ impl ApiError {
         let field = match key.namespace() {
             Namespace::Gradle => "key",
             Namespace::Maven => "path",
+            Namespace::BazelAc | Namespace::BazelCas => "digest",
         };
         Self::new(
             StatusCode::NOT_FOUND,
@@ -135,6 +136,18 @@ impl ApiError {
         )
     }
 
+    /// `400 INVALID_ARGUMENT` for a Bazel CAS upload whose SHA-256 is not its digest.
+    #[must_use]
+    pub fn digest_mismatch(key: &CacheKey) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_ARGUMENT",
+            "DIGEST_MISMATCH",
+            "The uploaded content does not hash to its digest.",
+        )
+        .with("digest", key.name())
+    }
+
     /// `501 UNIMPLEMENTED` for a route in the contract that is not built yet.
     #[must_use]
     pub fn unimplemented(what: &str) -> Self {
@@ -152,6 +165,7 @@ impl From<InvalidKey> for ApiError {
         let reason = match e {
             InvalidKey::Gradle => "INVALID_CACHE_KEY",
             InvalidKey::Maven => "INVALID_CACHE_PATH",
+            InvalidKey::Bazel => "INVALID_DIGEST",
         };
         Self::new(
             StatusCode::BAD_REQUEST,

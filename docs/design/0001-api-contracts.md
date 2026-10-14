@@ -30,7 +30,9 @@ for users.
 ### Non-goals
 
 - Choosing the Rust HTTP framework. That is a separate decision.
-- Bazel remote caching (REAPI). Out of scope; bazel-remote already serves it well.
+- Bazel REAPI (remote execution and the gRPC cache). Out of scope; bazel-remote already serves
+  it well. Bazel's plain HTTP cache is served, off by default; see
+  [0012](0012-bazel-http-cache-and-protocol-switches.md).
 - A gRPC server. The admin API is shaped so one can be added later without changes.
 
 ## Design

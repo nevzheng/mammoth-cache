@@ -18,4 +18,4 @@ pub mod key;
 pub mod store;
 mod tee;
 
-pub use http::{router, router_with_auth};
+pub use http::{router, router_with, router_with_auth};

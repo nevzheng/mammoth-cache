@@ -59,6 +59,11 @@ This doc covers the file's shape and rules. Auth is in [0002](0002-authenticatio
 version = 1
 listen = "0.0.0.0:5071"
 
+[protocols] # which client protocols get routes (0012)
+gradle = true
+maven = true
+bazel = false
+
 [tls] # optional; omit to serve plain HTTP, e.g. behind a TLS-terminating proxy
 cert = "/etc/mammoth/tls.crt"
 key = "/etc/mammoth/tls.key"
@@ -115,6 +120,9 @@ access_log = true
   `mammoth config check` runs the same validation without starting the server.
 - **Reference:** every key is documented in the user guide with its type, default and meaning.
   There is no machine-readable schema; `mammoth config check` is the validator.
+- **Protocols:** a protocol that is off has no routes, so its requests get the `404` of an unknown
+  path. Gradle and Maven are on and Bazel is off by default; turning all three off is an error.
+  See [0012](0012-bazel-http-cache-and-protocol-switches.md).
 - **Units:** sizes use binary suffixes (`KiB`, `MiB`, `GiB`, `TiB`), durations `s`, `m`, `h`, `d`.
 - **Secrets:** the file holds token hashes, which are not secrets. Bucket credentials come from the
   cloud's credential chain (see [0003](0003-architecture.md)). Nothing in the file needs to be kept

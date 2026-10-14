@@ -8,8 +8,9 @@ Draft
 
 mammoth-cache supports two build cache clients: Gradle's built-in HTTP build cache, from Gradle
 7.6 through 9.x, and the Apache Maven Build Cache Extension, from 1.2.0 on Maven 3.9.x. Develocity
-clients are out of scope. Every supported version range is covered by an acceptance suite that
-runs the real client against a real `mammoth` binary in CI.
+clients are out of scope. Bazel's plain HTTP cache is also served, off by default
+([0012](0012-bazel-http-cache-and-protocol-switches.md)). Every supported version range is
+covered by an acceptance suite that runs the real client against a real `mammoth` binary in CI.
 
 ## Motivation
 
@@ -32,7 +33,8 @@ clients is the only way to keep a support claim honest.
 - Develocity clients: the Develocity Gradle plugin's build cache connector, the Develocity Maven
   extension and sbt-develocity. Their protocol is undocumented, and the Maven extension needs a
   Develocity licence and server anyway.
-- Bazel REAPI, which is out of scope for the project.
+- Bazel REAPI (remote execution and the gRPC cache), which is out of scope for the project.
+  Bazel's HTTP cache is covered in [0012](0012-bazel-http-cache-and-protocol-switches.md).
 - Detecting or allow-listing clients by `User-Agent`.
 
 ## Design
@@ -58,6 +60,7 @@ Clients don't discover routes. Users configure a base URL and the client appends
 | ------------------ | ----------------------------- | -------------------------------------------- |
 | Gradle             | `https://<host>/cache/`       | `GET`, `PUT /cache/{key}` (32-hex MD5 key)   |
 | Maven extension    | `https://<host>/maven`        | `GET`, `PUT /maven/{version}/{g}/{a}/...`    |
+| Bazel (opt-in)     | `https://<host>/bazel`        | `GET`, `PUT /bazel/ac/…`, `/bazel/cas/…`     |
 
 The Maven extension writes `{version}/{groupId}/{artifactId}/{checksum}/buildinfo.xml`, the
 module's artifacts and zipped extra outputs next to it, and
@@ -82,6 +85,7 @@ flowchart TB
     subgraph inbound["Inbound adapters (axum routers)"]
         rcache["/cache/{key}<br/>http/gradle.rs"]
         rmaven["/maven/{path...}<br/>http/maven.rs"]
+        rbazel["/bazel/ac, /bazel/cas (opt-in)<br/>http/bazel.rs"]
         rops["/ping /livez /readyz /metrics<br/>http/ops.rs"]
         radmin["/v1/serverStatus<br/>http/admin.rs"]
     end
@@ -94,15 +98,18 @@ flowchart TB
     l3[("L3 object-store bucket")]
     gradle --> mw
     maven --> mw
+    bazel["Bazel (HTTP cache)"] --> mw
     ops --> mw
     admin --> mw
     mw --> auth
     auth --> rcache
     auth --> rmaven
+    auth --> rbazel
     auth --> radmin
     mw --> rops
     rcache --> entries
     rmaven --> entries
+    rbazel --> entries
     entries --> core
     radmin --> core
     core --> fill
@@ -120,7 +127,9 @@ in yet, so today every request is served from L1 alone. Design doc 0003 tracks
 outside auth unless `[metrics] require_auth` is set (0004).
 
 The Gradle namespace is write-once, because its keys are content hashes. The Maven namespace
-allows overwrites, because its paths are not content-addressed.
+allows overwrites, because its paths are not content-addressed. Bazel's CAS is write-once and its
+action cache allows overwrites, for the same reasons. `[protocols]` in `mammoth.toml` decides which
+routers are mounted.
 
 ### Client behaviour the server must respect
 

@@ -12,8 +12,9 @@ use futures_util::{StreamExt, TryStreamExt};
 
 use super::{AppState, error::ApiError};
 use crate::{
-    cache::{Admission, StoreOutcome},
+    cache::{Admission, CacheError, StoreOutcome},
     key::CacheKey,
+    store::ByteStream,
 };
 
 const OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -58,6 +59,20 @@ pub(super) async fn store(
     headers: &HeaderMap,
     body: Body,
 ) -> Result<StatusCode, ApiError> {
+    store_through(state, key, headers, body, |stream| stream).await
+}
+
+/// [`store`], with the body passed through `wrap` on its way to the tiers, for an adapter that
+/// checks the content as it streams. An error from the wrapped stream fails the store, and no tier
+/// keeps the entry. Storage errors come back as `E`, so the adapter can recognize its own error
+/// inside one.
+pub(super) async fn store_through<E: From<CacheError>>(
+    state: &AppState,
+    key: &CacheKey,
+    headers: &HeaderMap,
+    body: Body,
+    wrap: impl FnOnce(ByteStream) -> ByteStream,
+) -> Result<StatusCode, E> {
     let declared_size = headers
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
@@ -75,7 +90,7 @@ pub(super) async fn store(
             return Ok(StatusCode::OK);
         }
     }
-    let stream = body.into_data_stream().map_err(io::Error::other).boxed();
+    let stream = wrap(body.into_data_stream().map_err(io::Error::other).boxed());
     match state.cache.put(key, declared_size, stream).await? {
         StoreOutcome::Stored => Ok(StatusCode::CREATED),
         StoreOutcome::Exists | StoreOutcome::Dropped => Ok(StatusCode::OK),

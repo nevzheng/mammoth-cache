@@ -40,6 +40,9 @@ pub struct Config {
     pub listen: SocketAddr,
     /// TLS settings; absent to serve plain HTTP.
     pub tls: Option<Tls>,
+    /// Which client protocols are served.
+    #[serde(default)]
+    pub protocols: Protocols,
     /// Limits that apply to every tier.
     #[serde(default)]
     pub limits: Limits,
@@ -69,6 +72,30 @@ pub struct Tls {
     pub cert: PathBuf,
     /// PEM private key.
     pub key: PathBuf,
+}
+
+/// `[protocols]`: which client protocols the node serves. A protocol that is off has no routes,
+/// so its requests get the same `404` as any unknown path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Protocols {
+    /// Gradle's HTTP build cache, `/cache/{key}`.
+    pub gradle: bool,
+    /// The Apache Maven Build Cache Extension, `/maven/{path}`.
+    pub maven: bool,
+    /// Bazel's HTTP remote cache, `/bazel/ac/{digest}` and `/bazel/cas/{digest}`. Off unless asked
+    /// for.
+    pub bazel: bool,
+}
+
+impl Default for Protocols {
+    fn default() -> Self {
+        Self {
+            gradle: true,
+            maven: true,
+            bazel: false,
+        }
+    }
 }
 
 /// `[limits]`.
@@ -404,6 +431,11 @@ impl Config {
                 self.version
             ));
         }
+        if !self.protocols.gradle && !self.protocols.maven && !self.protocols.bazel {
+            return Err(
+                "every protocol in [protocols] is off; the node would serve nothing".to_owned(),
+            );
+        }
         if self.memory.max_entry_size > self.limits.max_entry_size {
             return Err(format!(
                 "memory.max_entry_size ({}) is above limits.max_entry_size ({})",
@@ -575,6 +607,24 @@ mod tests {
         assert!(config.bucket.is_none());
         assert!(config.auth.anonymous.is_empty() && config.auth.users.is_empty());
         assert_eq!(config.log.format, LogFormat::Json);
+        assert_eq!(config.protocols, Protocols::default());
+        assert!(config.protocols.gradle && config.protocols.maven && !config.protocols.bazel);
+    }
+
+    #[test]
+    fn protocols_switch_on_and_off() {
+        let config = parse(&format!(
+            "{MINIMAL}[protocols]\nmaven = false\nbazel = true\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            config.protocols,
+            Protocols {
+                gradle: true,
+                maven: false,
+                bazel: true,
+            }
+        );
     }
 
     #[test]
@@ -680,6 +730,14 @@ mod tests {
             (
                 &format!("{MINIMAL}[tls]\ncert = \"c\"\nkey = \"k\"\n"),
                 "[tls] is not supported yet",
+            ),
+            (
+                &format!("{MINIMAL}[protocols]\ngradle = false\nmaven = false\n"),
+                "every protocol in [protocols] is off",
+            ),
+            (
+                &format!("{MINIMAL}[protocols]\nreapi = true\n"),
+                "unknown field `reapi`",
             ),
         ];
         for (text, expected) in cases {

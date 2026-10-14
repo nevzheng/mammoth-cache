@@ -166,6 +166,13 @@ async fn serve(config: Config) -> io::Result<()> {
         tracing::warn!("no [auth] users configured: every request is allowed");
     }
     let cache = build_cache(&config).await?;
+    let protocols = &config.protocols;
+    tracing::info!(
+        gradle = protocols.gradle,
+        maven = protocols.maven,
+        bazel = protocols.bazel,
+        "protocols"
+    );
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(addr = %listener.local_addr()?, "mammoth-cache listening");
 
@@ -174,7 +181,12 @@ async fn serve(config: Config) -> io::Result<()> {
         .map_err(io::Error::other)?;
     axum::serve(
         listener,
-        mammoth_cache::router_with_auth(Arc::new(cache), Some(metrics), Arc::new(auth)),
+        mammoth_cache::router_with(
+            Arc::new(cache),
+            Some(metrics),
+            Arc::new(auth),
+            config.protocols,
+        ),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
