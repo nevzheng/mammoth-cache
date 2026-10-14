@@ -1,0 +1,22 @@
+# buf (https://buf.build) configuration for the protos in api/proto.
+# Lint: `buf lint`   Format: `buf format -w`   Breaking: `buf breaking --against '.git#branch=main'`
+# AIP rules are checked separately by api-linter; see api/README.md.
+version: v2
+modules:
+  - path: api/proto
+deps:
+  - buf.build/googleapis/googleapis
+lint:
+  use:
+    - STANDARD
+    - COMMENTS
+    - UNARY_RPC
+  except:
+    # AIP standard methods (AIP-131 to AIP-135) return the resource itself, not a
+    # <Method>Response, and may share request or response types.
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    - RPC_RESPONSE_STANDARD_NAME
+  disallow_comment_ignores: true
+breaking:
+  use:
+    - WIRE_JSON

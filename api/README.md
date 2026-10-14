@@ -15,12 +15,25 @@ The admin API's OpenAPI document will be generated from the protos rather than c
 
 ## Linting
 
-```sh
-# OpenAPI
-npx @stoplight/spectral-cli lint -r api/.spectral.yaml api/openapi/*.yaml
+CI (`.github/workflows/api.yml`) runs every linter at its strictest setting, and warnings fail
+the build. Each disabled rule is listed with its reason in the linter's config file.
 
-# Protos, against the AIPs (needs a googleapis checkout for the google/api imports)
-(cd api/proto && api-linter -I path/to/googleapis mammoth/admin/v1/admin.proto)
+| Linter                                              | Checks                               | Config               |
+| --------------------------------------------------- | ------------------------------------ | -------------------- |
+| [buf](https://buf.build/docs/lint)                  | Proto style, comments, formatting    | `buf.yaml`           |
+| [api-linter](https://linter.aip.dev)                | Every AIP rule                       | none (all rules on)  |
+| [Spectral](https://docs.stoplight.io/docs/spectral) | OpenAPI, all rules plus OWASP Top 10 | `api/.spectral.yaml` |
+| [Redocly](https://redocly.com/docs/cli/rules)       | OpenAPI, `recommended-strict`        | `api/redocly.yaml`   |
+
+Run them locally:
+
+```sh
+buf lint && buf format --diff --exit-code
+buf build api/proto -o /tmp/image.binpb
+(cd api/proto && api-linter --set-exit-status --descriptor-set-in /tmp/image.binpb mammoth/admin/v1/admin.proto)
+
+npx @stoplight/spectral-cli lint --fail-severity=warn -r api/.spectral.yaml api/openapi/*.yaml
+npx @redocly/cli lint --config api/redocly.yaml
 ```
 
-Neither runs in CI yet.
+Spectral needs `@stoplight/spectral-owasp-ruleset` installed next to it.

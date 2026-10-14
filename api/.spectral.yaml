@@ -1,9 +1,56 @@
 # Spectral (https://stoplight.io/open-source/spectral) rules for the OpenAPI files.
-# Lint: `npx @stoplight/spectral-cli lint api/openapi/*.yaml`
-extends: ["spectral:oas"]
+# Lint: `npx @stoplight/spectral-cli lint --fail-severity=warn api/openapi/*.yaml`
+#
+# Every rule of the built-in OpenAPI ruleset and the OWASP API Security Top 10 ruleset is on, and
+# warnings fail CI. Each exception below says why the rule does not fit this API.
+extends:
+  - [spectral:oas, all]
+  - "@stoplight/spectral-owasp-ruleset"
+rules:
+  # The project publishes no contact email; the contact URL is the repository.
+  contact-properties: off
+  # OpenAPI 3.1 licenses use an SPDX `identifier`, which may not be combined with `url`.
+  license-url: off
+  # No rate limiting by design: the cache is kept as simple as possible, and Gradle has no
+  # backoff for 429 (it turns the remote cache off for the build).
+  owasp:api4:2023-rate-limit: off
+  owasp:api4:2023-rate-limit-responses-429: off
+  # No browser clients, so no CORS.
+  owasp:api8:2023-define-cors-origin: off
+  # Free-text fields (error messages, metric dumps) have no format or pattern to give.
+  owasp:api4:2023-string-restricted: off
 overrides:
   # common.yaml only holds components that other documents reference.
   - files: ["openapi/common.yaml"]
     rules:
       oas3-api-servers: off
       oas3-unused-component: off
+      openapi-tags: off
+      # Gradle's HTTP build cache client only supports HTTP Basic.
+      owasp:api2:2023-no-http-basic: off
+  - files: ["openapi/gradle-build-cache.v1.yaml"]
+    rules:
+      # Gradle's HTTP build cache client only supports HTTP Basic.
+      owasp:api2:2023-no-http-basic: off
+  # Cache entries are opaque bytes whose size limit is set in configuration.
+  - files:
+      - "openapi/gradle-build-cache.v1.yaml#/paths/~1cache~1%7Bkey%7D/get/responses/200"
+      - "openapi/gradle-build-cache.v1.yaml#/paths/~1cache~1%7Bkey%7D/put/requestBody"
+    rules:
+      owasp:api4:2023-string-limit: off
+  # HEAD responses have no body, so their errors cannot carry content.
+  - files: ["openapi/gradle-build-cache.v1.yaml#/paths/~1cache~1%7Bkey%7D/head"]
+    rules:
+      owasp:api8:2023-define-error-responses-401: off
+      owasp:api8:2023-define-error-responses-500: off
+  - files: ["openapi/ops.v1.yaml"]
+    rules:
+      # Health checks and metrics are open so probes and scrapers can reach them.
+      owasp:api2:2023-read-restricted: off
+      owasp:api8:2023-define-error-responses-401: off
+      # These operations take no input that could fail validation.
+      owasp:api8:2023-define-error-validation: off
+  # The Prometheus exposition has no useful upper bound.
+  - files: ["openapi/ops.v1.yaml#/paths/~1metrics/get/responses/200"]
+    rules:
+      owasp:api4:2023-string-limit: off

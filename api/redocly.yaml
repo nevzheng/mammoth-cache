@@ -1,0 +1,16 @@
+# Redocly CLI (https://redocly.com/docs/cli) rules for the OpenAPI files, as a second linter
+# beside Spectral. Lint: `npx @redocly/cli lint --config api/redocly.yaml`
+extends:
+  - recommended-strict
+apis:
+  gradle-build-cache@v1:
+    root: openapi/gradle-build-cache.v1.yaml
+    rules:
+      # localhost is the real default address, not a placeholder.
+      no-server-example.com: off
+  ops@v1:
+    root: openapi/ops.v1.yaml
+    rules:
+      no-server-example.com: off
+      # Health checks and metrics take no input and need no credentials, so they have no 4XX.
+      operation-4xx-response: off

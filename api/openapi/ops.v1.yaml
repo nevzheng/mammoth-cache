@@ -16,8 +16,9 @@ info:
     name: MIT OR Apache-2.0
     identifier: MIT OR Apache-2.0
 servers:
-  - url: http://localhost:5071
-    description: Local default
+  - url: https://localhost:5071
+    description: Local, with TLS enabled. Without TLS the scheme is `http`.
+    x-internal: false
 security: []
 tags:
   - name: health
@@ -41,6 +42,8 @@ paths:
               schema:
                 type: string
                 const: SUCCESS
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
   /livez:
     get:
       operationId: checkLiveness
@@ -57,6 +60,8 @@ paths:
               schema:
                 type: string
                 const: ok
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
   /readyz:
     get:
       operationId: checkReadiness
@@ -81,6 +86,7 @@ paths:
             text/plain:
               schema:
                 type: string
+                maxLength: 4096
               examples:
                 terse:
                   value: ok
@@ -109,6 +115,8 @@ paths:
                         check: storage-free-space
                         freeBytes: "429496729"
                         bufferBytes: "1073741824"
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
   /metrics:
     get:
       operationId: getMetrics
@@ -127,3 +135,5 @@ paths:
                 # TYPE mammoth_cache_requests_total counter
                 mammoth_cache_requests_total{method="GET",result="hit"} 1027
                 mammoth_cache_requests_total{method="GET",result="miss"} 311
+        "500":
+          $ref: "./common.yaml#/components/responses/Internal"
