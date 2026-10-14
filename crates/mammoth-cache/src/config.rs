@@ -46,6 +46,9 @@ pub struct Config {
     /// Which client protocols are served.
     #[serde(default)]
     pub protocols: Protocols,
+    /// The REAPI gRPC listener, used when `protocols.reapi` is on (design doc 0016).
+    #[serde(default)]
+    pub reapi: Reapi,
     /// Limits that apply to every tier.
     #[serde(default)]
     pub limits: Limits,
@@ -113,6 +116,7 @@ pub struct Tls {
 /// so its requests get the same `404` as any unknown path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
+#[allow(clippy::struct_excessive_bools)] // One on/off switch per protocol, as in the file.
 pub struct Protocols {
     /// Gradle's HTTP build cache, `/cache/{key}`.
     pub gradle: bool,
@@ -121,6 +125,24 @@ pub struct Protocols {
     /// Bazel's HTTP remote cache, `/bazel/ac/{digest}` and `/bazel/cas/{digest}`. Off unless asked
     /// for.
     pub bazel: bool,
+    /// The REAPI cache over gRPC, on its own listener (`[reapi] listen`). Off unless asked for.
+    pub reapi: bool,
+}
+
+/// `[reapi]`: the gRPC listener for the REAPI cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Reapi {
+    /// The address the gRPC server listens on. 6011 is the Build Cache Node's Bazel gRPC port.
+    pub listen: SocketAddr,
+}
+
+impl Default for Reapi {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([0, 0, 0, 0], 6011)),
+        }
+    }
 }
 
 impl Default for Protocols {
@@ -129,6 +151,7 @@ impl Default for Protocols {
             gradle: true,
             maven: true,
             bazel: false,
+            reapi: false,
         }
     }
 }
@@ -514,10 +537,17 @@ impl Config {
                 self.version
             ));
         }
-        if !self.protocols.gradle && !self.protocols.maven && !self.protocols.bazel {
+        let p = self.protocols;
+        if !p.gradle && !p.maven && !p.bazel && !p.reapi {
             return Err(
                 "every protocol in [protocols] is off; the node would serve nothing".to_owned(),
             );
+        }
+        if p.reapi && self.reapi.listen.port() == self.listen.port() && self.listen.port() != 0 {
+            return Err(format!(
+                "reapi.listen ({}) uses the same port as listen ({}); gRPC needs its own port",
+                self.reapi.listen, self.listen
+            ));
         }
         if self.memory.max_entry_size > self.limits.max_entry_size {
             return Err(format!(
@@ -729,6 +759,8 @@ mod tests {
         assert_eq!(config.log.format, LogFormat::Json);
         assert_eq!(config.protocols, Protocols::default());
         assert!(config.protocols.gradle && config.protocols.maven && !config.protocols.bazel);
+        assert!(!config.protocols.reapi);
+        assert_eq!(config.reapi.listen, SocketAddr::from(([0, 0, 0, 0], 6011)));
     }
 
     #[test]
@@ -743,6 +775,7 @@ mod tests {
                 gradle: true,
                 maven: false,
                 bazel: true,
+                reapi: false,
             }
         );
     }
@@ -921,8 +954,14 @@ mod tests {
                 "every protocol in [protocols] is off",
             ),
             (
-                &format!("{MINIMAL}[protocols]\nreapi = true\n"),
-                "unknown field `reapi`",
+                &format!(
+                    "{MINIMAL}[protocols]\nreapi = true\n[reapi]\nlisten = \"0.0.0.0:5071\"\n"
+                ),
+                "same port as listen",
+            ),
+            (
+                &format!("{MINIMAL}[reapi]\nport = 6011\n"),
+                "unknown field `port`",
             ),
         ];
         for (text, expected) in cases {

@@ -1,0 +1,16 @@
+# Regenerates the checked-in REAPI code in crates/mammoth-cache/src/reapi/proto/ from the vendored
+# protos in third_party/proto. Its own workspace, so the server's build never depends on it:
+#
+#     cargo run --manifest-path scripts/reapi-codegen/Cargo.toml
+[package]
+name = "reapi-codegen"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[dependencies]
+protox = "0.10.0"
+tonic-prost-build = "0.14.6"

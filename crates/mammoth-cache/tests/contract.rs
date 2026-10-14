@@ -94,6 +94,7 @@ fn app() -> Router {
         gradle: true,
         maven: true,
         bazel: true,
+        reapi: false,
     };
     router_with(
         Arc::new(cache),

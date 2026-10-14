@@ -9,6 +9,7 @@ use mammoth_cache::{
     auth,
     cache::{BucketLimits, BucketWrite, Cache},
     config::{self, Config, DEFAULT_PATH, LogFormat, PATH_ENV},
+    reapi::{self, GrpcSettings},
     server::{self, ServerSettings, TlsSettings},
     store::{
         bucket::{BucketConfig, BucketStore},
@@ -196,9 +197,21 @@ async fn serve(config: Config) -> io::Result<()> {
         gradle = protocols.gradle,
         maven = protocols.maven,
         bazel = protocols.bazel,
+        reapi = protocols.reapi,
         "protocols"
     );
     let listener = TcpListener::bind(config.listen).await?;
+    let grpc_listener = if protocols.reapi {
+        let listener = TcpListener::bind(config.reapi.listen).await?;
+        tracing::info!(
+            addr = %listener.local_addr()?,
+            scheme = if certificates.is_some() { "grpcs" } else { "grpc" },
+            "REAPI gRPC cache listening"
+        );
+        Some(listener)
+    } else {
+        None
+    };
     tracing::info!(
         addr = %listener.local_addr()?,
         scheme = if certificates.is_some() { "https" } else { "http" },
@@ -206,12 +219,9 @@ async fn serve(config: Config) -> io::Result<()> {
     );
 
     let cache = Arc::new(cache);
-    let app = mammoth_cache::router_with(
-        cache.clone(),
-        Some(metrics),
-        Arc::new(auth),
-        config.protocols,
-    );
+    let auth = Arc::new(auth);
+    let app =
+        mammoth_cache::router_with(cache.clone(), Some(metrics), auth.clone(), config.protocols);
     let settings = ServerSettings {
         shutdown_delay: config.server.shutdown_delay.0,
         shutdown_timeout: config.server.shutdown_timeout.0,
@@ -219,25 +229,63 @@ async fn serve(config: Config) -> io::Result<()> {
         body_read_timeout: config.server.body_read_timeout.0,
         send_timeout: config.server.send_timeout.0,
     };
-    let signal = async {
-        shutdown_signal().await;
-        // A second signal skips the drain.
-        tokio::spawn(async {
-            shutdown_signal().await;
-            tracing::warn!("second shutdown signal; exiting without draining");
-            std::process::exit(130);
-        });
-    };
-    match certificates {
+    let signal = shutdown_signals();
+    let tls = match certificates {
         Some(certificates) => {
             let tls = TlsSettings {
                 config: certificates.server_config()?,
                 handshake_timeout: tls::HANDSHAKE_TIMEOUT,
             };
             tokio::spawn(certificates.watch(tls::RELOAD_INTERVAL));
-            server::serve_tls(listener, tls, app, cache, settings, signal).await
+            Some(tls)
         }
-        None => server::serve(listener, app, cache, settings, signal).await,
+        None => None,
+    };
+    let grpc = grpc_listener.map(|listener| {
+        let routes = reapi::routes(cache.clone(), auth, settings.body_read_timeout);
+        let grpc_settings = GrpcSettings {
+            shutdown_delay: settings.shutdown_delay,
+            shutdown_timeout: settings.shutdown_timeout,
+            idle_timeout: settings.body_read_timeout,
+        };
+        tokio::spawn(reapi::serve(
+            listener,
+            tls.clone(),
+            routes,
+            grpc_settings,
+            signal(),
+        ))
+    });
+    let http = match tls {
+        Some(tls) => server::serve_tls(listener, tls, app, cache, settings, signal()).await,
+        None => server::serve(listener, app, cache, settings, signal()).await,
+    };
+    if let Some(grpc) = grpc {
+        match grpc.await {
+            Ok(result) => result?,
+            Err(error) => return Err(io::Error::other(error)),
+        }
+    }
+    http
+}
+
+/// Watches for the shutdown signal and returns a maker of futures that resolve on it, one per
+/// listener, so one signal stops both. A second signal exits without draining.
+fn shutdown_signals() -> impl Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+{
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = stop.send(true);
+        shutdown_signal().await;
+        tracing::warn!("second shutdown signal; exiting without draining");
+        std::process::exit(130);
+    });
+    move || {
+        let mut stopped = stopped.clone();
+        Box::pin(async move {
+            let _ = stopped.wait_for(|stop| *stop).await;
+        })
     }
 }
 

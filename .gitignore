@@ -8,3 +8,6 @@
 # Bazel.
 /bazel-*
 /user.bazelrc
+
+# The REAPI code generator (its own Cargo workspace).
+/scripts/reapi-codegen/target/

@@ -3,9 +3,9 @@
 > [!NOTE]
 > Exported today: `mammoth_http_requests_total`, `mammoth_gradle_requests_total`,
 > `mammoth_http_request_duration_seconds`, `mammoth_http_requests_in_flight`,
-> `mammoth_auth_failures_total`, `mammoth_cache_lookups_total`, `mammoth_cache_stores_total`,
-> `mammoth_cache_entry_size_bytes`, `mammoth_tier_promotions_total`, `mammoth_tier_evictions_total`
-> (memory tier), `mammoth_cache_integrity_errors_total` (disk tier),
+> `mammoth_grpc_requests_total`, `mammoth_auth_failures_total`, `mammoth_cache_lookups_total`,
+> `mammoth_cache_stores_total`, `mammoth_cache_entry_size_bytes`, `mammoth_tier_promotions_total`,
+> `mammoth_tier_evictions_total` (memory tier), `mammoth_cache_integrity_errors_total` (disk tier),
 > `mammoth_bucket_upload_queue_entries`, `mammoth_bucket_uploads_total`,
 > `mammoth_bucket_uploads_dropped_total`, `mammoth_shutting_down`, `mammoth_disk_free_bytes`,
 > `mammoth_tier_entries`, `mammoth_tier_size_bytes`, `mammoth_tier_capacity_bytes`,
@@ -93,15 +93,17 @@ because counting it means listing the bucket. Use the cloud provider's metrics.
 | --------------------------------------- | --------- | ----------------------------------- | -------------------------------------- |
 | `mammoth_http_requests_total`           | counter   | `route`, `method`, `code`, `client` | Requests by route, status and client   |
 | `mammoth_gradle_requests_total`         | counter   | `gradle_version`                    | Gradle requests by major.minor version |
+| `mammoth_grpc_requests_total`           | counter   | `method`, `code`                    | REAPI gRPC calls by method and status  |
 | `mammoth_http_request_duration_seconds` | histogram | `route`, `method`                   | Time to the last byte of the response  |
 | `mammoth_http_requests_in_flight`       | gauge     | `route`                             | Requests being served                  |
 | `mammoth_auth_failures_total`           | counter   | `reason`                            | Rejected credentials, by `reason`      |
 | `mammoth_build_info`                    | gauge     | `version`, `revision`               | Always 1; identifies the build         |
 
-`route` is the route template, such as `/cache/{key}`. `client` is `gradle`, `maven` or `other`,
-from the `User-Agent`. `revision` is the commit an official build came from, and `unknown` for a
-build from source. The standard `process_*` metrics (memory, CPU, file descriptors) are exported
-too.
+`route` is the route template, such as `/cache/{key}`. On the REAPI gRPC port, `method` is the gRPC
+method, such as `FindMissingBlobs`, and `code` the gRPC status, such as `NOT_FOUND`. `client` is
+`gradle`, `maven` or `other`, from the `User-Agent`. `revision` is the commit an official build came
+from, and `unknown` for a build from source. The standard `process_*` metrics (memory, CPU, file
+descriptors) are exported too.
 
 ### TLS
 
