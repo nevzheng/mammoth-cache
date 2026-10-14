@@ -260,15 +260,25 @@ impl CacheBuilder {
     /// it must be called inside a Tokio runtime.
     #[must_use]
     pub fn build(self) -> Cache {
+        // The deepest local tier holds every stored entry, unless it caps entry size (memory).
+        let source = self.tiers.last().map(|handle| handle.store.clone());
+        let source_cap = source.as_ref().and_then(|store| store.max_entry_size());
+        let mut max_entry_size = self.max_entry_size;
+        if self.bucket.is_none()
+            && let Some(cap) = source_cap
+        {
+            // Nothing below would keep a larger entry, so it is oversized.
+            max_entry_size = max_entry_size.min(cap);
+        }
         let bucket = self.bucket.map(|(store, write)| {
-            let source = self.tiers.last().map(|handle| handle.store.clone());
             let uploads = match (write, source) {
-                (BucketWrite::Async { queue }, Some(source)) => {
+                // Background uploads read the entry back, so its local copy must be whole.
+                (BucketWrite::Async { queue }, Some(source)) if source_cap.is_none() => {
                     let (tx, rx) = mpsc::channel(queue.max(1));
                     tokio::spawn(upload_worker(rx, source, store.clone()));
                     Some(tx)
                 }
-                // Inline: asked for, or there is no local copy to upload from.
+                // Inline: asked for, or there is no whole local copy to upload from.
                 _ => None,
             };
             BucketHandle { store, uploads }
@@ -276,7 +286,7 @@ impl CacheBuilder {
         Cache {
             tiers: self.tiers,
             bucket,
-            max_entry_size: self.max_entry_size,
+            max_entry_size,
             oversize: self.oversize,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -632,7 +642,7 @@ mod tests {
 
     fn cache_with(limit: u64, policy: OversizePolicy) -> Cache {
         Cache::builder()
-            .bounded_tier(Arc::new(MemoryStore::new(1024)))
+            .bounded_tier(Arc::new(MemoryStore::new(1 << 20)))
             .max_entry_size(limit)
             .oversize(policy)
             .build()
@@ -640,6 +650,19 @@ mod tests {
 
     fn cache(limit: u64) -> Cache {
         cache_with(limit, OversizePolicy::Drop)
+    }
+
+    #[tokio::test]
+    async fn memory_only_caps_entries_at_the_memory_limit() {
+        // A 1 KiB memory store keeps entries of at most 16 bytes, below the 1 KiB limit.
+        let cache = Cache::builder()
+            .bounded_tier(Arc::new(MemoryStore::new(1024)))
+            .max_entry_size(1024)
+            .build();
+        let k = key("abc123");
+        let outcome = cache.put(&k, Some(17), body(&[&[0; 17]])).await.unwrap();
+        assert_eq!(outcome, StoreOutcome::Dropped);
+        assert!(cache.get(&k).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -936,6 +959,52 @@ mod tests {
             let k = key("fedc");
             cache.put(&k, None, body(&[b"direct"])).await.unwrap();
             assert_eq!(t.bucket.head(&k).await.unwrap(), Some(6));
+        }
+    }
+
+    mod properties {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        fn chunked(data: &[u8], cuts: &[usize]) -> ByteStream {
+            let mut chunks = Vec::new();
+            let mut start = 0;
+            for &cut in cuts {
+                let end = (start + cut).min(data.len());
+                chunks.push(Ok(Bytes::copy_from_slice(&data[start..end])));
+                start = end;
+            }
+            chunks.push(Ok(Bytes::copy_from_slice(&data[start..])));
+            Box::pin(stream::iter(chunks))
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+
+            /// However a body is chunked, it is stored whole if it fits the limit and not at all
+            /// if it does not.
+            #[test]
+            fn stores_whole_or_not_at_all(
+                data in proptest::collection::vec(any::<u8>(), 0..3000),
+                cuts in proptest::collection::vec(0_usize..700, 0..8),
+                limit in 0_u64..2500,
+            ) {
+                let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+                rt.block_on(async {
+                    let cache = cache(limit);
+                    let k = key("abc");
+                    let outcome = cache.put(&k, None, chunked(&data, &cuts)).await.unwrap();
+                    let fits = data.len() as u64 <= limit;
+                    let expected = if fits { StoreOutcome::Stored } else { StoreOutcome::Dropped };
+                    prop_assert_eq!(outcome, expected);
+                    match cache.get(&k).await.unwrap() {
+                        Some(hit) => prop_assert!(fits && read_all(hit.blob).await == data),
+                        None => prop_assert!(!fits),
+                    }
+                    Ok(())
+                })?;
+            }
         }
     }
 }
