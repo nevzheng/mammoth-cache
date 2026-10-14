@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 HEX = "0123456789abcdef"
 MAVEN_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
 READ, WRITE = "cache:read", "cache:write"
+LOOKUPS, STORES = "mammoth_cache_lookups_total", "mammoth_cache_stores_total"
+AUTH_FAILURES = "mammoth_auth_failures_total"
+# The label each outcome counter is broken down by, and that the model predicts.
+OUTCOME_LABELS = {LOOKUPS: "result", STORES: "result", AUTH_FAILURES: "reason"}
 
 # Small bodies most of the time, so runs stay fast; now and then one big enough to span many
 # chunks on the way through hyper and the tiers.
@@ -123,6 +127,25 @@ def full_access(target: Target) -> Caller:
     raise LookupError(f"target {target.name!r} has no user with {READ} and {WRITE}")
 
 
+def outcome(caller: Caller, method: str, status: int) -> tuple[str, str] | None:
+    """The outcome counter a response moves, and its label (docs/user/metrics.md).
+
+    Only `GET` is a lookup (`HEAD` asks the tiers for a size, not the cache for an entry), and a
+    refused request never reaches the cache.
+    """
+    if status == 401:
+        reason = "CREDENTIALS_MISSING" if caller.label == "anonymous" else "CREDENTIALS_INVALID"
+        return AUTH_FAILURES, reason
+    if status == 403:
+        return AUTH_FAILURES, "SCOPE_MISSING"
+    if method == "GET" and status in {200, 404}:
+        return LOOKUPS, "hit" if status == 200 else "miss"
+    if method == "PUT" and status in {200, 201, 400}:
+        # A 400 is a store that failed, such as a CAS body that does not match its digest.
+        return STORES, {201: "stored", 200: "exists", 400: "error"}[status]
+    return None
+
+
 class CacheModel(RuleBasedStateMachine):
     """The node, held to a dictionary of `Key -> bytes`. Set the class variables before running."""
 
@@ -140,6 +163,8 @@ class CacheModel(RuleBasedStateMachine):
         self.history: deque[str] = deque(maxlen=8)
         # What this example sent, as mammoth_http_requests_total counts it: (route, method, code).
         self.sent: Counter[tuple[str, str, str]] = Counter()
+        # What the outcome counters should have moved by: (metric, label value).
+        self.outcomes: Counter[tuple[str, str]] = Counter()
         self.baseline: Scrape | None = None
         self.last: Scrape | None = None
         self.http = httpx.Client(base_url=self.target.url("/"), timeout=httpx.Timeout(30.0))
@@ -174,6 +199,8 @@ class CacheModel(RuleBasedStateMachine):
                 f"{method} {key.path}: {e!r}; requests before it:\n  {recent}"
             ) from e
         self.sent[key.protocol.metrics_route, method, str(response.status_code)] += 1
+        if (counted := outcome(caller, method, response.status_code)) is not None:
+            self.outcomes[counted] += 1
         self.history.append(
             f"{caller.label} {method} {key.path} ({len(body or b'')} B) -> {response.status_code}"
         )
@@ -249,7 +276,8 @@ class CacheModel(RuleBasedStateMachine):
 
     @rule()
     def metrics_add_up(self) -> None:
-        """Counters never go down, and the request counter moved by exactly what was sent.
+        """Counters never go down, and the request and outcome counters moved by exactly what
+        this example sent: every hit, miss, store and refusal is counted once and labelled right.
 
         Assumes nothing else sends cache requests to the node while the test runs.
         """
@@ -274,6 +302,16 @@ class CacheModel(RuleBasedStateMachine):
         assert moved == +self.sent, (
             f"mammoth_http_requests_total moved by {dict(moved)}, but this example sent "
             f"{dict(self.sent)}"
+        )
+        outcomes: Counter[tuple[str, str]] = Counter()
+        for (name, labels), value in now.samples.items():
+            if name in OUTCOME_LABELS:
+                label = dict(labels)[OUTCOME_LABELS[name]]
+                outcomes[name, label] += int(value - self.baseline.samples.get((name, labels), 0.0))
+        outcomes = +outcomes
+        assert outcomes == +self.outcomes, (
+            f"outcome counters moved by {dict(outcomes)}, but this example's answers mean "
+            f"{dict(self.outcomes)}"
         )
         self.last = now
 
@@ -414,6 +452,7 @@ class ChaosModel(CacheModel):
         """A restarted node has dropped every connection; start over, and reset the counters."""
         self.http = httpx.Client(base_url=self.target.url("/"), timeout=httpx.Timeout(30.0))
         self.sent.clear()
+        self.outcomes.clear()
         self.baseline = self.last = self.scrape()
 
     @rule()
