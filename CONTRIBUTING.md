@@ -132,8 +132,9 @@ echo 'build --remote_cache=http://localhost:5071/bazel' >> user.bazelrc
 Each test file under `tests/` is its own Bazel test target, so they already run in parallel and
 cache separately; none is long enough to be worth sharding.
 
-A container image is built from the `Dockerfile`; pushing a `v*` tag publishes it to
-`ghcr.io/nevzheng/mammoth-cache`.
+A container image is built from the `Dockerfile`. Only releases publish images, to
+`ghcr.io/nevzheng/mammoth-cache` (see [docs/design/0009-releases.md](docs/design/0009-releases.md));
+to run something newer than the latest release, build it yourself:
 
 ```sh
 docker build -t mammoth-cache:dev .

@@ -25,7 +25,7 @@ bucket, or holds its latency under concurrent load.
 Maven builds against `mammoth`, in `tests/acceptance/` with an `acceptance.yml` workflow. It covers
 client compatibility. This doc adds the deployment-shaped tests next to it and gives both suites one
 harness. [0009](0009-releases.md) builds the images under test: the from-source `Dockerfile` and
-the `edge` and release images on ghcr.
+the release images on ghcr.
 
 This doc covers the test stages after the hermetic ones, the harness, the Compose stack, the load
 framework, targets and CI. A Helm chart stays out of scope, as 0009 decided.
@@ -121,8 +121,8 @@ flowchart LR
 ```
 
 - **mammoth** runs the image named by `MAMMOTH_IMAGE`, defaulting to a local tag that CI builds
-  from `Dockerfile`. Pointing it at `ghcr.io/nevzheng/mammoth-cache:edge` or a release tag tests
-  published images unchanged. Once the config loader lands, its `mammoth.toml` sets `[bucket]
+  from `Dockerfile`. Pointing it at a release tag such as `ghcr.io/nevzheng/mammoth-cache:0.1.0`
+  tests a published image unchanged. Once the config loader lands, its `mammoth.toml` sets `[bucket]
   endpoint` to SeaweedFS and keeps memory and disk small, so the tests can force evictions and fall
   through to the bucket.
 - **SeaweedFS** runs as one `weed server -s3` container with a static test key pair in its S3

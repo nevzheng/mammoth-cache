@@ -12,7 +12,7 @@
 # `mammoth-2` (5072) on the same bucket; `observe` adds Grafana (3000); `tls` adds `mammoth-tls`
 # (5078, REAPI gRPC on 6012), serving the certificate in ./tls that the test harness issues, and
 # `mammoth-tls-generated` (5079), serving a self-signed one it generates itself. MAMMOTH_IMAGE picks the image under test, for example
-# ghcr.io/nevzheng/mammoth-cache:edge. MAMMOTH_CONFIG_DIR swaps in other config files.
+# ghcr.io/nevzheng/mammoth-cache:0.1.0. MAMMOTH_CONFIG_DIR swaps in other config files.
 
 name: mammoth
 
