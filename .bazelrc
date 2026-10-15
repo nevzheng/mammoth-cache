@@ -33,6 +33,14 @@ build:ci --verbose_failures
 coverage --combined_report=lcov
 coverage --instrument_test_targets
 
+# `bazel build --config=instrumented //crates/mammoth-cache:mammoth`: the server instrumented for
+# coverage, for the E2E suite to run against (coverage.yml). The counter relocation lets it update
+# its profile as it runs (LLVM_PROFILE_FILE with %c, set in deploy/compose), so a node the suite
+# kills keeps its counts. The flag reaches every crate but changes only the instrumented ones.
+build:instrumented --collect_code_coverage
+build:instrumented --instrumentation_filter=^//crates/mammoth-cache[/:]
+build:instrumented --@rules_rust//rust/settings:extra_rustc_flag=-Cllvm-args=-runtime-counter-relocation
+
 # Optimized build, the Bazel counterpart of Cargo's `dist` profile.
 build:release --compilation_mode=opt
 build:release --@rules_rust//rust/settings:lto=thin
@@ -59,6 +67,7 @@ test:e2e --test_env=MAMMOTH_E2E_CACHE
 test:e2e --test_env=MAMMOTH_E2E_BAZEL_REGISTRIES
 test:e2e --test_env=MAMMOTH_E2E_BAZEL_STARTUP_ARGS
 test:e2e --test_env=MAMMOTH_E2E_BAZEL_EXAMPLES
+test:e2e --test_env=MAMMOTH_COVERAGE_DIR
 test:e2e --test_output=errors
 # A full acceptance line can pass Bazel's hour for an enormous test; pytest-timeout still bounds
 # each test case.

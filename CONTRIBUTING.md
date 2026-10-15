@@ -93,7 +93,7 @@ bazel build //...
 bazel test //...
 bazel run //crates/mammoth-cache:mammoth   # listens on 0.0.0.0:5071; pass -- --config <file>
 bazel build --config=lint //...            # clippy and rustfmt over every Rust target
-bazel coverage //crates/...                # line coverage; scripts/coverage-summary.py reads it
+bazel coverage //crates/...                # line coverage (coverage.yml adds the E2E suite)
 ```
 
 With Cargo, the toolchain is pinned in `rust-toolchain.toml`, and the minimum supported Rust version

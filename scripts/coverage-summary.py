@@ -1,77 +1,87 @@
 #!/usr/bin/env python3
-"""Summarizes the LCOV report from `bazel coverage` as a Markdown table of line coverage.
+"""Prints line coverage of the server's sources as a Markdown table, one column per LCOV report.
 
-Keeps the server's own sources (crates/*/src/), leaving out the test files (instrumented by
---instrument_test_targets so integration tests report the library code they reach) and the
-generated REAPI code. Writes the filtered report to --lcov for genhtml and other tools.
+Counts the server's own sources (crates/*/src/), leaving out test files and the generated REAPI
+code. With more than one report, an "All" column counts a line as covered when any report covers
+it, which is what merging the reports (adding their counts) gives.
 
-    scripts/coverage-summary.py bazel-out/_coverage/_coverage_report.dat --lcov lcov.info
+    scripts/coverage-summary.py "Rust tests=rust.info" "E2E=e2e.info"
 """
 
 import argparse
 import re
-import sys
 from collections import defaultdict
 
 KEEP = re.compile(r"^crates/[^/]+/src/")
 SKIP = re.compile(r"/src/reapi/proto/")
 
 
-def parse(path):
-    """Yields (source file, its record's lines) for each record in an LCOV file."""
-    record = []
+def read(path):
+    """Returns {source file: {line: hit count}} for the kept files in an LCOV file."""
+    hits = defaultdict(dict)
+    source = None
     with open(path, encoding="utf-8") as f:
         for line in f:
-            line = line.rstrip("\n")
-            record.append(line)
-            if line == "end_of_record":
-                yield record[0].removeprefix("SF:"), record
-                record = []
+            line = line.strip()
+            if line.startswith("SF:"):
+                source = line[3:]
+                if not KEEP.match(source) or SKIP.search(source):
+                    source = None
+            elif line.startswith("DA:") and source:
+                number, count = line[3:].split(",")[:2]
+                lines = hits[source]
+                lines[number] = lines.get(number, 0) + int(count)
+            elif line == "end_of_record":
+                source = None
+    return hits
+
+
+def cell(lines):
+    if not lines:
+        return "–"
+    covered = sum(1 for count in lines.values() if count > 0)
+    return f"{100 * covered / len(lines):.1f}%"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("report", help="LCOV file from bazel coverage --combined_report=lcov")
-    parser.add_argument("--lcov", help="write the filtered LCOV report here")
+    parser.add_argument("reports", nargs="+", metavar="NAME=LCOV")
     args = parser.parse_args()
 
-    hits = defaultdict(dict)
-    kept = []
-    for source, record in parse(args.report):
-        if not KEEP.match(source) or SKIP.search(source):
-            continue
-        kept.extend(record)
-        lines = hits[source]
-        for line in record:
-            if line.startswith("DA:"):
-                number, count = line[3:].split(",")[:2]
-                lines[number] = max(lines.get(number, 0), int(count))
+    names, reports = [], []
+    for arg in args.reports:
+        name, _, path = arg.rpartition("=")
+        names.append(name or path)
+        reports.append(read(path))
+    if len(reports) > 1:
+        merged = defaultdict(dict)
+        for report in reports:
+            for source, lines in report.items():
+                for number, count in lines.items():
+                    merged[source][number] = merged[source].get(number, 0) + count
+        names.append("All")
+        reports.append(merged)
 
-    if args.lcov:
-        with open(args.lcov, "w", encoding="utf-8") as f:
-            f.write("\n".join(kept) + "\n")
-
-    if not hits:
-        sys.exit(f"{args.report}: no records for crates/*/src/")
-
-    rows = []
-    total = covered = 0
-    for source in sorted(hits):
-        lines = hits[source].values()
-        if not lines:
-            continue
-        n, c = len(lines), sum(1 for count in lines if count > 0)
-        total += n
-        covered += c
-        rows.append(f"| `{source}` | {c} / {n} | {100 * c / n:.1f}% |")
+    sources = sorted({source for report in reports for source in report})
+    totals = []
+    for report in reports:
+        total = {}
+        for source, lines in report.items():
+            total.update({(source, number): count for number, count in lines.items()})
+        totals.append(total)
 
     print("## Line coverage\n")
-    print(f"**{100 * covered / total:.1f}%** of {total} lines in `crates/*/src/` ", end="")
-    print("(Rust unit, integration and doc tests; generated REAPI code left out).\n")
-    print("<details><summary>By file</summary>\n")
-    print("| File | Lines hit | Coverage |")
-    print("| --- | ---: | ---: |")
-    print("\n".join(rows))
+    print("Lines of `crates/*/src/` (generated REAPI code left out) that each suite runs.\n")
+    print("| | " + " | ".join(names) + " |")
+    print("| --- |" + " ---: |" * len(names))
+    print("| **Total** | " + " | ".join(f"**{cell(total)}**" for total in totals) + " |")
+    print("| Lines | " + " | ".join(str(len(total)) for total in totals) + " |")
+    print("\n<details><summary>By file</summary>\n")
+    print("| File | " + " | ".join(names) + " |")
+    print("| --- |" + " ---: |" * len(names))
+    for source in sources:
+        row = " | ".join(cell(report.get(source, {})) for report in reports)
+        print(f"| `{source.removeprefix('crates/')}` | {row} |")
     print("\n</details>")
 
 
