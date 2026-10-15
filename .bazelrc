@@ -36,7 +36,11 @@ build:release --strip=always
 # Gradle, Maven, Bazel and Buck2 on the host. Pass any other MAMMOTH_E2E_* override with
 # --test_env=NAME.
 # CI selects Hypothesis's ci profile (derandomized, no example database), as under `uv run`.
+# HYPOTHESIS_PROFILE=nightly (tests/conftest.py) explores new examples instead; the nightly e2e run
+# sets it, with larger MAMMOTH_E2E_*EXAMPLES counts and a longer PYTEST_TIMEOUT per test case.
 test:e2e --test_env=CI
+test:e2e --test_env=HYPOTHESIS_PROFILE
+test:e2e --test_env=PYTEST_TIMEOUT
 test:e2e --test_env=HOME
 test:e2e --test_env=XDG_CACHE_HOME
 test:e2e --test_env=PATH
@@ -52,6 +56,9 @@ test:e2e --test_env=MAMMOTH_E2E_CACHE
 test:e2e --test_env=MAMMOTH_E2E_BAZEL_REGISTRIES
 test:e2e --test_env=MAMMOTH_E2E_BAZEL_STARTUP_ARGS
 test:e2e --test_env=MAMMOTH_E2E_BAZEL_EXAMPLES
+test:e2e --test_env=MAMMOTH_E2E_EXAMPLES
+test:e2e --test_env=MAMMOTH_E2E_CHAOS_EXAMPLES
+test:e2e --test_env=MAMMOTH_E2E_RACE_EXAMPLES
 test:e2e --test_output=errors
 # A full acceptance line can pass Bazel's hour for an enormous test; pytest-timeout still bounds
 # each test case.

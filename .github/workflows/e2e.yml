@@ -26,9 +26,11 @@ on:
 permissions:
   contents: read
 
+# A newer push cancels a pull request's run, but every main commit runs to the end: a cancelled run
+# saves no caches and leaves the commit without a result.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   image:
@@ -52,6 +54,18 @@ jobs:
             - Cargo.lock
             - tests/uv.lock
           cache-save: ${{ github.event_name != 'pull_request' }}
+      # Pull requests and main replay Hypothesis's derandomized ci profile, so a red run is a
+      # regression. The nightly run explores new random examples, more of them, and prints a
+      # `@reproduce_failure` blob for each failure (tests/conftest.py).
+      - if: github.event_name == 'schedule'
+        run: |
+          {
+            echo HYPOTHESIS_PROFILE=nightly
+            echo MAMMOTH_E2E_EXAMPLES=200
+            echo MAMMOTH_E2E_CHAOS_EXAMPLES=20
+            echo MAMMOTH_E2E_RACE_EXAMPLES=50
+            echo PYTEST_TIMEOUT=3600
+          } >> "$GITHUB_ENV"
       - run: bazel test --config=ci --config=e2e //tests:e2e
       - if: always()
         uses: actions/upload-artifact@v7
