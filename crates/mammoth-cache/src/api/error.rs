@@ -78,7 +78,8 @@ pub enum Reason {
     MethodNotAllowed,
     /// A method this server does not offer. Metadata: `method`.
     MethodNotSupported,
-    /// A tier failed in a way that may pass.
+    /// A tier failed in a way that may pass, or a gRPC call waited too long for a place among
+    /// the node's buffered calls.
     StorageUnavailable,
     /// A local tier cannot write. Metadata: `check`, tier details.
     StorageNotWritable,

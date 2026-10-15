@@ -156,12 +156,15 @@ executor is configured to use mammoth-cache as its CAS backend.
 - **Existence checks.** One `FindMissingBlobs` call may ask about 10,000 digests; more get
   `INVALID_ARGUMENT` with reason `TOO_MANY_DIGESTS`. Each digest not on the node costs a bucket
   `HEAD`.
-- **Memory.** At most 32 calls other than `ByteStream` ones decode and answer at once, each with up
-  to about 16 MiB of buffers, so allow about 512 MiB for gRPC on top of `[memory] size`. More calls
-  wait. Each connection may have 128 calls open.
+- **Memory.** At most 32 calls other than `ByteStream` and `GetCapabilities` ones decode and answer
+  at once, each with up to about 16 MiB of buffers, so allow about 512 MiB for gRPC on top of
+  `[memory] size`. More calls wait, for `body_read_timeout` at most, then get `UNAVAILABLE` with
+  reason `STORAGE_UNAVAILABLE`, which clients retry. Each connection may have 128 calls open.
 - **Timeouts.** The `[server]` timeouts apply to this port too: an upload that sends nothing for
   `body_read_timeout` fails, and a `ByteStream.Read` whose client takes nothing for `send_timeout`
-  ends with `DEADLINE_EXCEEDED`.
+  ends with `DEADLINE_EXCEEDED`. A call other than a `ByteStream` one must also send its whole
+  request within `body_read_timeout` of starting to decode it, so slow clients cannot hold the 32
+  places.
 - **Not supported yet:** `GetTree`, `SplitBlob` and `SpliceBlob` answer `UNIMPLEMENTED`, no
   compressors are advertised so clients send blobs uncompressed, and an interrupted upload starts
   again from the beginning. Clients fall back on their own for all of these.
