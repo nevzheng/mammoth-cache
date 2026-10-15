@@ -1,8 +1,8 @@
 # REAPI gRPC cache
 
 > [!NOTE]
-> Served today, off by default. It is tested with gRPC clients against the protocol, but
-> acceptance tests with the real Bazel, Buck2, Pants, sbt 2 and Please clients are still to come.
+> Off by default. Acceptance tests build with real Bazel (7, 8 and 9, also over `grpcs://`) and
+> Buck2. The Pants, sbt 2 and Please settings below are not tested against those clients yet.
 
 mammoth-cache serves the cache half of the
 [Remote Execution API](https://github.com/bazelbuild/remote-apis) (REAPI v2) over gRPC:
