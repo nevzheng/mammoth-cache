@@ -17,10 +17,9 @@ docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:0.1.0
 ```
 
 The image runs as a non-root user on a distroless base, and listens on port 5071 over IPv4 and IPv6.
-Every change to `main` also publishes an `edge` image, the pre-release option: it changes with every
-merge, so pin a `sha-<commit>` tag if you need the same build twice.
-
-To build the image yourself from a clone of the repository:
+Release candidates are published the same way, tagged `<version>-rc.N`; `:latest` skips them.
+Nothing is published from `main` between releases. For a newer build, build the image yourself
+from a clone of the repository:
 
 ```sh
 git clone https://github.com/nevzheng/mammoth-cache.git

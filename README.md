@@ -11,9 +11,9 @@ distributing and supporting after December 31, 2026: same `/cache/` path, same p
 `/ping` health check, and no Develocity. One static binary, a few lines of config and a load
 balancer, and your builds keep their cache.
 
-> Early stage: 0.1.0 is the first tagged release, with versioned images and binaries; `main` and
-> the `edge` image are what we test between releases. Still pre-alpha, with no compatibility
-> promises before 1.0. Deploy at your own judgment.
+> Early stage: 0.1.0 is the first tagged release, with versioned images and binaries. Only
+> releases and release candidates are published; anything newer is built from source. Still
+> pre-alpha, with no compatibility promises before 1.0. Deploy at your own judgment.
 
 ## What it is
 
