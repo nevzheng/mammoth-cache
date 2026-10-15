@@ -213,8 +213,18 @@ impl Authenticator {
         &self,
         credentials: Option<Credentials<'_>>,
     ) -> Result<Principal, InvalidCredentials> {
+        // With no users and everything open to anonymous clients, no credentials could ever match,
+        // and refusing them would break clients that keep credentials configured, as Build Cache
+        // Node migrants and Bazel URLs with user:pass often do. They are ignored instead.
+        let open = self.users.is_empty() && self.anonymous == Scopes::ALL;
         let user = match credentials {
             None => {
+                return Ok(Principal {
+                    user: None,
+                    scopes: self.anonymous,
+                });
+            }
+            Some(_) if open => {
                 return Ok(Principal {
                     user: None,
                     scopes: self.anonymous,
@@ -321,6 +331,26 @@ mod tests {
             .unwrap();
         assert_eq!(dev.user.as_deref(), Some("dev"));
         assert!(!dev.scopes.contains(Scope::CacheWrite));
+    }
+
+    #[test]
+    fn an_open_node_ignores_credentials() {
+        let open = Authenticator::open();
+        for creds in [
+            Credentials::Basic {
+                user: "ci",
+                token: "secret",
+            },
+            Credentials::Bearer { token: "secret" },
+        ] {
+            let principal = open.authenticate(Some(creds)).unwrap();
+            assert_eq!(principal.name(), "anonymous");
+            assert_eq!(principal.scopes, Scopes::ALL);
+        }
+        // An empty `[auth]` table opens nothing, so credentials are still refused there.
+        let closed = Authenticator::new(Scopes::default(), [], false);
+        let creds = Credentials::Bearer { token: "secret" };
+        assert_eq!(closed.authenticate(Some(creds)), Err(InvalidCredentials));
     }
 
     #[test]
