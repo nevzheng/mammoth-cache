@@ -1,8 +1,10 @@
 """Contract edge cases found by reading the code against the OpenAPI files, pinned as fixed tests.
 
-The model test explores at random; these are the cases worth running every time. Known bugs are
-strict xfails, so the PR that fixes one has to remove its marker. Duplicate-store draining and
-racing writers are covered in test_gradle.py and test_bazel.py.
+The model test explores at random; these are the cases worth running every time. A case that finds
+a bug lands with the fix, or with the behaviour specified as it is; never as an xfail. A protocol
+that is off answering like an unknown route is pinned in crates/mammoth-cache/tests/routes.rs, since
+every Compose node has Bazel on. Duplicate-store draining and racing writers are covered in
+test_gradle.py and test_bazel.py.
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ import httpx
 import pytest
 
 from mammoth_e2e import blobs
-from mammoth_e2e.target import Feature
 
 if TYPE_CHECKING:
     from mammoth_e2e.client import CacheClient
@@ -42,21 +43,6 @@ def test_maven_options_needs_no_credentials(target: Target, live: Stack | None) 
         pytest.skip("anonymous can read on this target, so the case does not arise")
     response = httpx.request("OPTIONS", target.url(f"/maven/{blobs.maven_path()}"))
     assert response.status_code == 204
-
-
-@pytest.mark.requires("auth")
-@pytest.mark.xfail(
-    strict=True, reason="auth runs before routing, so a disabled protocol answers 401 (0012)"
-)
-def test_disabled_bazel_looks_like_an_unknown_route(target: Target, live: Stack | None) -> None:
-    """A scanner must not be able to tell a protocol that is off from one that doesn't exist."""
-    del live
-    if target.has(Feature.BAZEL):
-        pytest.skip("Bazel is on for this target")
-    digest = hashlib.sha256(uuid.uuid4().bytes).hexdigest()
-    unknown = httpx.get(target.url(f"/nowhere/{digest}"))
-    disabled = httpx.get(target.url(f"/bazel/ac/{digest}"))
-    assert (disabled.status_code, disabled.json()) == (unknown.status_code, unknown.json())
 
 
 @pytest.mark.requires("bazel")

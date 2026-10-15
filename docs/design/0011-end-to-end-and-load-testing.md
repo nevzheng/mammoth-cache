@@ -226,8 +226,9 @@ scenario table, runs it for Gradle, Maven and Bazel (doc 0012), and moves onto t
 Tests that need a server feature that is not built yet carry `@pytest.mark.requires(...)` naming
 it (`config`, `auth`, `disk`, `bucket`, `bazel`). The target profile lists the features it
 has, and the tests for missing ones skip. The PR that builds a feature turns it on in
-`targets/compose.toml`, so its tests start running in that PR. Known bugs are `xfail(strict=True)`
-with the reason, so the fix turns them into a failure that asks for the marker to go.
+`targets/compose.toml`, so its tests start running in that PR. A test that finds a bug lands with
+the fix, or specifies the behaviour as it is; never commit xfail or known-broken tests, nor skip a
+test to get past a bug.
 
 ### Load and traffic simulation
 

@@ -152,7 +152,8 @@ asks `FindMissingBlobs` about thousands of digests, checks `QueryWriteStatus`, s
 output directories (`Tree` blobs), and switches instance names. On a stack the harness controls,
 `test_evicted_output_is_a_miss` removes an output from every tier and checks the result becomes a
 miss. Its gRPC stubs are generated from `third_party/proto` into the harness cache on first use.
-`test_edges.py` pins contract edge cases; known bugs there are strict xfails.
+`test_edges.py` pins contract edge cases. A test that finds a bug lands with the fix, or specifies
+the behaviour as it is; never commit xfail or known-broken tests, nor skip a test to get past a bug.
 
 `MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40), and
 `MAMMOTH_E2E_CHAOS_EXAMPLES` the restart and outage machine (default 6).
