@@ -1,0 +1,66 @@
+name: coverage
+
+# Line coverage of the Rust tests (`bazel coverage`), shown in the run's summary and uploaded as an
+# LCOV file and an HTML report. Report-only: no threshold, and not a required check, so a plain
+# path filter is enough.
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - MODULE.bazel
+      - "**/BUILD.bazel"
+      - .bazelrc
+      - .bazelversion
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      # Files the integration tests embed (see bazel.yml).
+      - api/openapi/**
+      - docs/design/0004-metrics.md
+      - docs/design/0017-errors.md
+      - docs/user/configuration.md
+      - docs/user/mammoth.example.toml
+      - docs/user/metrics.md
+      - rust-toolchain.toml
+      - scripts/coverage-summary.py
+      - .github/workflows/coverage.yml
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          # Its own disk cache: instrumented builds share no actions with bazel.yml's.
+          disk-cache: ${{ github.workflow }}
+          repository-cache: |
+            - MODULE.bazel
+            - Cargo.lock
+          cache-save: ${{ github.event_name != 'pull_request' }}
+      - run: bazel coverage --config=ci //crates/...
+      - name: Summarize
+        run: |
+          mkdir -p "$RUNNER_TEMP/coverage"
+          scripts/coverage-summary.py bazel-out/_coverage/_coverage_report.dat \
+            --lcov "$RUNNER_TEMP/coverage/lcov.info" >> "$GITHUB_STEP_SUMMARY"
+      - name: HTML report
+        run: |
+          sudo apt-get install --yes --no-install-recommends lcov
+          genhtml --quiet \
+            --output-directory "$RUNNER_TEMP/coverage/html" "$RUNNER_TEMP/coverage/lcov.info"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: ${{ runner.temp }}/coverage
