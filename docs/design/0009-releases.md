@@ -10,8 +10,9 @@ Releases are cut by merging a release PR. On every push to main, release-plz ope
 that bumps the version and writes `CHANGELOG.md` from the Conventional Commit titles merged since
 the last release. Merging it tags `vX.Y.Z` and creates the GitHub release. The tag starts a build
 that attaches static Linux binaries (amd64, arm64) and a macOS arm64 binary to the release, and
-pushes a multi-arch image built from those same binaries to `ghcr.io/nevzheng/mammoth-cache`. Every
-push to main also publishes an `edge` image. Nothing is published to crates.io.
+pushes a multi-arch image built from those same binaries to `ghcr.io/nevzheng/mammoth-cache`. There
+are two channels, stable releases and release candidates; nothing is published from main, and
+nothing to crates.io.
 
 ## Context and scope
 
@@ -37,7 +38,7 @@ maintainer configures once. Helm charts and OS packages are out of scope.
 - Container images for linux/amd64 and linux/arm64, and binaries that run on any Linux distribution.
 - The image and the downloadable binary are the same build.
 - Provenance a user can check: checksums, and build attestations for binaries and images.
-- Pre-release images from main (`edge`) for people testing ahead of a release.
+- Release candidates (`X.Y.Z-rc.N`) to shake a release down before it is final.
 
 ### Non-goals
 
@@ -46,6 +47,8 @@ maintainer configures once. Helm charts and OS packages are out of scope.
 - Windows binaries, Homebrew, apt or rpm packages, and shell installers.
 - A Helm chart. It deserves its own doc once the configuration (0005) settles.
 - Long-term support branches. Fixes go into the next release.
+- Images or binaries from main (`edge`, nightlies). Anyone who wants something newer than the
+  latest release builds it from source; every published artifact is a release.
 
 ## Design objectives and constraints
 
@@ -96,8 +99,7 @@ sequenceDiagram
     M->>Main: merge feature PRs
     Main->>RP: push
     RP->>PR: open or update "chore: release vX.Y.Z"
-    Main->>Rel: push (crates changed)
-    Rel->>GHCR: image :edge, :sha-abc1234
+    Main->>Rel: push (crates changed): build and smoke-test only
     M->>PR: review CHANGELOG.md, merge
     PR->>Main: squash merge
     Main->>RP: push
@@ -129,7 +131,8 @@ what keeps the changelog readable.
 | Trigger                           | Binaries                   | Image tags                  |
 | --------------------------------- | -------------------------- | --------------------------- |
 | Tag `vX.Y.Z`                      | Attached to the release    | `X.Y.Z`, `X.Y`, `latest`    |
-| Push to main (crate changed)      | Run artifacts only         | `edge`, `sha-<commit>`      |
+| Tag `vX.Y.Z-rc.N`                 | Attached to a pre-release  | `X.Y.Z-rc.N`                |
+| Push to main (crate changed)      | Run artifacts only         | Built, not pushed           |
 | PR touching release files, manual | Run artifacts only         | Built, not pushed           |
 
 Binaries:
@@ -160,6 +163,24 @@ GitHub release is marked as a pre-release (`git_release_type = "auto"`) and the 
 `X.Y.Z-rc.N`: `X.Y` and `latest` keep pointing at the last full release. The final release is the
 next release PR with the version set back to `X.Y.Z`.
 
+### Cutting a release
+
+The maintainer's checklist, for 0.1.0 and after:
+
+1. Check `main` is green. release-plz keeps the release PR up to date on every push.
+2. In the release PR, set the version to `X.Y.Z-rc.1` in `Cargo.toml` and the `CHANGELOG.md`
+   heading, then merge it. Wait for `release.yml` on the tag: smoke tests green, binaries,
+   `SHA256SUMS` and the image published.
+3. Check the artifacts: `gh attestation verify` on a tarball and the image, and an anonymous
+   `docker pull` of the rc tag.
+4. Run the rc where it will be used: real Gradle, Maven and Bazel builds against it, and the
+   quickstart and migration pages followed on a clean machine. A fix found here merges to main and
+   ships as `rc.2`.
+5. When an rc is clean, merge the next release PR with the version `X.Y.Z` and repeat step 3 for
+   it. Release-specific docs (such as pinned versions in the quickstart) merge just before it.
+
+A patch release with only small fixes can skip the rc: merge the release PR as proposed.
+
 ### Verification
 
 - Before anything is published, `scripts/smoke-test.sh` runs each binary on its own runner and the
@@ -182,10 +203,13 @@ the token owner as author. `release.yml` itself only needs `GITHUB_TOKEN`.
 
 The maintainer does this once:
 
-1. Run `scripts/setup-release-token.sh`. It opens the token form prefilled with Contents and Pull
+1. Run `scripts/setup-release.sh`. It opens the token form prefilled with Contents and Pull
    requests read and write; pick this repository under _Repository access_, generate the token, and
-   paste it at the prompt. The script stores it with `gh secret set RELEASE_PLZ_TOKEN`.
-2. Rerun the script when the token expires (it is created for a year).
+   paste it at the prompt. The script stores it with `gh secret set RELEASE_PLZ_TOKEN`, then turns
+   on immutable releases (a published release's assets and tag can't change) and adds a "Release
+   tags" ruleset so `v*` tags can't be moved or deleted, with a bypass for admins. Each step is
+   skipped if already done.
+2. When the token expires (it is created for a year), run `RENEW=1 scripts/setup-release.sh`.
 3. After the first image push, make the package public in its settings at
    <https://github.com/users/nevzheng/packages/container/mammoth-cache/settings>. New packages start
    private, and there's no API to change that.

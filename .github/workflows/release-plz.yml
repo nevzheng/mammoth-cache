@@ -28,7 +28,7 @@ jobs:
           TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "::warning::RELEASE_PLZ_TOKEN is not set, skipping; run scripts/setup-release-token.sh"
+            echo "::warning::RELEASE_PLZ_TOKEN is not set, skipping; run scripts/setup-release.sh"
             echo "set=false" >> "$GITHUB_OUTPUT"
           else
             echo "set=true" >> "$GITHUB_OUTPUT"

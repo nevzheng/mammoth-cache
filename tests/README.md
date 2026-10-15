@@ -46,7 +46,7 @@ uv run pytest acceptance/test_bazel_grpc*.py --bazel 9   # Bazel over grpc:// (R
 uv run pytest acceptance/test_buck2.py --buck2 latest  # or a dated release, e.g. 2026-10-01
 ```
 
-`MAMMOTH_IMAGE=ghcr.io/nevzheng/mammoth-cache:edge` tests a published image instead.
+`MAMMOTH_IMAGE=ghcr.io/nevzheng/mammoth-cache:<version>` tests a released image instead.
 `--keep-stack` leaves the stack running afterwards; `docker compose -p mammoth-e2e -f
 ../deploy/compose/compose.yaml --profile observe up -d` adds Grafana on port 3000.
 

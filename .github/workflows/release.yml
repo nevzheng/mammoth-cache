@@ -3,9 +3,9 @@ name: release
 # Release binaries and the container image.
 #
 # - Tag `v*` (pushed by release-plz): attach binaries and SHA256SUMS to the GitHub release, and push
-#   the image as `X.Y.Z`, `X.Y` and `latest`.
-# - Push to main: push the image as `edge` and `sha-<commit>`. Binaries stay as run artifacts.
-# - Pull request touching release files, or a manual run: build everything, publish nothing.
+#   the image as `X.Y.Z`, plus `X.Y` and `latest` for a full release (not for `-rc.N`).
+# - Push to main, a pull request touching release files, or a manual run: build and smoke-test
+#   everything, publish nothing. There are no images from main; build your own to test ahead.
 #
 # Binaries are built natively on amd64, arm64 and macOS runners (no QEMU). See
 # docs/design/0009-releases.md.
@@ -43,8 +43,8 @@ env:
   # The commit, as `revision` on `mammoth_build_info`.
   MAMMOTH_REVISION: ${{ github.sha }}
   IMAGE: ghcr.io/${{ github.repository }}
-  # Publish only from pushes to this repository: main (edge) or a tag (release).
-  PUBLISH: ${{ github.event_name == 'push' && github.repository == 'nevzheng/mammoth-cache' }}
+  # Publish only from release tags pushed to this repository.
+  PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'nevzheng/mammoth-cache' }}
 
 jobs:
   binaries:
@@ -183,8 +183,6 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=edge,branch=main
-            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
