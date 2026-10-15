@@ -46,8 +46,9 @@ build --remote_header=Authorization=Bearer <token>
 A `--credential_helper` works as well. Leave `--remote_cache_compression` off: the node advertises
 no compressors yet, so there is nothing for the flag to use. `--remote_download_minimal` (build
 without the bytes) is safe: the node answers an action result as a miss when any output it lists has
-been evicted, including any file inside an output directory (one whose `Tree` does not decode, or is
-over 4 MiB, tens of thousands of files, is not checked).
+been evicted, including any file inside an output directory. Each distinct `Tree` is read once, and
+a lookup reads at most 4 MiB of trees and checks at most 10,000 distinct files in them; a tree past
+either, or one that does not decode, is present but its files are not checked.
 
 Unlike the HTTP cache, Bazel fails the build when it cannot reach a gRPC cache or its token is
 refused ("Failed to query remote execution capabilities"), so keep the node behind a load balancer
@@ -153,6 +154,8 @@ executor is configured to use mammoth-cache as its CAS backend.
   only very many small blobs reach), is refused whole with `INVALID_ARGUMENT` and reason
   `BATCH_TOO_LARGE`. A message past what the node decodes at all (8 MiB for batches, 4.25 MiB for
   `ByteStream`) gets `RESOURCE_EXHAUSTED` with reason `MESSAGE_TOO_LARGE`.
+- **Action results.** An `UpdateActionResult` whose result encodes to more than 4.25 MiB, which
+  could never be sent back, gets `INVALID_ARGUMENT` with reason `ENTRY_TOO_LARGE`.
 - **Existence checks.** One `FindMissingBlobs` call may ask about 10,000 digests; more get
   `INVALID_ARGUMENT` with reason `TOO_MANY_DIGESTS`. Each digest not on the node costs a bucket
   `HEAD`.
