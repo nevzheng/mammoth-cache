@@ -142,14 +142,8 @@ docker run --rm -p 5071:5071 mammoth-cache:dev
 
 ## Local checks
 
-Git hooks run the formatters and linters before each commit. Install
-[prek](https://prek.j178.dev) (or [pre-commit](https://pre-commit.com)) and enable the hooks once:
-
-```sh
-prek install
-```
-
-CI runs these checks on every pull request, with warnings treated as errors:
+There are no Git hooks: CI runs the checks below on pull requests, with warnings treated as
+errors, and skips the ones the changed files can't affect. Run the relevant ones before pushing:
 
 ```sh
 bazel test --config=ci --config=lint //...   # build, test, clippy, rustfmt, ruff, pyrefly
@@ -161,6 +155,7 @@ cargo nextest run --workspace --locked --no-default-features --features jemalloc
 cargo +1.91 check --workspace --locked   # MSRV
 cargo deny check                         # licenses, advisories, sources
 rumdl check .
+actionlint                               # workflow files
 ```
 
 ## Documentation

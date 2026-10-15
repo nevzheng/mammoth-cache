@@ -175,8 +175,7 @@ test fails, the harness attaches the recent logs of every service to the report.
 
 ### Python practice
 
-The harness follows current Python practice. Every tool below runs in CI and in the repository's
-prek hooks.
+The harness follows current Python practice. Every tool below runs in CI.
 
 | Concern          | Choice                                                                                                                 |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |

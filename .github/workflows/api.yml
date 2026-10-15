@@ -1,9 +1,16 @@
 name: api
 
+# Not a required check, so a plain path filter is enough.
 on:
   push:
     branches: [main]
+    paths: &paths
+      - api/**
+      - buf.yaml
+      - buf.lock
+      - .github/workflows/api.yml
   pull_request:
+    paths: *paths
 
 permissions:
   contents: read

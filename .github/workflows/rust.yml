@@ -22,9 +22,55 @@ env:
 # These Cargo jobs cover only what the Bazel build doesn't: the generated REAPI code, the allocators
 # other than the default, the minimum supported Rust version and cargo-deny.
 jobs:
+  # Path filters live here, not under `on:`, because the main ruleset requires `msrv` and `deny`: a
+  # job skipped by its `if` reports success, while a workflow skipped by `paths` reports nothing and
+  # leaves the pull request waiting. Pushes to main run everything.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      codegen: ${{ steps.filter.outputs.codegen }}
+      deny: ${{ steps.filter.outputs.deny }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - Cargo.toml
+              - Cargo.lock
+              - crates/**
+              - rust-toolchain.toml
+              - rustfmt.toml
+              - clippy.toml
+              - .github/workflows/rust.yml
+              # Files the integration tests embed with include_str! (see docs/BUILD.bazel).
+              - api/openapi/**
+              - docs/design/0004-metrics.md
+              - docs/design/0017-errors.md
+              - docs/user/configuration.md
+              - docs/user/mammoth.example.toml
+              - docs/user/metrics.md
+            codegen:
+              - third_party/proto/**
+              - scripts/reapi-codegen/**
+              - crates/mammoth-cache/src/reapi/proto/**
+              - rust-toolchain.toml
+              - .github/workflows/rust.yml
+            deny:
+              - "**/Cargo.toml"
+              - "**/Cargo.lock"
+              - deny.toml
+              - .github/workflows/rust.yml
+
   # The REAPI code in src/reapi/proto/ is generated and checked in. Regenerate it from the vendored
   # protos and fail on any difference, so the protos, the generator and the code cannot drift.
   reapi-codegen:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.codegen == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,6 +91,8 @@ jobs:
 
   # Bazel builds the default allocator, mimalloc; check the others still lint, build and pass.
   allocators:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -61,6 +109,8 @@ jobs:
       - run: cargo nextest run --workspace --locked ${{ matrix.features }}
 
   msrv:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,6 +120,8 @@ jobs:
       - run: cargo +1.91 check --workspace --locked
 
   deny:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.deny == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

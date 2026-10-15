@@ -15,9 +15,52 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Path filters live here, not under `on:`, because the main ruleset requires `fmt`, `clippy` and
+  # `test`: a job skipped by its `if` reports success, while a workflow skipped by `paths` reports
+  # nothing and leaves the pull request waiting. Pushes to main run everything (and save the caches).
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      bazel: ${{ steps.filter.outputs.bazel }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            bazel:
+              - MODULE.bazel
+              - "**/BUILD.bazel"
+              - "**/*.bzl"
+              - .bazelrc
+              - .bazelversion
+              - .bazelignore
+              - Cargo.toml
+              - Cargo.lock
+              - crates/**
+              - third_party/**
+              - tests/**
+              - rust-toolchain.toml
+              - rustfmt.toml
+              - clippy.toml
+              - scripts/check-toolchain-sync.sh
+              - .github/workflows/bazel.yml
+              # Files the integration tests embed (the filegroups in docs/BUILD.bazel and
+              # api/openapi/BUILD.bazel).
+              - api/openapi/**
+              - docs/design/0004-metrics.md
+              - docs/design/0017-errors.md
+              - docs/user/configuration.md
+              - docs/user/mammoth.example.toml
+              - docs/user/metrics.md
+
   # Builds and tests every target with clippy and rustfmt applied, warnings as errors. That includes
   # ruff and pyrefly over the Python suites; the suites themselves run in e2e.yml and acceptance.yml.
   bazel-test:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.bazel == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +88,8 @@ jobs:
   # BUILD/MODULE formatting, the Rust version shared with rust-toolchain.toml, and tests/uv.lock
   # matching tests/pyproject.toml (Bazel reads the lock, so a stale one would go unnoticed).
   bazel-lint:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.bazel == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +107,8 @@ jobs:
   # Cargo. These run the same checks with Bazel under those names; they go once the ruleset requires
   # bazel-test and bazel-lint instead. They restore bazel-test's Linux cache and never save one.
   fmt:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.bazel == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,6 +122,8 @@ jobs:
           --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect --output_groups=rustfmt_checks
 
   clippy:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.bazel == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,6 +141,8 @@ jobs:
           --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect --output_groups=clippy_checks
 
   test:
+    needs: changes
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.changes.outputs.bazel == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
