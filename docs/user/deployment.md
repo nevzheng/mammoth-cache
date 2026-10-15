@@ -96,8 +96,8 @@ endpoint and, on a cloud, for its credential endpoints.
 
 On Kubernetes, terminate TLS at the ingress or load balancer and serve plain HTTP to the pods. Serve
 the cache on its own host, such as `cache.example.com`, rather than under a path prefix: routes are
-fixed at `/cache/` and `/maven/`. With authentication on and no `[tls]`, the node logs a warning at
-startup as a reminder that tokens must not cross the network in clear.
+fixed at `/cache/`, `/maven/` and `/bazel/`. With authentication on and no `[tls]`, the node logs a
+warning at startup as a reminder that tokens must not cross the network in clear.
 
 ### TLS on the node
 

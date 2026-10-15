@@ -85,7 +85,7 @@ curl http://localhost:5071/v1/serverStatus
 ```json
 {
   "name": "serverStatus",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "uptime": "1.052595108s",
   "hitCount": "1",
   "missCount": "1",
