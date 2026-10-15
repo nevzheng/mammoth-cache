@@ -72,6 +72,37 @@ def test_access_follows_scopes(target: Target, live: Stack | None, contracts: Co
     run_state_machine_as_test(Machine, settings=SETTINGS)
 
 
+@pytest.mark.requires("disk", "bucket")
+def test_eviction_loses_nothing(target: Target, live: Stack | None, contracts: Contracts) -> None:
+    """The dictionary model on `mammoth-evicting` (deploy/compose/config/evicting.toml), whose 1 MiB
+    of memory and 2 MiB of disk hold a few entries in front of the bucket.
+
+    The sequences evict entries from memory and disk and read them back from the bucket, and its
+    stores wait for the upload, so the model holds as it is: every stored key hits with its bytes,
+    and nothing comes back wrong.
+    """
+    del live
+    if "evicting" not in target.topologies:
+        pytest.skip(f"target {target.name!r} has no evicting node")
+    # Anonymous requests may read and write there, as on the other topology nodes.
+    node = target.model_copy(
+        update={
+            "base_url": target.topologies["evicting"],
+            "users": {},
+            "anonymous_scopes": frozenset(),
+            "features": target.features - {Feature.AUTH, Feature.REAPI},
+        }
+    )
+
+    class Machine(CacheModel):
+        pass
+
+    Machine.target, Machine.contracts = node, contracts
+    Machine.owner = full_access(node)
+    Machine.protocols = enabled(node)
+    run_state_machine_as_test(Machine, settings=SETTINGS)
+
+
 @pytest.mark.requires("disk")
 @pytest.mark.control
 def test_restarts_and_bucket_outages_lose_nothing(

@@ -139,7 +139,10 @@ store changes nothing; give users their `scopes` and set `anonymous_scopes` in t
 `test_model.py` also checks that counters never go down, that `mammoth_http_requests_total` moved by
 exactly the requests each sequence sent, and that every hit, miss, store and refusal moved
 `mammoth_cache_lookups_total`, `mammoth_cache_stores_total` or `mammoth_auth_failures_total` once,
-with the right label. Nothing else may send cache requests to the node during the run. On a stack
+with the right label. Nothing else may send cache requests to the node during the run. The same
+machine runs against `mammoth-evicting` (5080), whose 1 MiB of memory and 2 MiB of disk keep
+evicting entries in front of a bucket written with `write = "sync"`: every stored key must still
+hit with its bytes. On a stack
 the harness controls, a third machine restarts the node and stops the bucket at random; with a disk,
 nothing the model holds may be lost and nothing may answer 5xx. `test_races.py` races concurrent
 stores of one key (an immutable key keeps the body whose store answered `201`, a mutable one ends

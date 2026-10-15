@@ -140,6 +140,9 @@ flowchart LR
 - **mammoth-memory**, **mammoth-memory-disk** and **mammoth-memory-bucket** run the tier topologies
   other than the full one, so every topology the config allows gets the same round-trip, size-limit
   and restart checks.
+- **mammoth-evicting** has 1 MiB of memory and 2 MiB of disk in front of the bucket, written with
+  `write = "sync"`, so the property suite's dictionary model runs while entries keep being evicted
+  and read back from the bucket.
 - **nginx** fronts `mammoth-proxied`, a node whose entry limit is 128 MiB, on two ports: 8080 with
   the settings the deployment guide gives (`client_max_body_size 0`, no request buffering, 300 s
   timeouts) and 8081 on nginx's defaults. It checks the proxy settings from
