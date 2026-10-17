@@ -7,7 +7,8 @@ Cache Node, which reaches end of life after December 31, 2026: same `/cache/` pa
 builds keep their cache.
 
 > [!NOTE]
-> Early stage: there is no tagged release yet, and `main` and the `edge` image are what we test.
+> Early stage: 0.1.0 is the first tagged release. Only releases and release candidates are
+> published; anything newer is built from source.
 > They serve Gradle, Maven and (off by default) Bazel builds from memory, disk and an optional
 > bucket, with token authentication, graceful shutdown and optional TLS; part of the metrics catalog
 > is still being wired up. Deploy at your own judgment. See

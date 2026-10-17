@@ -24,6 +24,7 @@ body:
     id: version
     attributes:
       label: mammoth-cache version or commit
+      description: The output of `mammoth --version`, or the image tag.
     validations:
       required: true
   - type: input

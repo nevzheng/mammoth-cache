@@ -11,8 +11,9 @@ distributing and supporting after December 31, 2026: same `/cache/` path, same p
 `/ping` health check, and no Develocity. One static binary, a few lines of config and a load
 balancer, and your builds keep their cache.
 
-> Early stage: there is no tagged release yet, and `main` and the `edge` image are what we test.
-> Everything below marked "today" works there. Deploy at your own judgment.
+> Early stage: 0.1.0 is the first tagged release, with versioned images and binaries. Only
+> releases and release candidates are published; anything newer is built from source. Still
+> pre-alpha, with no compatibility promises before 1.0. Deploy at your own judgment.
 
 ## What it is
 
@@ -46,15 +47,15 @@ for a few stateless nodes behind a load balancer rather than one JVM with a web 
   no web UI. TLS at the ingress by default, or on the node with two lines of config.
 - **Honest about failure.** A full disk or a dead bucket costs misses, never errors: Gradle keeps
   its cache on. `SIGTERM` drains the node out of rotation before it exits.
-- **Observable.** Prometheus metrics with a documented catalog, `/livez` and `/readyz`, and a
-  `serverStatus` admin API.
+- **Observable.** Prometheus metrics with a documented catalog, JSON logs with a per-request
+  access log, `/livez` and `/readyz`, and a `serverStatus` admin API.
 - **Open.** MIT or Apache-2.0, every design decision written down in
   [docs/design](docs/design/README.md).
 
 ## Quickstart
 
 ```sh
-docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:edge
+docker run --rm -p 5071:5071 ghcr.io/nevzheng/mammoth-cache:0.1.0
 curl http://localhost:5071/ping   # SUCCESS
 ```
 
@@ -93,8 +94,9 @@ and [deployment guide](docs/user/deployment.md) take it from there.
 | `mammoth.toml`, users, tokens and scopes               | Done                               |
 | Graceful shutdown, readiness checks, timeouts          | Done                               |
 | Optional built-in TLS with certificate reload          | Done                               |
-| Prometheus metrics                                     | Core metrics; the rest landing     |
-| Release binaries and versioned images                  | Pipeline ready; first release soon |
+| Prometheus metrics                                     | Catalog done, one gauge pending    |
+| JSON logs and access log                               | Done                               |
+| Release binaries and versioned images                  | Done; checksums and attestations   |
 
 Details per feature are in the [user guide](docs/user/README.md#feature-status).
 
