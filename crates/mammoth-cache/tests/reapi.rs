@@ -234,6 +234,12 @@ async fn execution_is_not_served() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), Code::Unimplemented);
+    let info = info(&err);
+    assert_eq!(info.reason, "METHOD_NOT_SUPPORTED");
+    assert_eq!(
+        info.metadata["method"],
+        "/build.bazel.remote.execution.v2.ContentAddressableStorage/GetTree"
+    );
 }
 
 #[tokio::test]
@@ -1424,6 +1430,183 @@ async fn oversized_batch_uploads_are_refused_whole() {
     let err = update(vec![vec![3_u8; 9 << 20]]).await.unwrap_err();
     assert_eq!(err.code(), Code::ResourceExhausted);
     assert_eq!(reason(&err), "MESSAGE_TOO_LARGE");
+}
+
+/// A `Tree` of one directory holding `files`, encoded.
+fn tree_of(files: Vec<FileNode>) -> Vec<u8> {
+    Tree {
+        root: Some(Directory {
+            files,
+            ..Default::default()
+        }),
+        children: Vec::new(),
+    }
+    .encode_to_vec()
+}
+
+/// Stores `result` for `action`, then looks it up.
+async fn store_and_get(
+    node: &Node,
+    action: &Digest,
+    result: &ActionResult,
+) -> Result<ActionResult, Status> {
+    node.ac()
+        .update_action_result(UpdateActionResultRequest {
+            action_digest: Some(action.clone()),
+            action_result: Some(result.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    node.ac()
+        .get_action_result(GetActionResultRequest {
+            action_digest: Some(action.clone()),
+            ..Default::default()
+        })
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+fn output_directory(tree: &[u8]) -> OutputDirectory {
+    OutputDirectory {
+        path: "out".to_owned(),
+        tree_digest: Some(digest_of(tree)),
+        ..Default::default()
+    }
+}
+
+/// Many output directories with one tree read and check it once: a large tree listed hundreds of
+/// times does not use up the call's budget, so a later tree is still checked.
+#[tokio::test]
+async fn a_tree_listed_many_times_is_checked_once() {
+    let node = Node::with(16 << 20, settings()).await;
+    // About 1.5 MiB: listed three times over, it would pass the 4 MiB the call reads.
+    let shared = tree_of(
+        (0..1500)
+            .map(|i| FileNode {
+                name: format!("{i:01000}"),
+                digest: Some(digest_of(b"shared file")),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    let last = tree_of(vec![FileNode {
+        name: "f".to_owned(),
+        digest: Some(digest_of(b"evicted file")),
+        ..Default::default()
+    }]);
+    upload(&node, &[&shared]).await;
+    upload(&node, &[&last, b"shared file"]).await;
+    let mut directories = vec![output_directory(&shared); 300];
+    directories.push(output_directory(&last));
+    let result = ActionResult {
+        output_directories: directories,
+        ..Default::default()
+    };
+    let action = digest_of(b"many directories");
+    let err = store_and_get(&node, &action, &result).await.unwrap_err();
+    assert_eq!(err.code(), Code::NotFound, "the last tree went unchecked");
+
+    upload(&node, &[b"evicted file"]).await;
+    assert_eq!(
+        store_and_get(&node, &action, &result).await.unwrap(),
+        result
+    );
+}
+
+/// A tree past what one lookup reads or checks is trusted, as a single large one is: its files
+/// are not looked for, and the result is a hit.
+#[tokio::test]
+async fn trees_past_the_budget_are_not_checked() {
+    let node = Node::with(16 << 20, settings()).await;
+    let file = |name: String, data: &[u8]| FileNode {
+        name,
+        digest: Some(digest_of(data)),
+        ..Default::default()
+    };
+    // 3 MiB read, then 2 MiB more would pass the 4 MiB the call reads.
+    let first = tree_of(
+        (0..3072)
+            .map(|i| file(format!("{i:01000}"), b"present"))
+            .collect(),
+    );
+    let second = tree_of(
+        (0..2048)
+            .map(|i| file(format!("{i:01000}"), b"never stored"))
+            .collect(),
+    );
+    upload(&node, &[&first, b"present"]).await;
+    upload(&node, &[&second]).await;
+    let result = ActionResult {
+        output_directories: vec![output_directory(&first), output_directory(&second)],
+        ..Default::default()
+    };
+    let got = store_and_get(&node, &digest_of(b"past the bytes"), &result).await;
+    assert_eq!(got.unwrap(), result);
+
+    // More distinct files than one lookup checks, none of them stored.
+    let many = tree_of(
+        (0..10_001_u32)
+            .map(|i| file(i.to_string(), &i.to_le_bytes()))
+            .collect(),
+    );
+    upload(&node, &[&many]).await;
+    let result = ActionResult {
+        output_directories: vec![output_directory(&many)],
+        ..Default::default()
+    };
+    let got = store_and_get(&node, &digest_of(b"past the files"), &result).await;
+    assert_eq!(got.unwrap(), result);
+}
+
+/// An output directory without a tree is stored, as the client sent it, but cannot be laid out,
+/// so the result is a miss rather than a failed call.
+#[tokio::test]
+async fn a_directory_without_a_tree_is_a_miss() {
+    let node = Node::open().await;
+    let result = ActionResult {
+        output_directories: vec![OutputDirectory {
+            path: "out".to_owned(),
+            tree_digest: None,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let err = store_and_get(&node, &digest_of(b"treeless"), &result)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    assert_eq!(reason(&err), "ENTRY_NOT_FOUND");
+}
+
+/// An action result too large to send back is refused when stored, not kept as a miss.
+#[tokio::test]
+async fn action_results_past_a_message_are_refused() {
+    let node = Node::with(16 << 20, settings()).await;
+    let result = ActionResult {
+        output_files: vec![OutputFile {
+            path: "p".repeat(5 << 20),
+            digest: Some(digest_of(b"")),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let err = node
+        .ac()
+        .update_action_result(UpdateActionResultRequest {
+            action_digest: Some(digest_of(b"huge update")),
+            action_result: Some(result),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::InvalidArgument);
+    let info = info(&err);
+    assert_eq!(info.reason, "ENTRY_TOO_LARGE");
+    assert_eq!(
+        info.metadata["maxEntryBytes"],
+        reapi::MAX_MESSAGE_BYTES.to_string()
+    );
 }
 
 /// Unary calls whose requests trickle in cannot keep the node's buffered-call permits: one holding

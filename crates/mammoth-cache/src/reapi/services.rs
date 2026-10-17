@@ -73,10 +73,15 @@ pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 /// Digests one `FindMissingBlobs` call may ask about. Each local miss costs a bucket `HEAD`.
 const MAX_FIND_MISSING: usize = 10_000;
 
-/// The largest `Tree` read to check an action result's directory outputs, which keeps the call
-/// within its usual buffers. A larger one, which few directories need, is trusted without its
-/// files being checked.
+/// The largest `Tree` read to check an action result's directory outputs, and the most bytes of
+/// distinct trees one `GetActionResult` reads, which keeps the call within its usual buffers. A
+/// tree past either, which few results need, is trusted without its files being checked.
 const MAX_TREE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The most distinct files inside trees one `GetActionResult` checks, as many as one
+/// `FindMissingBlobs` call may ask about. A tree whose files would pass it is trusted, as a large
+/// one is.
+const MAX_TREE_FILES: usize = MAX_FIND_MISSING;
 
 /// The largest chunk sent by `ByteStream.Read`.
 const READ_CHUNK: usize = 1024 * 1024;
@@ -277,8 +282,8 @@ fn referenced_blobs(result: &ActionResult) -> Result<Vec<Blob>, Status> {
     digests.map(|d| Blob::cas(Some(d))).collect()
 }
 
-/// The files in a `Tree`, from its root and every child directory.
-fn tree_files(tree: &Tree) -> Result<Vec<Blob>, Status> {
+/// The distinct files in a `Tree`, from its root and every child directory.
+fn tree_files(tree: &Tree) -> Result<HashSet<Blob>, Status> {
     tree.root
         .iter()
         .chain(&tree.children)
@@ -329,33 +334,56 @@ impl Services {
         let Ok(result) = ActionResult::decode(data.concat().as_slice()) else {
             return Ok(Err(Unusable::Corrupt("does not decode")));
         };
+        // An output directory names its contents only through its tree; without one the client
+        // could not lay it out.
+        if result
+            .output_directories
+            .iter()
+            .any(|d| d.tree_digest.is_none())
+        {
+            return Ok(Err(Unusable::Corrupt("has a directory without a tree")));
+        }
         let Ok(outputs) = referenced_blobs(&result) else {
             return Ok(Err(Unusable::Corrupt("has bad digests")));
         };
         if !self.missing(outputs).await?.is_empty() {
             return Ok(Err(Unusable::Incomplete));
         }
-        let mut files = Vec::new();
+        // Each distinct tree is read once, and the trees read and the files checked are bounded
+        // for the whole call, however many directories the result lists: a tree past what is
+        // left is trusted, as a large one is, rather than the result being a miss on every
+        // lookup.
+        let mut trees = HashSet::new();
+        let mut tree_bytes = 0;
+        let mut files = HashSet::new();
         for directory in &result.output_directories {
             let tree = Blob::cas(directory.tree_digest.as_ref())?;
-            if tree.size > MAX_TREE_BYTES {
+            if !trees.insert(tree.clone()) {
+                continue;
+            }
+            if tree.size > MAX_TREE_BYTES - tree_bytes {
                 tracing::debug!(key = %action.key, tree = %tree.key, "tree too large to check");
                 continue;
             }
+            tree_bytes += tree.size;
             // Present a moment ago; gone now is a miss like any other.
             let Some(data) = self.read_all(&tree, false).await? else {
                 return Ok(Err(Unusable::Incomplete));
             };
             // A tree the node cannot read says nothing about eviction, and the client stored
             // it: it is present, which is all that can be checked, as for a large one.
-            match Tree::decode(data).map(|decoded| tree_files(&decoded)) {
-                Ok(Ok(inner)) => files.extend(inner),
-                _ => {
-                    tracing::debug!(key = %action.key, tree = %tree.key, "tree unreadable, not checked");
-                }
+            let Ok(Ok(inner)) = Tree::decode(data).map(|decoded| tree_files(&decoded)) else {
+                tracing::debug!(key = %action.key, tree = %tree.key, "tree unreadable, not checked");
+                continue;
+            };
+            let new = inner.difference(&files).count();
+            if new > MAX_TREE_FILES - files.len() {
+                tracing::debug!(key = %action.key, tree = %tree.key, "too many files to check");
+                continue;
             }
+            files.extend(inner);
         }
-        if !self.missing(files).await?.is_empty() {
+        if !self.missing(files.into_iter().collect()).await?.is_empty() {
             return Ok(Err(Unusable::Incomplete));
         }
         Ok(Ok((result, tier)))
@@ -403,6 +431,13 @@ impl ActionCache for Services {
             referenced_blobs(&result)?;
             let data = Bytes::from(result.encode_to_vec());
             let size = data.len() as u64;
+            // A result past a message could never be sent back, so it is refused here rather
+            // than stored to be a miss on every lookup.
+            if size > MAX_MESSAGE_BYTES as u64 {
+                access::outcome(&action.key, "too_large", None);
+                let limit = self.cache.max_entry_size().min(MAX_MESSAGE_BYTES as u64);
+                return Err(status::storage(&cache::Error::too_large(Some(size), limit)));
+            }
             self.store(
                 &action,
                 Some(size),
@@ -568,29 +603,35 @@ impl ContentAddressableStorage for Services {
         &self,
         _request: Request<GetTreeRequest>,
     ) -> Result<Response<Self::GetTreeStream>, Status> {
-        Err(unimplemented("GetTree"))
+        Err(unimplemented(CAS, "GetTree"))
     }
 
     async fn split_blob(
         &self,
         _request: Request<SplitBlobRequest>,
     ) -> Result<Response<SplitBlobResponse>, Status> {
-        Err(unimplemented("SplitBlob"))
+        Err(unimplemented(CAS, "SplitBlob"))
     }
 
     async fn splice_blob(
         &self,
         _request: Request<SpliceBlobRequest>,
     ) -> Result<Response<SpliceBlobResponse>, Status> {
-        Err(unimplemented("SpliceBlob"))
+        Err(unimplemented(CAS, "SpliceBlob"))
     }
 }
 
-fn unimplemented(method: &str) -> Status {
-    status::error(
+/// The CAS service's full name, as in a call's path.
+const CAS: &str = "build.bazel.remote.execution.v2.ContentAddressableStorage";
+
+/// `UNIMPLEMENTED` for `service`'s `method`, with the call's path as the `method` metadata.
+fn unimplemented(service: &str, method: &str) -> Status {
+    error::Status::new(
         Reason::MethodNotSupported,
         format!("{method} is not supported by this cache."),
     )
+    .with("method", format!("/{service}/{method}"))
+    .into()
 }
 
 #[tonic::async_trait]

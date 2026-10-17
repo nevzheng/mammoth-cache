@@ -181,13 +181,18 @@ On `GetActionResult` the adapter decodes the `ActionResult` (prost) and checks t
 references is in the CAS: `output_files`, `output_directories[].tree_digest`, `stdout_digest`
 and `stderr_digest`. If any is missing it answers `NOT_FOUND`, as if the action had never been
 cached, and the client runs the action. This is what bazel-remote does by default, and it is what
-makes build without the bytes safe. It is only the direct references: walking every `Tree` to every
-file would read and decode whole directory trees on every hit (see Open questions).
+makes build without the bytes safe. It also reads each output directory's `Tree` and checks the
+files in it, within a budget for the whole call so that a small result cannot make the node read
+and check without bound: each distinct tree is read once, at most 4 MiB of trees are read and at
+most 10,000 distinct files (the `FindMissingBlobs` cap) are checked. A tree past the budget, or one
+that does not decode, is trusted: it is present, and turning the result into a miss would make the
+action run again on every build.
 
 `UpdateActionResult` stores the result without checking the CAS, because clients upload outputs
-before the result and a check there costs a round trip on every write for little gain. A stored
-entry that doesn't decode as an `ActionResult` (written over HTTP by something other than Bazel) is
-logged and answered as a miss.
+before the result and a check there costs a round trip on every write for little gain. It refuses a
+result that encodes past the largest message the node sends, which could never be read back. A
+stored entry that doesn't decode as an `ActionResult` (written over HTTP by something other than
+Bazel), or lists an output directory without a tree, is logged and answered as a miss.
 
 The HTTP adapter keeps 0012's choice of not validating, because Bazel's HTTP client downloads
 outputs on every hit anyway.
