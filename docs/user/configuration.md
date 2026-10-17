@@ -104,7 +104,8 @@ accepting connections, finishes requests in flight on both ports, then finishes 
 uploads, all within `shutdown_timeout`. Connections that have not sent a request close as the drain
 starts. A second signal exits at once. Keep `shutdown_timeout` below the platform's grace period
 (30 s on Kubernetes), and `shutdown_delay` below `shutdown_timeout`; the second is checked at
-startup, and the last three must be above zero.
+startup, and `shutdown_timeout`, `idle_timeout`, `body_read_timeout` and `send_timeout` must be
+above zero.
 
 With `trusted_proxies` empty, the access log shows each connection's peer address and ignores
 `X-Forwarded-For`, which any client can send. List the load balancers and proxies in front of the
@@ -255,9 +256,9 @@ authenticates, so a token can be rotated by adding the new hash before removing 
 
 ### `[metrics]`
 
-| Key            | Type    | Default | Example | Status    | Meaning                                                  |
-| -------------- | ------- | ------- | ------- | --------- | -------------------------------------------------------- |
-| `require_auth` | boolean | `false` | `true`  | Available | Require a Bearer token with `metrics:read` on `/metrics` |
+| Key            | Type    | Default | Example | Status    | Meaning                                               |
+| -------------- | ------- | ------- | ------- | --------- | ----------------------------------------------------- |
+| `require_auth` | boolean | `false` | `true`  | Available | Require credentials with `metrics:read` on `/metrics` |
 
 ### `[log]`
 

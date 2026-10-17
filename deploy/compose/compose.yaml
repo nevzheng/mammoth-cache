@@ -27,6 +27,11 @@ x-mammoth: &mammoth
     AWS_ACCESS_KEY_ID: mammoth-e2e
     AWS_SECRET_ACCESS_KEY: mammoth-e2e-secret
     AWS_ALLOW_HTTP: "true"
+    # Only an instrumented build reads this (the coverage workflow, coverage.yml): one profile per
+    # container (%h), merged across restarts (%m) and written as the node runs (%c), so a node
+    # killed without a clean exit keeps its counts. Each node mounts /coverage for it, a throwaway
+    # volume unless MAMMOTH_COVERAGE_DIR names a host directory.
+    LLVM_PROFILE_FILE: /coverage/%h-%m%c.profraw
   restart: "no"
   depends_on:
     init:
@@ -42,6 +47,7 @@ services:
       - "${MAMMOTH_REAPI_PORT:-6011}:6011"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - mammoth-disk:/var/lib/mammoth
 
   mammoth-open:
@@ -51,12 +57,14 @@ services:
       - "${MAMMOTH_OPEN_REAPI_PORT:-6013}:6011"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-open.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - mammoth-open-disk:/var/lib/mammoth
 
   mammoth-proxied:
     <<: *mammoth
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-proxied.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - mammoth-proxied-disk:/var/lib/mammoth
 
   # Tier topologies other than the full one above: memory only, memory and disk, memory and the
@@ -67,6 +75,7 @@ services:
       - "${MAMMOTH_MEMORY_PORT:-5074}:5071"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
 
   mammoth-memory-disk:
     <<: *mammoth
@@ -74,6 +83,7 @@ services:
       - "${MAMMOTH_MEMORY_DISK_PORT:-5075}:5071"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory-disk.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - mammoth-memory-disk-disk:/var/lib/mammoth
 
   # disk.size = "max-available" on a tmpfs of a known size. tests/e2e/test_disk_sizing.py.
@@ -83,6 +93,7 @@ services:
       - "${MAMMOTH_MAX_AVAILABLE_PORT:-5077}:5071"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/max-available.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - type: tmpfs
         target: /var/lib/mammoth
         tmpfs:
@@ -95,6 +106,7 @@ services:
       - "${MAMMOTH_MEMORY_BUCKET_PORT:-5076}:5071"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory-bucket.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
 
   # Tiny memory and disk tiers in front of the bucket, so entries keep being evicted and read back.
   # tests/e2e/properties/test_model.py::test_eviction_loses_nothing.
@@ -120,6 +132,7 @@ services:
       - "${MAMMOTH_TLS_REAPI_PORT:-6012}:6011"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-tls.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - ./tls:/etc/mammoth/tls:ro
 
   # [tls] generate: writes a self-signed pair to its volume on first start and reuses it after.
@@ -130,6 +143,7 @@ services:
       - "${MAMMOTH_TLS_GENERATED_PORT:-5079}:5071"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth-tls-generated.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - mammoth-tls-generated-disk:/var/lib/mammoth
 
   nginx:
@@ -149,6 +163,7 @@ services:
       - "${MAMMOTH_2_PORT:-5072}:5071"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/mammoth.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - mammoth-2-disk:/var/lib/mammoth
 
   seaweedfs:
@@ -228,3 +243,4 @@ volumes:
   mammoth-memory-disk-disk:
   mammoth-2-disk:
   mammoth-tls-generated-disk:
+  mammoth-coverage:

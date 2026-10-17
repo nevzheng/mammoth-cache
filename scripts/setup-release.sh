@@ -3,6 +3,7 @@
 #
 # 1. Creates the fine-grained token release-plz needs and stores it as RELEASE_PLZ_TOKEN.
 # 2. Turns on immutable releases, so a published release's assets and tag can't be changed.
+#    release.yml uploads the assets while the release is still a draft, then publishes it.
 # 3. Adds a tag ruleset on v*, so a version tag can't be moved or deleted (admins can bypass).
 #
 # Each step is skipped if it is already done, so rerun it when the token expires.

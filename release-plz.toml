@@ -13,6 +13,10 @@ git_tag_name = "v{{ version }}"
 pr_name = "chore: release v{{ version }}"
 # A version with a pre-release part (0.1.0-rc.1) makes a GitHub pre-release; others a full release.
 git_release_type = "auto"
+# Create the GitHub release as a draft. release-plz still creates the tag first, through the API and
+# before the release, and the tag push starts release.yml, which attaches the binaries and then
+# publishes the release. A published immutable release refuses new assets.
+git_release_draft = true
 
 [[package]]
 name = "mammoth-cache"

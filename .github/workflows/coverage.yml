@@ -1,0 +1,146 @@
+name: coverage
+
+# Line coverage of the server from the Rust tests (`bazel coverage`) and from the E2E suite run
+# against an instrumented server, summed into one report: a table in the run's summary, and an
+# LCOV file per suite, the merged one and an HTML report in the `coverage` artifact. Report-only:
+# no threshold, and not a required check, so a plain path filter is enough.
+on:
+  push:
+    branches: [main]
+    paths: &paths
+      - MODULE.bazel
+      - "**/BUILD.bazel"
+      - .bazelrc
+      - .bazelversion
+      - Cargo.toml
+      - Cargo.lock
+      - crates/**
+      - deploy/compose/**
+      - tests/**
+      - rust-toolchain.toml
+      # Files the integration tests embed (see bazel.yml).
+      - api/openapi/**
+      - docs/design/0004-metrics.md
+      - docs/design/0017-errors.md
+      - docs/user/configuration.md
+      - docs/user/mammoth.example.toml
+      - docs/user/metrics.md
+      - scripts/coverage-summary.py
+      - .github/workflows/coverage.yml
+  pull_request:
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          # Its own disk cache: instrumented builds share no actions with bazel.yml's.
+          disk-cache: ${{ github.workflow }}-rust
+          repository-cache: |
+            - MODULE.bazel
+            - Cargo.lock
+          cache-save: ${{ github.event_name != 'pull_request' }}
+      # One LCOV report for every test target, merged by Bazel.
+      - run: bazel coverage --config=ci //crates/...
+      - run: cp bazel-out/_coverage/_coverage_report.dat "$RUNNER_TEMP/rust.info"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-rust
+          path: ${{ runner.temp }}/rust.info
+          retention-days: 1
+
+  # The E2E suite (as in e2e.yml) against the server built with coverage instrumentation. Each node
+  # writes its profile to MAMMOTH_COVERAGE_DIR as it runs (deploy/compose/compose.yaml); the
+  # profiles are merged and read against the same binary with the LLVM tools of Bazel's toolchain.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-e2e
+          repository-cache: |
+            - MODULE.bazel
+            - Cargo.lock
+            - tests/uv.lock
+          cache-save: ${{ github.event_name != 'pull_request' }}
+      - run: bazel build --config=ci --config=instrumented //crates/mammoth-cache:mammoth
+      # The image e2e.yml tests, with the instrumented binary in place of the release build.
+      # Bazel links it against the runner's glibc, which the Debian 13 base is newer than.
+      - name: Build the image
+        run: |
+          mkdir "$RUNNER_TEMP/image"
+          cp -L bazel-bin/crates/mammoth-cache/mammoth "$RUNNER_TEMP/mammoth"
+          cp "$RUNNER_TEMP/mammoth" "$RUNNER_TEMP/image/mammoth"
+          docker build --tag mammoth-cache:e2e --file - "$RUNNER_TEMP/image" <<'DOCKERFILE'
+          FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
+          COPY --chmod=0755 mammoth /mammoth
+          EXPOSE 5071
+          USER nonroot
+          ENTRYPOINT ["/mammoth"]
+          DOCKERFILE
+      - name: Run the E2E suite
+        # e2e.yml is the check that the suite passes; here a failure still leaves a report.
+        continue-on-error: true
+        run: |
+          mkdir --mode=0777 "$RUNNER_TEMP/profiles"
+          MAMMOTH_COVERAGE_DIR="$RUNNER_TEMP/profiles" bazel test --config=ci --config=e2e //tests:e2e
+      - name: Export the profiles
+        run: |
+          tools=$(dirname "$(find "$(bazel info output_base)/external" -path '*/lib/rustlib/*/bin/llvm-cov' -print -quit)")
+          ls -l "$RUNNER_TEMP/profiles"
+          "$tools/llvm-profdata" merge --sparse --output="$RUNNER_TEMP/e2e.profdata" "$RUNNER_TEMP"/profiles/*.profraw
+          "$tools/llvm-cov" export --format=lcov --instr-profile="$RUNNER_TEMP/e2e.profdata" \
+            "$RUNNER_TEMP/mammoth" > "$RUNNER_TEMP/e2e.info"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-e2e
+          path: ${{ runner.temp }}/e2e.info
+          retention-days: 1
+
+  # Sums the suites' reports (lcov adds the hit counts of each line) and keeps the server's sources.
+  report:
+    needs: [rust, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/in
+      - run: sudo apt-get install --yes --no-install-recommends lcov
+      - name: Merge
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p coverage
+          for suite in rust e2e; do
+            lcov --quiet --extract "in/$suite.info" 'crates/*/src/*' --output-file extracted.info
+            lcov --quiet --remove extracted.info '*/src/reapi/proto/*' --output-file "coverage/$suite.info"
+          done
+          lcov --quiet --add-tracefile coverage/rust.info --add-tracefile coverage/e2e.info \
+            --output-file coverage/lcov.info
+      # From the checkout: the reports name sources relative to it.
+      - run: >-
+          genhtml --quiet --output-directory "$RUNNER_TEMP/coverage/html"
+          "$RUNNER_TEMP/coverage/lcov.info"
+      - run: >-
+          scripts/coverage-summary.py "Rust tests=$RUNNER_TEMP/coverage/rust.info"
+          "E2E=$RUNNER_TEMP/coverage/e2e.info" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: ${{ runner.temp }}/coverage

@@ -12,4 +12,5 @@ acknowledgement, and we will keep you updated as we work on a fix.
 
 ## Supported versions
 
-mammoth-cache is pre-1.0. Only the latest `main` receives security fixes.
+mammoth-cache is pre-1.0. Security fixes go into the next release, so only the latest release
+(and `main`) receives them.
