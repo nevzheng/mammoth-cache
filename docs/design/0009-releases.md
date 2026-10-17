@@ -8,11 +8,11 @@ Accepted
 
 Releases are cut by merging a release PR. On every push to main, release-plz opens or updates a PR
 that bumps the version and writes `CHANGELOG.md` from the Conventional Commit titles merged since
-the last release. Merging it tags `vX.Y.Z` and creates the GitHub release. The tag starts a build
-that attaches static Linux binaries (amd64, arm64) and a macOS arm64 binary to the release, and
-pushes a multi-arch image built from those same binaries to `ghcr.io/nevzheng/mammoth-cache`. There
-are two channels, stable releases and release candidates; nothing is published from main, and
-nothing to crates.io.
+the last release. Merging it tags `vX.Y.Z` and creates a draft GitHub release. The tag starts a
+build that attaches static Linux binaries (amd64, arm64) and a macOS arm64 binary to the draft,
+pushes a multi-arch image built from those same binaries to `ghcr.io/nevzheng/mammoth-cache`, and
+then publishes the release. There are two channels, stable releases and release candidates; nothing
+is published from main, and nothing to crates.io.
 
 ## Context and scope
 
@@ -103,10 +103,11 @@ sequenceDiagram
     M->>PR: review CHANGELOG.md, merge
     PR->>Main: squash merge
     Main->>RP: push
-    RP->>GH: tag vX.Y.Z, release with changelog notes
+    RP->>GH: tag vX.Y.Z, draft release with changelog notes
     GH->>Rel: tag push
-    Rel->>GH: binaries, SHA256SUMS, attestations
+    Rel->>GH: binaries, SHA256SUMS (onto the draft), attestations
     Rel->>GHCR: image :X.Y.Z, :X.Y, :latest
+    Rel->>GH: publish the release
 ```
 
 `release-plz.yml` runs two jobs on every push to main:
@@ -114,8 +115,15 @@ sequenceDiagram
 - `release-pr` compares main with the last `v*` tag. If any commit touched the crate since, it opens
   or updates the release PR, which bumps the version in `Cargo.toml` and `Cargo.lock` and adds a
   section to `CHANGELOG.md`.
-- `release` checks whether the push is the merge of a release PR (`release_always = false`). If it
-  is, it tags `vX.Y.Z` and creates the GitHub release, with the new changelog section as its notes.
+- `release` checks whether the push is the merge of a release PR (`release_always = false`), which
+  it recognizes by the PR's branch name starting with `release-plz-`. If it is, it creates the tag
+  `vX.Y.Z` and then a draft GitHub release (`git_release_draft = true`), with the new changelog
+  section as its notes.
+
+release-plz creates the tag itself, through the GitHub API with `RELEASE_PLZ_TOKEN`, before it
+creates the release, whether or not the release is a draft. So the tag push starts `release.yml`
+even though the release isn't published yet. (GitHub only creates a draft's tag on publish when the
+tag doesn't exist; here it already does.)
 
 Configuration is in `release-plz.toml`: versions come from git tags (`git_only`), nothing is
 published to a registry, and the cargo-semver-checks step is off because the crate ships a binary.
@@ -155,29 +163,79 @@ QEMU, and the image holds exactly the bytes in the release tarball. The existing
 as the from-source build for local use and is still checked on PRs by `docker.yml`, which no longer
 publishes.
 
+### Publishing order
+
+Immutable releases are on (see [Tokens and one-time setup](#tokens-and-one-time-setup)): once a
+release is published, GitHub refuses new or changed assets (HTTP 422) and the tag can't be moved or
+reused. So nothing is published until everything is in place:
+
+1. release-plz creates the tag and a draft release. A draft is invisible to users and mutable.
+2. `release.yml` builds and smoke-tests the binaries and the image.
+3. The `github-release` job writes `SHA256SUMS`, records the tarballs' build provenance
+   attestations (stored by GitHub, not on the release), and uploads the tarballs and `SHA256SUMS`
+   to the draft. If the tag was pushed by hand and has no release, it creates a draft first
+   (`--prerelease` for a tag with a `-`). If the release is already published, it fails rather than
+   try to change it.
+4. The `image` job pushes the image and its attestation.
+5. The `publish` job, which needs both, runs `gh release edit vX.Y.Z --draft=false`. From then on
+   the release, its assets and the tag are fixed, and `releases/latest/download/...` links point at
+   it (for a full release).
+
+If any step fails, the release stays a draft. Fix the cause and re-run the failed jobs; the upload
+replaces assets on the draft (`--clobber`). The image is pushed before the release is published,
+so `docker pull` (and `latest`, for a full release) gets it a few minutes early, or while the
+release stays a draft after a failure. Publishing last is deliberate: image tags can be pushed
+again, but a published release can't take the assets it is missing.
+
 ### Release candidates
 
-A release can be rehearsed with a pre-release version. In the release PR, edit the version to
+A release can be rehearsed with a pre-release version. In the release PR, set the version to
 `X.Y.Z-rc.N` before merging. The tag `vX.Y.Z-rc.N` runs the same pipeline and smoke tests, but the
 GitHub release is marked as a pre-release (`git_release_type = "auto"`) and the image is tagged only
-`X.Y.Z-rc.N`: `X.Y` and `latest` keep pointing at the last full release. The final release is the
-next release PR with the version set back to `X.Y.Z`.
+`X.Y.Z-rc.N`: `X.Y` and `latest` keep pointing at the last full release.
+
+How release-plz treats the edit and the versions after it:
+
+- **It doesn't keep the edit.** On every push to main, `release-pr` recomputes the release PR. If
+  the PR has only its own commit, it force-pushes over it; if it has a commit by anyone else (an rc
+  edit), it closes that PR and opens a new one with the computed version. Either way the edit is
+  gone. So set the version, merge it before anything else lands on main, and right before merging
+  check that the PR is still open and still says `X.Y.Z-rc.N` in `Cargo.toml`, `Cargo.lock` and
+  `CHANGELOG.md`.
+- **After an rc it proposes the next rc.** When the current version has a pre-release part, any
+  change to the crate bumps only that part, so after `X.Y.Z-rc.1` the next release PR proposes
+  `X.Y.Z-rc.2`, whatever the commit types.
+- **The final release is an edit too.** Set the version in the next release PR back to `X.Y.Z`. If
+  nothing touched the crate since the rc, release-plz opens no PR; open one by hand from a branch
+  named `release-plz-<anything>` (for example `release-plz-vX.Y.Z`), titled `chore: release vX.Y.Z`,
+  that sets the version. The branch prefix is what makes the `release` job treat its merge as a
+  release.
+
+To set a version, run `release-plz set-version X.Y.Z-rc.N` (or `X.Y.Z`) on the PR branch: it edits
+`Cargo.toml`, `Cargo.lock` and the newest `CHANGELOG.md` heading. By hand, edit `Cargo.toml` and the
+heading, then run `cargo update -p mammoth-cache --offline` to update `Cargo.lock`; CI and the
+release build use `--locked` and fail if `Cargo.lock` doesn't match.
 
 ### Cutting a release
 
 The maintainer's checklist, for 0.1.0 and after:
 
 1. Check `main` is green. release-plz keeps the release PR up to date on every push.
-2. In the release PR, set the version to `X.Y.Z-rc.1` in `Cargo.toml` and the `CHANGELOG.md`
-   heading, then merge it. Wait for `release.yml` on the tag: smoke tests green, binaries,
-   `SHA256SUMS` and the image published.
+2. Check out the release PR's branch and set the version to `X.Y.Z-rc.1` in `Cargo.toml`,
+   `Cargo.lock` and the `CHANGELOG.md` heading (`release-plz set-version X.Y.Z-rc.1`, or by hand and
+   then `cargo update -p mammoth-cache --offline`). Push to the PR branch, wait for CI, check the PR
+   still says `rc.1` (see [Release candidates](#release-candidates)), and merge it before anything
+   else lands on main. Wait for `release.yml` on the tag: smoke tests green, binaries, `SHA256SUMS`
+   and the image uploaded, and the release published as a pre-release.
 3. Check the artifacts: `gh attestation verify` on a tarball and the image, and an anonymous
    `docker pull` of the rc tag.
 4. Run the rc where it will be used: real Gradle, Maven and Bazel builds against it, and the
    quickstart and migration pages followed on a clean machine. A fix found here merges to main and
    ships as `rc.2`.
-5. When an rc is clean, merge the next release PR with the version `X.Y.Z` and repeat step 3 for
-   it. Release-specific docs (such as pinned versions in the quickstart) merge just before it.
+5. When an rc is clean, set the next release PR's version to `X.Y.Z` the same way (release-plz
+   proposes `X.Y.Z-rc.N+1` after an rc, or opens no PR if nothing changed), merge it, and repeat
+   step 3 for it. Release-specific docs (such as pinned versions in the quickstart) merge just
+   before it.
 
 A patch release with only small fixes can skip the rc: merge the release PR as proposed.
 
@@ -206,9 +264,10 @@ The maintainer does this once:
 1. Run `scripts/setup-release.sh`. It opens the token form prefilled with Contents and Pull
    requests read and write; pick this repository under _Repository access_, generate the token, and
    paste it at the prompt. The script stores it with `gh secret set RELEASE_PLZ_TOKEN`, then turns
-   on immutable releases (a published release's assets and tag can't change) and adds a "Release
-   tags" ruleset so `v*` tags can't be moved or deleted, with a bypass for admins. Each step is
-   skipped if already done.
+   on immutable releases (a published release's assets and tag can't change, which is why assets go
+   onto a draft first; see [Publishing order](#publishing-order)) and adds a "Release tags" ruleset
+   so `v*` tags can't be moved or deleted, with a bypass for admins. Each step is skipped if already
+   done.
 2. When the token expires (it is created for a year), run `RENEW=1 scripts/setup-release.sh`.
 3. After the first image push, make the package public in its settings at
    <https://github.com/users/nevzheng/packages/container/mammoth-cache/settings>. New packages start
@@ -248,12 +307,14 @@ it should read it from there rather than repeat it.
   rather than musl's.
 - **Security.** Only the token in `release-plz.yml` can push; it is limited to one repository and
   two permissions. Publishing jobs run only on pushes to this repository, never on PRs, so fork PRs
-  never see a write token. Actions are pinned by major version, like the rest of the repository's
-  workflows.
+  never see a write token. `release.yml`, `release-plz.yml` and `docker.yml` pin every action to a
+  full commit SHA, with the version in a comment, so a moved tag can't change what runs with write
+  access. Some other workflows (such as `image.yml` and `e2e.yml`) still pin actions by major
+  version (`@v7`).
 - **DCO.** The release PR's commit has no `Signed-off-by` trailer, since a bot writes it. If the DCO
   check flags it, the maintainer can mark it as passing in the DCO check's details.
-- **Timing.** release-plz publishes the GitHub release when it tags, and binaries are attached a few
-  minutes later when the build finishes.
+- **Timing.** The GitHub release stays a draft from the tag until the binaries and the image are
+  out, a few minutes later, and only then is published, complete.
 
 ## Alternatives considered
 
