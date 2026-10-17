@@ -91,7 +91,7 @@ Bazel build.
 ```sh
 bazel build //...
 bazel test //...
-bazel run //crates/mammoth-cache:mammoth   # listens on 0.0.0.0:5071; pass -- --config <file>
+bazel run //crates/mammoth-cache:mammoth   # listens on [::]:5071; pass -- --config <file>
 bazel build --config=lint //...            # clippy and rustfmt over every Rust target
 ```
 
@@ -100,7 +100,7 @@ is the `rust-version` in `Cargo.toml`.
 
 ```sh
 cargo build
-cargo run --bin mammoth   # listens on 0.0.0.0:5071, memory only; see docs/user/configuration.md
+cargo run --bin mammoth   # listens on [::]:5071, memory only; see docs/user/configuration.md
 ```
 
 ### How the two builds stay in step

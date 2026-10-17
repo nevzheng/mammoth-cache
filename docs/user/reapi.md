@@ -40,7 +40,7 @@ tell the client not to upload, or every build logs `PERMISSION_DENIED` on each s
 
 ```text
 build --remote_cache=grpcs://cache.example.com:6011
-build --remote_header=Authorization=Bearer <token>
+build --remote_header="Authorization=Bearer <token>"
 ```
 
 A `--credential_helper` works as well. Leave `--remote_cache_compression` off: the node advertises
