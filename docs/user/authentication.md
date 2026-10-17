@@ -20,9 +20,11 @@ The Build Cache Node's `read` level is `cache:read`, and `readwrite` is `cache:r
 none. Health checks are always open.
 
 A node with no `[auth]` table and `metrics.require_auth = false` is open to everyone, so it works
-without a config file, and it logs a warning saying so. Once the file has an `[auth]` table, every
-request needs the scope for its route. That holds for an empty table too: if templating drops the
-last user, the node refuses requests, and logs a warning, rather than opening up.
+without a config file, and it logs a warning saying so. It ignores any credentials clients send,
+so a client that keeps its credentials configured still works. Once the file has an `[auth]`
+table, every request needs the scope for its route. That holds for an empty table too: if
+templating drops the last user, the node refuses requests, and logs a warning, rather than opening
+up.
 
 ## Tokens
 
