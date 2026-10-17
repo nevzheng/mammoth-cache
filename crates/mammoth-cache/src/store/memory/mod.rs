@@ -310,6 +310,10 @@ impl<B: MemoryBackend> BlobStore for MemoryStore<B> {
             }
             if !keep {
                 // Too big for memory. For a cache, an entry not kept is a later miss, not an error.
+                // A replaceable entry's old version must go, or reads would keep serving it.
+                if !immutable {
+                    self.backend.remove(key);
+                }
                 tracing::debug!(%key, limit, "entry too large for the memory tier; not kept");
                 return Ok(PutOutcome::Stored);
             }
@@ -487,6 +491,23 @@ mod tests {
         store.put(&streamed, None, chunks(4, 512)).await.unwrap();
         assert!(read(&store, &declared).await.is_none());
         assert!(read(&store, &streamed).await.is_none());
+        assert_eq!(store.usage().entries, 0);
+    }
+
+    #[tokio::test]
+    async fn a_replacement_too_large_to_keep_drops_the_old_version() {
+        let store = store(64 * 1024, EvictionPolicy::S3Fifo);
+        let path = CacheKey::maven("v1.2/g/a/c/buildinfo.xml").unwrap();
+        store.put(&path, None, body(b"one")).await.unwrap();
+        assert_eq!(
+            store.put(&path, Some(2048), chunks(2, 1024)).await.unwrap(),
+            PutOutcome::Stored
+        );
+        assert!(read(&store, &path).await.is_none());
+        assert_eq!(store.head(&path).await.unwrap(), None);
+        store.put(&path, None, body(b"one")).await.unwrap();
+        store.put(&path, None, chunks(4, 512)).await.unwrap();
+        assert!(read(&store, &path).await.is_none());
         assert_eq!(store.usage().entries, 0);
     }
 
