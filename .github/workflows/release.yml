@@ -2,8 +2,9 @@ name: release
 
 # Release binaries and the container image.
 #
-# - Tag `v*` (pushed by release-plz): attach binaries and SHA256SUMS to the GitHub release, and push
-#   the image as `X.Y.Z`, plus `X.Y` and `latest` for a full release (not for `-rc.N`).
+# - Tag `v*` (pushed by release-plz): attach binaries and SHA256SUMS to the draft GitHub release,
+#   push the image as `X.Y.Z`, plus `X.Y` and `latest` for a full release (not for `-rc.N`), then
+#   publish the release. Published releases are immutable, so assets go on while it is a draft.
 # - Push to main, a pull request touching release files, or a manual run: build and smoke-test
 #   everything, publish nothing. There are no images from main; build your own to test ahead.
 #
@@ -111,17 +112,24 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*.tar.gz
-      # release-plz creates the release when it tags. Create one only if the tag was pushed by hand.
-      - name: Upload to the GitHub release
+      # release-plz creates the release as a draft when it tags; create one only if the tag was
+      # pushed by hand. A published release is immutable, so assets can only go onto a draft.
+      - name: Upload to the draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          prerelease=()
-          [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --verify-tag --generate-notes "${prerelease[@]}"
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$draft" != true ]]; then
+              echo "::error::release $TAG is already published, and its assets can't change"
+              exit 1
+            fi
+          else
+            prerelease=()
+            [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+            gh release create "$TAG" --draft --verify-tag --generate-notes "${prerelease[@]}"
+          fi
           gh release upload "$TAG" dist/* --clobber
 
   image:
@@ -200,3 +208,20 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+  # Last step: publish the draft once the binaries and the image are both out, so a published
+  # release always has everything. If anything before fails, the release stays a draft and the
+  # failed jobs can be re-run.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [github-release, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false

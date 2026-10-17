@@ -24,10 +24,10 @@ use mammoth_cache::{
             build::bazel::remote::execution::v2::{
                 ActionResult, BatchReadBlobsRequest, BatchUpdateBlobsRequest,
                 BatchUpdateBlobsResponse, Digest, Directory, ExecuteRequest, FileNode,
-                FindMissingBlobsRequest, GetActionResultRequest, GetCapabilitiesRequest,
-                GetTreeRequest, OutputDirectory, OutputFile, Tree, UpdateActionResultRequest,
-                action_cache_client::ActionCacheClient, batch_update_blobs_request,
-                capabilities_client::CapabilitiesClient,
+                FindMissingBlobsRequest, FindMissingBlobsResponse, GetActionResultRequest,
+                GetCapabilitiesRequest, GetTreeRequest, OutputDirectory, OutputFile, Tree,
+                UpdateActionResultRequest, action_cache_client::ActionCacheClient,
+                batch_update_blobs_request, capabilities_client::CapabilitiesClient,
                 content_addressable_storage_client::ContentAddressableStorageClient,
                 digest_function, execution_client::ExecutionClient,
             },
@@ -1607,4 +1607,71 @@ async fn action_results_past_a_message_are_refused() {
         info.metadata["maxEntryBytes"],
         reapi::MAX_MESSAGE_BYTES.to_string()
     );
+}
+
+/// Unary calls whose requests trickle in cannot keep the node's buffered-call permits: one holding
+/// a permit must send its whole request within `body_read_timeout`, and one waiting for a permit
+/// fails after that long at most. `GetCapabilities` takes no permit.
+#[tokio::test]
+async fn trickling_requests_do_not_starve_other_calls() {
+    let node = Node::with(
+        LIMIT,
+        ServerSettings {
+            body_read_timeout: Duration::from_secs(1),
+            ..settings()
+        },
+    )
+    .await;
+    let path = tonic::codegen::http::uri::PathAndQuery::from_static(
+        "/build.bazel.remote.execution.v2.ContentAddressableStorage/FindMissingBlobs",
+    );
+    // As many as there are permits, each sending a message well within every per-read timeout,
+    // forever.
+    let trickles: Vec<_> = (0..32)
+        .map(|_| {
+            let mut grpc = tonic::client::Grpc::new(node.channel.clone());
+            let path = path.clone();
+            tokio::spawn(async move {
+                grpc.ready().await.unwrap();
+                let messages = futures_util::stream::unfold((), |()| async {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Some((FindMissingBlobsRequest::default(), ()))
+                });
+                grpc.client_streaming::<_, FindMissingBlobsRequest, FindMissingBlobsResponse, _>(
+                    Request::new(messages),
+                    path,
+                    tonic_prost::ProstCodec::default(),
+                )
+                .await
+            })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let mut capabilities = CapabilitiesClient::new(node.channel.clone());
+    let capabilities = capabilities.get_capabilities(GetCapabilitiesRequest::default());
+    tokio::time::timeout(Duration::from_millis(500), capabilities)
+        .await
+        .expect("GetCapabilities waited behind the trickling calls")
+        .unwrap();
+
+    let mut cas = node.cas();
+    let find = cas.find_missing_blobs(FindMissingBlobsRequest {
+        blob_digests: vec![digest_of(b"anything")],
+        ..Default::default()
+    });
+    match tokio::time::timeout(Duration::from_secs(5), find)
+        .await
+        .expect("a call waited behind the trickling calls")
+    {
+        Ok(response) => assert_eq!(response.into_inner().missing_blob_digests.len(), 1),
+        Err(err) => assert_eq!(err.code(), Code::Unavailable),
+    }
+    for trickle in trickles {
+        let result = tokio::time::timeout(Duration::from_secs(5), trickle)
+            .await
+            .expect("a trickling call kept its permit")
+            .unwrap();
+        assert!(result.is_err());
+    }
 }

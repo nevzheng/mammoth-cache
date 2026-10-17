@@ -64,7 +64,7 @@ the canonical code: the gRPC status code, and the `status` field of the HTTP bod
 | `SCOPE_MISSING`               | `PERMISSION_DENIED`  | 403  | both      | The user lacks the scope. Metadata: `user`, `requiredScope`                                    |
 | `METHOD_NOT_ALLOWED`          | `UNIMPLEMENTED`      | 405* | HTTP      | An HTTP method the route does not support; `Allow` lists the ones it does                      |
 | `METHOD_NOT_SUPPORTED`        | `UNIMPLEMENTED`      | 501  | both      | A method this node does not offer, such as `Execute`. Metadata: `method`                       |
-| `STORAGE_UNAVAILABLE`         | `UNAVAILABLE`        | 503  | both      | A tier failed in a way that may pass; retry                                                    |
+| `STORAGE_UNAVAILABLE`         | `UNAVAILABLE`        | 503  | both      | A tier failed in a way that may pass, or (gRPC) every buffered-call place stayed busy; retry   |
 | `STORAGE_NOT_WRITABLE`        | `UNAVAILABLE`        | 503  | HTTP      | `/readyz`: the disk tier cannot write. Metadata: `check`                                       |
 | `STORAGE_FREE_SPACE_LOW`      | `UNAVAILABLE`        | 503  | HTTP      | `/readyz`: the disk tier is short of free space. Metadata: `check`                             |
 | `SHUTTING_DOWN`               | `UNAVAILABLE`        | 503  | HTTP      | `/readyz`: the node is draining. Metadata: `check`                                             |

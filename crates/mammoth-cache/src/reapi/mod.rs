@@ -13,13 +13,15 @@ pub mod proto;
 mod services;
 mod status;
 
-use std::{future::Future, io, sync::Arc};
+use std::{future::Future, io, sync::Arc, time::Duration};
 
 use axum::{
+    body::Body,
     extract::{Request, State},
     middleware::{self, Next},
     response::Response,
 };
+use futures_util::{StreamExt, stream};
 use tokio::{net::TcpListener, sync::Semaphore};
 use tonic::service::Routes;
 
@@ -39,10 +41,19 @@ use proto::{
     google::bytestream::byte_stream_server::ByteStreamServer,
 };
 
-/// Calls that buffer whole messages (every method but `ByteStream`'s) running at once on the node.
-/// Each can hold a request of up to [`MAX_REQUEST_BYTES`], a response it assembles, and that
-/// response encoded, so this bounds the node's gRPC buffers at about 512 MiB. More calls wait.
+/// Calls that buffer whole messages (every method but `ByteStream`'s and `GetCapabilities`)
+/// running at once on the node. Each can hold a request of up to [`MAX_REQUEST_BYTES`], a response
+/// it assembles, and that response encoded, so this bounds the node's gRPC buffers at about
+/// 512 MiB. More calls wait, for `body_read_timeout` at most.
 const MAX_BUFFERED_CALLS: usize = 32;
+
+/// The node's buffered-call permits, and how long a call may wait for one or, holding one, take
+/// to send its whole request.
+#[derive(Clone)]
+struct Buffered {
+    permits: Arc<Semaphore>,
+    timeout: Duration,
+}
 
 /// The services over `cache`, each call checked against `auth`. Uploads fail after
 /// `body_read_timeout` without data, and `ByteStream.Read` after `send_timeout` without the client
@@ -65,7 +76,10 @@ pub fn routes(cache: Arc<Cache>, auth: Arc<Authenticator>, settings: ServerSetti
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)
                 .max_encoding_message_size(MAX_MESSAGE_BYTES),
         );
-    let buffered = Arc::new(Semaphore::new(MAX_BUFFERED_CALLS));
+    let buffered = Buffered {
+        permits: Arc::new(Semaphore::new(MAX_BUFFERED_CALLS)),
+        timeout: settings.body_read_timeout,
+    };
     // The last layer runs first: log and count every call, then authenticate it, then wait for
     // room.
     Routes::from(
@@ -101,20 +115,49 @@ async fn too_large(request: Request, next: Next) -> Response {
     .into_http::<axum::body::Body>()
 }
 
-/// Middleware that holds one of the node's buffered-call permits while a call other than a
-/// `ByteStream` one decodes its request and builds its response. `ByteStream` calls stream in
-/// chunks, so they buffer little and may run long.
-async fn limit(State(permits): State<Arc<Semaphore>>, request: Request, next: Next) -> Response {
-    if request
-        .uri()
-        .path()
-        .starts_with("/google.bytestream.ByteStream/")
+/// Middleware that holds one of the node's buffered-call permits while a call decodes its request
+/// and builds its response. `ByteStream` calls stream in chunks, so they buffer little and may run
+/// long, and `GetCapabilities` has nothing to buffer: neither takes one.
+///
+/// A permit is held while the request arrives, so a client sending slowly could keep it, and with
+/// 32 of them stop every other call. A call waits for a permit for the timeout at most, then fails
+/// with `UNAVAILABLE`, which clients retry; holding one, it must send its whole request within the
+/// timeout, not only send something every timeout, as [`server`] asks of every request.
+async fn limit(State(buffered): State<Buffered>, request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    if path.starts_with("/google.bytestream.ByteStream/")
+        || path == "/build.bazel.remote.execution.v2.Capabilities/GetCapabilities"
     {
         return next.run(request).await;
     }
-    // The semaphore is never closed, so this always holds a permit.
-    let _permit = permits.acquire().await;
-    next.run(request).await
+    let Ok(Ok(_permit)) = tokio::time::timeout(buffered.timeout, buffered.permits.acquire()).await
+    else {
+        return status::error(
+            Reason::StorageUnavailable,
+            "The node is busy with other calls. Try again.",
+        )
+        .into_http::<axum::body::Body>();
+    };
+    let deadline = tokio::time::Instant::now() + buffered.timeout;
+    let (parts, body) = request.into_parts();
+    let chunks = body.into_data_stream();
+    let timed = stream::unfold(Some(chunks), move |chunks| async move {
+        let mut chunks = chunks?;
+        match tokio::time::timeout_at(deadline, chunks.next()).await {
+            Ok(Some(Ok(chunk))) => Some((Ok(chunk), Some(chunks))),
+            Ok(Some(Err(error))) => Some((Err(io::Error::other(error)), None)),
+            Ok(None) => None,
+            Err(_) => Some((
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the request took too long to arrive",
+                )),
+                None,
+            )),
+        }
+    });
+    next.run(Request::from_parts(parts, Body::from_stream(timed)))
+        .await
 }
 
 /// Serves `routes` over HTTP/2 on `listener`, over TLS when `tls` is set, until `signal`
