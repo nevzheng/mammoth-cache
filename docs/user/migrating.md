@@ -14,7 +14,9 @@ self-hosted node without Develocity.
 - **Gradle builds.** The cache lives at `/cache/` on port 5071, as on the BCN. Change the host in
   `url` and the password; nothing else in `settings.gradle.kts`.
 - **Health check.** `GET /ping` answers `SUCCESS`.
-- **Defaults.** 100 MiB entry limit, 1 GiB free-space buffer, no anonymous access.
+- **Defaults.** 100 MiB entry limit and 1 GiB free-space buffer. Once any user is configured,
+  requests without credentials get nothing unless `auth.anonymous` grants scopes; with no users at
+  all, the node is open to everyone.
 - **Access levels.** BCN's `read`, `readwrite` and anonymous access map onto scopes.
 - **Expect-Continue.** Supported, so oversized uploads are turned down before they are sent.
 

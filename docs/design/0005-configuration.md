@@ -125,7 +125,8 @@ access_log = true
 - **Location:** the path given by `--config`, else `MAMMOTH_CONFIG`, else `./mammoth.toml`. That is
   the only environment variable or flag that affects settings.
 - **Defaults:** every key except `version` and `disk.path` is optional. Defaults follow the BCN
-  where it has one (100 MiB entries, 1 GiB free-space buffer, no anonymous access).
+  where it has one (100 MiB entries, 1 GiB free-space buffer). A node with no users is open to
+  everyone; once a user is configured, anonymous requests get only the scopes in `auth.anonymous`.
 - **Validation:** unknown keys, wrong types, unparseable units and contradictions (an L1 entry
   limit above the overall entry limit, an entry limit above `disk.size`, `shutdown_delay` not
   below `shutdown_timeout`) are errors at startup.
