@@ -1,0 +1,38 @@
+# A node for tests/e2e/properties/test_model.py::test_eviction_loses_nothing: memory and disk hold
+# only a few entries in front of the bucket, so random sequences keep evicting from both local tiers
+# and reading entries back from the bucket. Stores wait for the upload (`write = "sync"`), so every
+# store the node answers is in the bucket, and the bucket is never skipped (`cooldown = "0s"`).
+# Anonymous requests may read and write, so the test exercises the tiers, not auth.
+version = 1
+listen = "0.0.0.0:5071"
+
+[limits]
+max_entry_size = "1MiB"
+
+[memory]
+size = "1MiB"
+max_entry_size = "128KiB"
+
+[disk]
+path = "/var/lib/mammoth"
+size = "2MiB" # 512 blocks of 4 KiB
+free_space_buffer = "1MiB" # of a 32 MiB tmpfs
+
+[bucket]
+url = "s3://mammoth-e2e/evicting/"
+region = "us-east-1"
+endpoint = "http://seaweedfs:8333"
+write = "sync"
+cooldown = "0s"
+
+[protocols]
+gradle = true
+maven = true
+bazel = true
+
+[auth]
+anonymous = ["cache:read", "cache:write"]
+
+[log]
+level = "info"
+format = "text"

@@ -35,21 +35,21 @@ def test_round_trip(client: CacheClient, size: int) -> None:
     assert client.head(f"/cache/{key}").status_code == 200
 
 
-def test_mid_size_entry_is_kept(
-    client: CacheClient, target: Target, request: pytest.FixtureRequest
-) -> None:
-    """An entry under the entry limit but over the memory tier's per-entry cap must be kept."""
-    if not target.has(Feature.DISK):
-        request.applymarker(
-            pytest.mark.xfail(
-                strict=True,
-                reason="stores reach memory only, which answers 201 but drops big entries (audit)",
-            )
-        )
+def test_mid_size_entry_is_kept(client: CacheClient, target: Target) -> None:
+    """An entry under the entry limit but over the memory tier's per-entry cap is kept below memory.
+
+    A memory-only node has nowhere to keep it, so it is oversized there: accepted and dropped, as
+    test_topologies.py::test_entry_larger_than_memory checks on the memory node.
+    """
     size = (target.memory_max_entry_size + target.max_entry_size) // 2
     key, body = blobs.gradle_key(), blobs.payload(size)
-    assert client.gradle_put(key, body).status_code == 201
-    assert client.gradle_get(key).content == body
+    stored = client.gradle_put(key, body)
+    if target.has(Feature.DISK) or target.has(Feature.BUCKET):
+        assert stored.status_code == 201
+        assert client.gradle_get(key).content == body
+    else:
+        assert stored.status_code == 200
+        assert client.gradle_get(key).status_code == 404
 
 
 def test_write_once(client: CacheClient) -> None:

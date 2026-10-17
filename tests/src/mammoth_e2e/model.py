@@ -9,8 +9,10 @@ The node is shared with other tests and not wiped between examples, so every exa
 keys and starts from an empty model. Content-addressed keys (Bazel CAS) cannot be salted, so a CAS
 entry may already exist from an earlier example; the model allows for that.
 
-Nothing is evicted during a run: the examples write a few megabytes, far below the memory tier's
-default size, so a miss on a key the model holds is a bug, not eviction.
+On the main node nothing is evicted during a run: the examples write a few megabytes, far below the
+memory tier's size. The evicting node's tiers hold only a few entries, but its stores wait for the
+bucket upload, so an evicted entry is still read back from the bucket. Either way a miss on a key
+the model holds is a bug, not eviction.
 """
 
 from __future__ import annotations

@@ -8,7 +8,8 @@
 # anonymous requests read; `mammoth-proxied` sits behind nginx, on 8080 with the documented proxy
 # settings and on 8081 with nginx's defaults. `mammoth-memory` (5074), `mammoth-memory-disk` (5075)
 # and `mammoth-memory-bucket` (5076) run the other tier topologies; `mammoth-max-available` (5077)
-# sizes its disk tier from a 64 MiB tmpfs. Profiles: `multi` adds
+# sizes its disk tier from a 64 MiB tmpfs; `mammoth-evicting` (5080) has tiny memory and disk tiers
+# in front of the bucket. Profiles: `multi` adds
 # `mammoth-2` (5072) on the same bucket; `observe` adds Grafana (3000); `tls` adds `mammoth-tls`
 # (5078, REAPI gRPC on 6012), serving the certificate in ./tls that the test harness issues, and
 # `mammoth-tls-generated` (5079), serving a self-signed one it generates itself. MAMMOTH_IMAGE picks the image under test, for example
@@ -106,6 +107,21 @@ services:
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/topology-memory-bucket.toml:/etc/mammoth/mammoth.toml:ro
       - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
+
+  # Tiny memory and disk tiers in front of the bucket, so entries keep being evicted and read back.
+  # tests/e2e/properties/test_model.py::test_eviction_loses_nothing.
+  mammoth-evicting:
+    <<: *mammoth
+    ports:
+      - "${MAMMOTH_EVICTING_PORT:-5080}:5071"
+    volumes:
+      - ${MAMMOTH_CONFIG_DIR:-./config}/evicting.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
+      - type: tmpfs
+        target: /var/lib/mammoth
+        tmpfs:
+          size: 33554432 # 32 MiB
+          mode: 01777
 
   # Built-in TLS (doc 0014). The harness writes ./tls (a test CA and a certificate from it)
   # before starting the stack, and renews the certificate in place to test reloads.

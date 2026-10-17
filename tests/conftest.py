@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from hypothesis import HealthCheck, settings
 
 from mammoth_e2e.bucket import BucketInspector
 from mammoth_e2e.client import CacheClient
@@ -20,6 +21,22 @@ if TYPE_CHECKING:
 
 HERE = Path(__file__).parent
 STACK_KEY = pytest.StashKey[Stack | None]()
+
+# With `CI` set, Hypothesis loads its built-in `ci` profile: derandomized, so every pull request
+# replays the same examples and a red run is a real regression. The nightly run sets
+# `HYPOTHESIS_PROFILE=nightly` to explore new examples instead (random runs are what find new
+# bugs), and prints each failure's `@reproduce_failure` blob so it can be replayed locally. The
+# example counts come from `MAMMOTH_E2E_*EXAMPLES`, which the tests pass explicitly.
+settings.register_profile(
+    "nightly",
+    derandomize=False,
+    database=None,
+    print_blob=True,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+if profile := os.environ.get("HYPOTHESIS_PROFILE"):
+    settings.load_profile(profile)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

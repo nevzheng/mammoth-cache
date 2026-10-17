@@ -139,7 +139,10 @@ store changes nothing; give users their `scopes` and set `anonymous_scopes` in t
 `test_model.py` also checks that counters never go down, that `mammoth_http_requests_total` moved by
 exactly the requests each sequence sent, and that every hit, miss, store and refusal moved
 `mammoth_cache_lookups_total`, `mammoth_cache_stores_total` or `mammoth_auth_failures_total` once,
-with the right label. Nothing else may send cache requests to the node during the run. On a stack
+with the right label. Nothing else may send cache requests to the node during the run. The same
+machine runs against `mammoth-evicting` (5080), whose 1 MiB of memory and 2 MiB of disk keep
+evicting entries in front of a bucket written with `write = "sync"`: every stored key must still
+hit with its bytes. On a stack
 the harness controls, a third machine restarts the node and stops the bucket at random; with a disk,
 nothing the model holds may be lost and nothing may answer 5xx. `test_races.py` races concurrent
 stores of one key (an immutable key keeps the body whose store answered `201`, a mutable one ends
@@ -152,7 +155,8 @@ asks `FindMissingBlobs` about thousands of digests, checks `QueryWriteStatus`, s
 output directories (`Tree` blobs), and switches instance names. On a stack the harness controls,
 `test_evicted_output_is_a_miss` removes an output from every tier and checks the result becomes a
 miss. Its gRPC stubs are generated from `third_party/proto` into the harness cache on first use.
-`test_edges.py` pins contract edge cases; known bugs there are strict xfails.
+`test_edges.py` pins contract edge cases. A test that finds a bug lands with the fix, or specifies
+the behaviour as it is; never commit xfail or known-broken tests, nor skip a test to get past a bug.
 
 `MAMMOTH_E2E_EXAMPLES` sets how many sequences each machine tries (default 40), and
 `MAMMOTH_E2E_CHAOS_EXAMPLES` the restart and outage machine (default 6).
