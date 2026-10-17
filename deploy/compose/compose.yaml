@@ -116,6 +116,7 @@ services:
       - "${MAMMOTH_EVICTING_PORT:-5080}:5071"
     volumes:
       - ${MAMMOTH_CONFIG_DIR:-./config}/evicting.toml:/etc/mammoth/mammoth.toml:ro
+      - ${MAMMOTH_COVERAGE_DIR:-mammoth-coverage}:/coverage
       - type: tmpfs
         target: /var/lib/mammoth
         tmpfs:
