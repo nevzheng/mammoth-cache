@@ -6,7 +6,7 @@ module(
 )
 
 bazel_dep(name = "platforms", version = "1.1.0")
-bazel_dep(name = "rules_rust", version = "0.74.0")
+bazel_dep(name = "rules_rust", version = "0.75.0")
 
 bazel_dep(name = "buildifier_prebuilt", version = "10.1.0", dev_dependency = True)
 
@@ -40,7 +40,7 @@ use_repo(crate, "crates")
 # Python for the end-to-end, acceptance and load suites under tests/ (doc 0011). tests/uv.lock is the
 # source of truth, as Cargo.lock is for crates: change dependencies with `uv add` in tests/ and
 # Bazel reads the lock on the next build.
-bazel_dep(name = "rules_python", version = "2.4.2", dev_dependency = True)
+bazel_dep(name = "rules_python", version = "2.4.5", dev_dependency = True)
 
 python = use_extension("@rules_python//python/extensions:python.bzl", "python", dev_dependency = True)
 python.toolchain(
